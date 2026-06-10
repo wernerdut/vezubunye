@@ -2,25 +2,31 @@
 
 Same pattern as RIPS: backend on Railway, frontend on Vercel, MongoDB Atlas.
 
-## 1. MongoDB Atlas
+## 1. MongoDB Atlas — DONE
 
-1. Create a database `vezubunye` in the existing Atlas cluster (or a new free cluster).
-2. Create a database user; allow network access from anywhere (Railway IPs rotate).
-3. Copy the connection string for `MONGO_URL`.
+The `vezubunye` database is live on the existing `werner-labs` Atlas cluster
+(same cluster as RIPS `fenix_forecast`, isolated by database name). User
+`wernerdut_db_user` and open network access were already provisioned. The
+database was created and seeded (GoGreen node, config, three users) on
+2026-06-10 with generated passwords.
+
+The connection string and app passwords are in `backend/.env` and
+`backend/CREDENTIALS_LOCAL.txt` (both gitignored — never commit them).
+For Railway, reuse that same `MONGO_URL` with `DB_NAME=vezubunye`.
 
 ## 2. Backend → Railway
 
 1. New Railway project → Deploy from GitHub repo → select `vezubunye`, root directory `backend/`.
    Railway picks up `backend/Dockerfile` via `railway.json`.
-2. Variables:
-   - `MONGO_URL` — Atlas connection string
+2. Variables (copy `MONGO_URL` and `JWT_SECRET` from `backend/.env`):
+   - `MONGO_URL` — the Atlas connection string from `backend/.env`
    - `DB_NAME` — `vezubunye`
-   - `JWT_SECRET` — long random string (`openssl rand -hex 32`)
+   - `JWT_SECRET` — reuse the one in `backend/.env` (or set a new one; existing sessions reset)
    - `CORS_ORIGINS` — `https://vezubunye.com,https://www.vezubunye.com`
    - `CLOUDINARY_URL` — optional, for capture photos (falls back to MongoDB storage)
-   - `WERNER_PASSWORD`, `PIERRE_PASSWORD`, `STEVEN_PASSWORD` — real passwords for seeding
-3. After first deploy, run the seed once (Railway shell or locally pointed at Atlas):
-   `python seed.py`
+3. The database is already seeded, so no seed step is needed on deploy. `seed.py`
+   is idempotent if you ever do re-run it (it skips anything that already exists,
+   so it will not overwrite the existing passwords).
 4. Custom domain: in Railway → Settings → Domains, add `api.vezubunye.com`.
 
 ## 3. Frontend → Vercel
