@@ -35,7 +35,7 @@ export default function Layout({ user, onLogout, children }: {
           <img src="/logos/vezubunye_logo_white_transparent.png" alt="Vezubunye" className="h-12" />
           <nav className="flex gap-1 ml-2">
             {navLink('/node/gogreen', 'GoGreen')}
-            {(user.role === 'controller' || user.role === 'admin') && navLink('/recon', 'Reconciliation')}
+            {(user.role === 'audit' || user.role === 'admin') && navLink('/recon', 'Reconciliation')}
             {user.role === 'admin' && navLink('/admin', 'Admin')}
           </nav>
           <div className="ml-auto flex items-center gap-4">

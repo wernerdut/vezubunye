@@ -6,7 +6,7 @@ Build the Vezubunye platform with one live node: GoGreen Roto Moulding, Queensto
 
 Vezubunye runs a network of BEE tank-manufacturing nodes. Each node is a partner factory: sales and logistics by the partner, machine and all material by Fenix Rising. The app is internal and Fenix-controlled. Its purpose is control: prove there is no leakage anywhere on the chain from powder received to cash in the bank, and prove every rand owed to Fenix lands in the account.
 
-Launch scope is one node page running the full powder-to-cash chain with manual capture and controller oversight. The platform structure (node identifier on every record, per-node configuration) is built in from the first table so node two is a configuration entry, not a rebuild. No network features at launch except one headline number: total kilograms through all nodes.
+Launch scope is one node page running the full powder-to-cash chain with manual capture and audit oversight. The platform structure (node identifier on every record, per-node configuration) is built in from the first table so node two is a configuration entry, not a rebuild. No network features at launch except one headline number: total kilograms through all nodes.
 
 ## 2. Stack
 
@@ -52,7 +52,7 @@ Fenix cost (R20/kg) and margin never render for any role except admin.
 3. Reconciliation rules 1 and 2 evaluate immediately on save and raise flags.
 4. Pierre: reconciliation dashboard per node, day-by-day status, open flags, unmatched payments, unpaid invoices. Resolution requires a note.
 
-Separation of duties: capturer cannot resolve flags or match payments; controller cannot edit captures without an audit trail. Every write is audit-logged.
+Separation of duties: operations cannot resolve flags or match payments; audit cannot edit captures without an audit trail. Every write is audit-logged.
 
 ## 6. Documents
 
@@ -61,7 +61,7 @@ Separation of duties: capturer cannot resolve flags or match payments; controlle
 
 ## 7. Screens (launch)
 
-Login · Node page (9 tabs) · Reconciliation dashboard (controller home) · Admin (config, users, nodes) · Network header with total kg on every page.
+Login · Node page (9 tabs) · Reconciliation dashboard (audit home) · Admin (config, users, nodes) · Network header with total kg on every page.
 
 Do not build: comparison dashboards, partner portal, onboarding flows, second-node UI.
 
@@ -72,7 +72,13 @@ Typography: Hakuna for headlines only; Montserrat as web body (Gotham substitute
 
 ## 9. Roles at launch
 
-Werner: admin. Pierre: controller. Steven: capturer. Operator: not a user.
+Roles: admin | audit | operations.
+
+Werner: admin. Pierre: audit. Steven: operations. Operator: not a user.
+
+Stakeholder (not a system user): Charel Kerschbaumer, CTO and build owner.
+
+Separation of duties: operations cannot resolve flags or match payments; audit cannot edit captures without an audit trail. The reconciliation dashboard is the audit home screen.
 
 ## 10. Reporting
 

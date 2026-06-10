@@ -13,7 +13,7 @@ export default function ReconDashboard({ user }: { user: User }) {
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
 
-  const canAct = user.role === 'controller' || user.role === 'admin'
+  const canAct = user.role === 'audit' || user.role === 'admin'
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${NODE_ID}/recon?month=${month}`).then((r) => setData(r.data)).catch((e) => setError(errMsg(e)))

@@ -14,7 +14,7 @@ export default function Invoices({ nodeId, config, user }: TabProps) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const canCreate = user.role === 'capturer' || user.role === 'admin'
+  const canCreate = user.role === 'operations' || user.role === 'admin'
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/invoices`).then((r) => setInvoices(r.data))

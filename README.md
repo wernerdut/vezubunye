@@ -50,10 +50,11 @@ cd backend && .venv/bin/python -m pytest test_chain.py -v
 | User | Role | Can |
 |---|---|---|
 | Werner | admin | everything, incl. config, costs, margins, audit |
-| Pierre | controller | reconciliation, payment matching, flag resolution |
-| Steven | capturer | daily captures, delivery notes, invoices |
+| Pierre | audit | reconciliation, payment matching, flag resolution |
+| Steven | operations | daily captures, delivery notes, invoices |
 
 The on-site operator is not a user: paper sheet + one WhatsApp photo per day.
+Stakeholder (not a system user): Charel Kerschbaumer, CTO and build owner.
 
 Seed passwords default to `changeme-*` — set `WERNER_PASSWORD` / `PIERRE_PASSWORD` / `STEVEN_PASSWORD`
 in the environment before running `seed.py` in production.

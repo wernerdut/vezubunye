@@ -9,7 +9,7 @@ export default function FlagsTab({ nodeId, user }: TabProps) {
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
 
-  const canResolve = user.role === 'controller' || user.role === 'admin'
+  const canResolve = user.role === 'audit' || user.role === 'admin'
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/flags`).then((r) => setFlags(r.data))

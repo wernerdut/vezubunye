@@ -141,7 +141,7 @@ class UserIn(BaseModel):
     email: str
     password: Optional[str] = None
     name: str = ""
-    role: Literal["admin", "controller", "capturer"]
+    role: Literal["admin", "audit", "operations"]
     node_access: List[str] | Literal["all"] = "all"
 
 

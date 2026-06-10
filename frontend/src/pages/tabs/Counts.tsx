@@ -12,7 +12,7 @@ export default function Counts({ nodeId, config, user }: TabProps) {
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
 
-  const canCount = user.role === 'controller' || user.role === 'admin'
+  const canCount = user.role === 'audit' || user.role === 'admin'
   const names = Object.fromEntries(config.tank_types.map((t) => [t.code, t.name]))
   const cells = config.tank_types.flatMap((t) => (['A', 'B'] as const).map((g) => ({ code: t.code, grade: g })))
 

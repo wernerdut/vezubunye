@@ -25,7 +25,7 @@ export default function App() {
   if (!user) {
     return (
       <Routes>
-        <Route path="*" element={<Login onLogin={(u) => { setUser(u); navigate(u.role === 'controller' ? '/recon' : '/node/gogreen') }} />} />
+        <Route path="*" element={<Login onLogin={(u) => { setUser(u); navigate(u.role === 'audit' ? '/recon' : '/node/gogreen') }} />} />
       </Routes>
     )
   }
@@ -33,8 +33,8 @@ export default function App() {
   return (
     <Layout user={user} onLogout={handleLogout}>
       <Routes>
-        <Route path="/login" element={<Navigate to={user.role === 'controller' ? '/recon' : '/node/gogreen'} />} />
-        <Route path="/" element={<Navigate to={user.role === 'controller' ? '/recon' : '/node/gogreen'} />} />
+        <Route path="/login" element={<Navigate to={user.role === 'audit' ? '/recon' : '/node/gogreen'} />} />
+        <Route path="/" element={<Navigate to={user.role === 'audit' ? '/recon' : '/node/gogreen'} />} />
         <Route path="/node/:nodeId/*" element={<NodePage user={user} />} />
         <Route path="/recon" element={<ReconDashboard user={user} />} />
         {user.role === 'admin' && <Route path="/admin" element={<Admin />} />}

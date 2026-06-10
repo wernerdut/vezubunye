@@ -11,7 +11,7 @@ export default function Admin() {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
-  const [newUser, setNewUser] = useState({ email: '', name: '', password: '', role: 'capturer' })
+  const [newUser, setNewUser] = useState({ email: '', name: '', password: '', role: 'operations' })
 
   const load = useCallback(() => {
     api.get('/api/nodes').then((r) => setNodes(r.data))
@@ -47,7 +47,7 @@ export default function Admin() {
     setError('')
     try {
       await api.post('/api/users', { ...newUser, node_access: newUser.role === 'admin' ? 'all' : ['gogreen'] })
-      setNewUser({ email: '', name: '', password: '', role: 'capturer' })
+      setNewUser({ email: '', name: '', password: '', role: 'operations' })
       load()
     } catch (err) {
       setError(errMsg(err))
@@ -198,8 +198,8 @@ export default function Admin() {
           <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1">Role</label>
             <select className="input" value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
-              <option value="capturer">capturer</option>
-              <option value="controller">controller</option>
+              <option value="operations">operations</option>
+              <option value="audit">audit</option>
               <option value="admin">admin</option>
             </select>
           </div>

@@ -11,7 +11,7 @@ export default function Payments({ nodeId, user }: TabProps) {
   const [matchSel, setMatchSel] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
 
-  const canMatch = user.role === 'controller' || user.role === 'admin'
+  const canMatch = user.role === 'audit' || user.role === 'admin'
   const invByid = Object.fromEntries(invoices.map((i) => [i._id, i]))
 
   const load = useCallback(() => {
@@ -62,7 +62,7 @@ export default function Payments({ nodeId, user }: TabProps) {
           <button className="btn-primary">Record payment</button>
         </form>
       ) : (
-        <p className="text-sm text-gray-500 mb-4">Payment recording and matching is the controller's job. You can see statuses here.</p>
+        <p className="text-sm text-gray-500 mb-4">Payment recording and matching is the audit role's job. You can see statuses here.</p>
       )}
       {error && <p className="text-sm text-brand-red mb-3">{error}</p>}
       <div className="card p-0 overflow-hidden">

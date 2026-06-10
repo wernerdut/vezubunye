@@ -12,7 +12,7 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const canCreate = user.role === 'capturer' || user.role === 'admin'
+  const canCreate = user.role === 'operations' || user.role === 'admin'
   const names = Object.fromEntries(config.tank_types.map((t) => [t.code, t.name]))
 
   const load = useCallback(() => {

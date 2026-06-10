@@ -18,7 +18,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const canCapture = user.role === 'capturer' || user.role === 'admin'
+  const canCapture = user.role === 'operations' || user.role === 'admin'
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/captures`).then((r) => setCaptures(r.data))
@@ -56,7 +56,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
       if (r.data.status === 'reconciled') {
         setMsg({ kind: 'ok', text: `Captured and reconciled. Powder balances exactly.` })
       } else {
-        setMsg({ kind: 'warn', text: `Captured with ${r.data.flags_raised.length} flag(s) raised. The controller will see them.` })
+        setMsg({ kind: 'warn', text: `Captured with ${r.data.flags_raised.length} flag(s) raised. The audit role will see them.` })
       }
       setPowderIn(''); setPowderDrawn(''); setNotes(''); setPhoto(null)
       setLines(config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0, quantity_reject: 0 })))
@@ -145,7 +145,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             </button>
           </form>
         ) : (
-          <p className="text-sm text-gray-500 card">Only the capturer keys in daily sheets. You can review captures and the documents they produced.</p>
+          <p className="text-sm text-gray-500 card">Only the operations role keys in daily sheets. You can review captures and the documents they produced.</p>
         )}
       </div>
       <div>

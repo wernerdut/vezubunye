@@ -52,7 +52,7 @@ export default function FinishedGoods({ nodeId, config, user }: TabProps) {
         </div>
       </div>
 
-      {(user.role === 'controller' || user.role === 'admin') && (
+      {(user.role === 'audit' || user.role === 'admin') && (
         <form onSubmit={adjust} className="card flex flex-wrap items-end gap-3">
           <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1">Adjustment date</label>

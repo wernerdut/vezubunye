@@ -43,7 +43,7 @@ export default function Powder({ nodeId, user }: TabProps) {
           <div className="text-xs text-gray-500 uppercase tracking-wide">on hand</div>
         </div>
       </div>
-      {(user.role === 'controller' || user.role === 'admin') && (
+      {(user.role === 'audit' || user.role === 'admin') && (
         <form onSubmit={adjust} className="card mb-4 flex flex-wrap items-end gap-3">
           <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1">Adjustment date</label>

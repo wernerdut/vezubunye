@@ -231,7 +231,7 @@ async def capture_sheet(node_id: str, user: dict = Depends(auth.current_user)):
 
 @app.post("/api/nodes/{node_id}/captures")
 async def create_capture(node_id: str, date: str,
-                         user: dict = Depends(auth.require_role("capturer", "admin"))):
+                         user: dict = Depends(auth.require_role("operations", "admin"))):
     auth.check_node_access(user, node_id)
     await _get_node(node_id)
     existing = await db.daily_captures().find_one({"node_id": node_id, "date": date})
@@ -272,7 +272,7 @@ async def _upload_cloudinary(content: bytes, public_id: str) -> Optional[str]:
 
 @app.post("/api/captures/{capture_id}/photo")
 async def upload_capture_photo(capture_id: str, file: UploadFile = File(...),
-                               user: dict = Depends(auth.require_role("capturer", "admin"))):
+                               user: dict = Depends(auth.require_role("operations", "admin"))):
     cap = await db.daily_captures().find_one({"_id": capture_id})
     if not cap:
         raise HTTPException(404, "Capture not found")
@@ -303,7 +303,7 @@ async def get_capture_photo(capture_id: str, user: dict = Depends(auth.current_u
 
 @app.post("/api/captures/{capture_id}/entries")
 async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
-                          user: dict = Depends(auth.require_role("capturer", "admin"))):
+                          user: dict = Depends(auth.require_role("operations", "admin"))):
     """Key the day's sheet in one transaction: powder ledger, production runs,
     finished goods, scrap log — all referencing the capture. Recon rules 1 and 2
     evaluate immediately on save."""
@@ -409,7 +409,7 @@ async def powder_ledger(node_id: str, user: dict = Depends(auth.current_user)):
 
 @app.post("/api/nodes/{node_id}/powder/adjustment")
 async def powder_adjustment(node_id: str, payload: LedgerAdjustIn,
-                            user: dict = Depends(auth.require_role("controller", "admin"))):
+                            user: dict = Depends(auth.require_role("audit", "admin"))):
     auth.check_node_access(user, node_id)
     if payload.kg is None:
         raise HTTPException(400, "kg required")
@@ -452,7 +452,7 @@ async def finished_goods(node_id: str, user: dict = Depends(auth.current_user)):
 
 @app.post("/api/nodes/{node_id}/finished-goods/adjustment")
 async def fg_adjustment(node_id: str, payload: LedgerAdjustIn,
-                        user: dict = Depends(auth.require_role("controller", "admin"))):
+                        user: dict = Depends(auth.require_role("audit", "admin"))):
     auth.check_node_access(user, node_id)
     if not payload.tank_type or payload.quantity is None or not payload.grade:
         raise HTTPException(400, "tank_type, grade, quantity required")
@@ -479,7 +479,7 @@ async def scrap(node_id: str, user: dict = Depends(auth.current_user)):
 
 @app.post("/api/nodes/{node_id}/delivery-notes")
 async def create_delivery_note(node_id: str, payload: DeliveryNoteIn,
-                               user: dict = Depends(auth.require_role("capturer", "admin"))):
+                               user: dict = Depends(auth.require_role("operations", "admin"))):
     auth.check_node_access(user, node_id)
     node = await _get_node(node_id)
     cfg = await _get_cfg(node_id)
@@ -530,7 +530,7 @@ async def delivery_note_pdf_endpoint(dn_id: str, user: dict = Depends(auth.curre
 
 @app.post("/api/nodes/{node_id}/invoices")
 async def create_invoice(node_id: str, payload: InvoiceIn,
-                         user: dict = Depends(auth.require_role("capturer", "admin"))):
+                         user: dict = Depends(auth.require_role("operations", "admin"))):
     auth.check_node_access(user, node_id)
     node = await _get_node(node_id)
     cfg = await _get_cfg(node_id)
@@ -602,7 +602,7 @@ async def invoice_pdf_endpoint(inv_id: str, user: dict = Depends(auth.current_us
 
 @app.post("/api/nodes/{node_id}/payments")
 async def create_payment(node_id: str, payload: PaymentIn,
-                         user: dict = Depends(auth.require_role("controller", "admin"))):
+                         user: dict = Depends(auth.require_role("audit", "admin"))):
     auth.check_node_access(user, node_id)
     d = {"_id": uuid4().hex, "node_id": node_id, "date": payload.date,
          "amount": payload.amount, "bank_reference": payload.bank_reference,
@@ -615,7 +615,7 @@ async def create_payment(node_id: str, payload: PaymentIn,
 
 @app.post("/api/payments/{payment_id}/match")
 async def match_payment(payment_id: str, payload: PaymentMatchIn,
-                        user: dict = Depends(auth.require_role("controller", "admin"))):
+                        user: dict = Depends(auth.require_role("audit", "admin"))):
     """Match a payment to an invoice and compute the Fenix/partner split.
     Fenix draws ex-works value: full for A-grade lines, b_grade_exworks_pct for B."""
     p = await db.payments().find_one({"_id": payment_id})
@@ -673,7 +673,7 @@ async def match_payment(payment_id: str, payload: PaymentMatchIn,
 async def list_payments(node_id: str, user: dict = Depends(auth.current_user)):
     auth.check_node_access(user, node_id)
     docs = await _all(db.payments(), {"node_id": node_id}, sort=[("date", -1)])
-    if user["role"] == "capturer":
+    if user["role"] == "operations":
         for d in docs:
             d.pop("split", None)
     return docs
@@ -693,7 +693,7 @@ async def list_flags(node_id: str, status: Optional[str] = None,
 
 @app.post("/api/flags/{flag_id}/resolve")
 async def resolve_flag(flag_id: str, payload: FlagResolveIn,
-                       user: dict = Depends(auth.require_role("controller", "admin"))):
+                       user: dict = Depends(auth.require_role("audit", "admin"))):
     """No flag auto-clears. Resolution requires a note."""
     if not payload.resolution_note.strip():
         raise HTTPException(400, "Resolution note required")
@@ -715,7 +715,7 @@ async def resolve_flag(flag_id: str, payload: FlagResolveIn,
 
 @app.post("/api/nodes/{node_id}/counts")
 async def create_count(node_id: str, payload: PhysicalCountIn,
-                       user: dict = Depends(auth.require_role("controller", "admin"))):
+                       user: dict = Depends(auth.require_role("audit", "admin"))):
     auth.check_node_access(user, node_id)
     system_powder = await recon.powder_balance(node_id, payload.date)
     system_fg = await recon.fg_on_hand(node_id, payload.date)
@@ -772,7 +772,7 @@ async def list_counts(node_id: str, user: dict = Depends(auth.current_user)):
 # ============================== reconciliation dashboard ============================== #
 
 @app.post("/api/nodes/{node_id}/recon/sweep")
-async def recon_sweep(node_id: str, user: dict = Depends(auth.require_role("controller", "admin"))):
+async def recon_sweep(node_id: str, user: dict = Depends(auth.require_role("audit", "admin"))):
     auth.check_node_access(user, node_id)
     return await recon.run_sweeps(node_id)
 

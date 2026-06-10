@@ -55,8 +55,8 @@ async def seed():
     # --- users ---
     users = [
         ("werner@fenixrising.co.za", "Werner", "admin", "all", os.getenv("WERNER_PASSWORD", "changeme-werner")),
-        ("pierre@fenixrising.co.za", "Pierre", "controller", ["gogreen"], os.getenv("PIERRE_PASSWORD", "changeme-pierre")),
-        ("steven@fenixrising.co.za", "Steven", "capturer", ["gogreen"], os.getenv("STEVEN_PASSWORD", "changeme-steven")),
+        ("pierre@fenixrising.co.za", "Pierre", "audit", ["gogreen"], os.getenv("PIERRE_PASSWORD", "changeme-pierre")),
+        ("steven@fenixrising.co.za", "Steven", "operations", ["gogreen"], os.getenv("STEVEN_PASSWORD", "changeme-steven")),
     ]
     for email, name, role, access, password in users:
         if await db.users().find_one({"email": email}):
