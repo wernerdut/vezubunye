@@ -87,7 +87,7 @@ def _footer(c: Canvas, note: str = ""):
     c.line(MARGIN, FOOTER_Y, W - MARGIN, FOOTER_Y)
     c.setFillColor(GREY)
     c.setFont("Helvetica", 7.5)
-    c.drawString(MARGIN, FOOTER_Y - 4 * mm, "Vezubunye Industries  •  We Build Together!")
+    c.drawString(MARGIN, FOOTER_Y - 4 * mm, "Vezubunye  •  We Build Together!")
     if note:
         c.drawRightString(W - MARGIN, FOOTER_Y - 4 * mm, note)
 

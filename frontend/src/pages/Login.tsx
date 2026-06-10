@@ -26,7 +26,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
       <div className="w-full max-w-sm">
         <img
           src="/logos/vezubunye_logo_white_transparent.png"
-          alt="Vezubunye Industries"
+          alt="Vezubunye"
           className="mx-auto h-40 mb-2"
         />
         <p className="text-center font-headline text-brand-yellow text-2xl mb-8">We Build Together!</p>
