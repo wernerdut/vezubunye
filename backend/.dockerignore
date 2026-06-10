@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+CREDENTIALS_LOCAL.txt
+test_*.py
+pytest.ini
+run_dev.py
+.pytest_cache/
+*.md

@@ -14,45 +14,53 @@ The connection string and app passwords are in `backend/.env` and
 `backend/CREDENTIALS_LOCAL.txt` (both gitignored — never commit them).
 For Railway, reuse that same `MONGO_URL` with `DB_NAME=vezubunye`.
 
-## 2. Backend → Railway
+## 2. Backend → Railway — DONE
 
-1. New Railway project → Deploy from GitHub repo → select `vezubunye`, root directory `backend/`.
-   Railway picks up `backend/Dockerfile` via `railway.json`.
-2. Variables (copy `MONGO_URL` and `JWT_SECRET` from `backend/.env`):
-   - `MONGO_URL` — the Atlas connection string from `backend/.env`
-   - `DB_NAME` — `vezubunye`
-   - `JWT_SECRET` — reuse the one in `backend/.env` (or set a new one; existing sessions reset)
-   - `CORS_ORIGINS` — `https://vezubunye.com,https://www.vezubunye.com`
-   - `CLOUDINARY_URL` — optional, for capture photos (falls back to MongoDB storage)
-3. The database is already seeded, so no seed step is needed on deploy. `seed.py`
-   is idempotent if you ever do re-run it (it skips anything that already exists,
-   so it will not overwrite the existing passwords).
-4. Custom domain: in Railway → Settings → Domains, add `api.vezubunye.com`.
+Deployed and live: **https://vezubunye-api-production.up.railway.app**
 
-## 3. Frontend → Vercel
+- Railway project `vezubunye`, service `vezubunye-api` (Dockerfile build).
+- Variables set: `MONGO_URL`, `DB_NAME=vezubunye`, `JWT_SECRET`, `TOKEN_HOURS=72`,
+  `CORS_ORIGINS` (the live domains + the Vercel URL). `CLOUDINARY_URL` is optional
+  (capture photos fall back to MongoDB storage); add it later if wanted.
+- `.dockerignore` keeps `.env`, `.venv`, tests, and credentials out of the image.
+- Database already seeded — no seed step on deploy. `seed.py` is idempotent if re-run.
+- Health verified: `/api/health` → `{"status":"ok"}`, live login against Atlas works.
 
-1. New Vercel project → import the `vezubunye` repo, root directory `frontend/`.
-   Framework preset: Vite. Build `npm run build`, output `dist`.
-2. Environment variable:
-   - `VITE_API_URL` — `https://api.vezubunye.com`
-3. Domains: add `vezubunye.com` and `www.vezubunye.com` to the project.
+Optional `api.vezubunye.com`: add it in the Railway dashboard (Service → Settings →
+Networking → Custom Domain — the CLI can't add custom domains). Then add the CNAME it
+shows, switch `VITE_API_URL` to `https://api.vezubunye.com`, and redeploy the frontend.
+Not required: the site already works against the `.up.railway.app` URL above.
 
-## 4. vezubunye.com DNS
+## 3. Frontend → Vercel — DONE
 
-At the domain registrar, add:
+Deployed and live: **https://vezubunye.vercel.app**
+
+- Vercel project `vezubunye` (Vite preset), team "Werner's projects".
+- `VITE_API_URL` (Production) = `https://vezubunye-api-production.up.railway.app`,
+  baked into the production bundle.
+- Custom domains `vezubunye.com` and `www.vezubunye.com` attached to the project,
+  awaiting DNS (below).
+- Verified: site is public, serves the app, and a login from the live origin returns
+  a token with the correct `Access-Control-Allow-Origin` header.
+
+## 4. vezubunye.com DNS — the only step left
+
+The domain's nameservers are at clusterdns.co.za. At that DNS provider, add:
 
 | Type | Name | Value |
 |---|---|---|
-| A | @ | `76.76.21.21` (Vercel) |
-| CNAME | www | `cname.vercel-dns.com` |
-| CNAME | api | the `*.up.railway.app` target Railway shows for the custom domain |
+| A | @ (vezubunye.com) | `76.76.21.21` |
+| A | www | `76.76.21.21` |
 
-Vercel and Railway both issue TLS automatically once DNS propagates.
+Vercel issues TLS automatically once these propagate (minutes to a few hours), and
+Vercel verifies and emails on completion. Until then the app is fully usable at
+https://vezubunye.vercel.app. (CNAME `www → cname.vercel-dns.com` also works in place
+of the www A record.)
 
-## 5. Smoke test after deploy
+## 5. Smoke test (works now, before DNS)
 
-1. `https://api.vezubunye.com/api/health` → `{"status":"ok"}`
-2. Log in at `https://vezubunye.com` as each role.
+1. https://vezubunye-api-production.up.railway.app/api/health → `{"status":"ok"}`
+2. Log in at https://vezubunye.vercel.app as each role (logins in `backend/CREDENTIALS_LOCAL.txt`).
 3. Download the blank Daily Capture Sheet PDF.
 4. Key a test capture with an intentional 1 kg powder gap → confirm the flag raises, then resolve it with a note.
 5. Delete the test data from Atlas or keep it as the audit trail of go-live testing.
