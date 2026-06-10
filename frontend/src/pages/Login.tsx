@@ -29,7 +29,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
           alt="Vezubunye"
           className="mx-auto h-40 mb-2"
         />
-        <p className="text-center font-headline text-brand-yellow text-2xl mb-8">We Build Together!</p>
+        <p className="text-center font-headline text-brand-yellow text-2xl mb-8">Together, We Build</p>
         <form onSubmit={submit} className="bg-white rounded-lg p-6 shadow-lg space-y-4">
           <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1">Email</label>

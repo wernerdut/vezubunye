@@ -68,7 +68,7 @@ Do not build: comparison dashboards, partner portal, onboarding flows, second-no
 ## 8. Brand
 
 Colours: Dark Blue #022397 (primary), Light Blue #00aeef (accents), Yellow #dfbd25 (network kg headline), Red #d2232a (flags/errors), Green #41ad49 (clear/reconciled), Orange #e36837 (warnings).
-Typography: Hakuna for headlines only; Montserrat as web body (Gotham substitute). Logo white on dark blue for app header/login; black or dark blue on white for PDFs. Tagline: "We Build Together!"
+Typography: Hakuna for headlines only; Montserrat as web body (Gotham substitute). Logo white on dark blue for app header/login; black or dark blue on white for PDFs. Tagline: "Together, We Build"
 
 ## 9. Roles at launch
 
