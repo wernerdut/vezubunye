@@ -14,8 +14,8 @@ export default {
         },
       },
       fontFamily: {
-        headline: ['Hakuna', 'Montserrat', 'sans-serif'],
-        body: ['Montserrat', 'sans-serif'],
+        headline: ['Montserrat', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        body: ['Montserrat', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
     },
   },
