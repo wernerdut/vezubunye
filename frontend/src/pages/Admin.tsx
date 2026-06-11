@@ -12,6 +12,8 @@ export default function Admin() {
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
   const [newUser, setNewUser] = useState({ email: '', name: '', password: '', role: 'operations' })
+  const [pw, setPw] = useState<Record<string, string>>({})
+  const [userMsg, setUserMsg] = useState('')
 
   const load = useCallback(() => {
     api.get('/api/nodes').then((r) => setNodes(r.data))
@@ -51,6 +53,19 @@ export default function Admin() {
       await api.post('/api/users', { ...newUser, node_access: newUser.role === 'admin' ? 'all' : ['gogreen'] })
       setNewUser({ email: '', name: '', password: '', role: 'operations' })
       load()
+    } catch (err) {
+      setError(errMsg(err))
+    }
+  }
+
+  const resetPassword = async (u: User) => {
+    const newPw = pw[u.email] || ''
+    if (newPw.length < 6) { setError('Password must be at least 6 characters'); return }
+    setError(''); setUserMsg('')
+    try {
+      await api.put(`/api/users/${u.email}`, { email: u.email, name: u.name, role: u.role, node_access: u.node_access, password: newPw })
+      setPw({ ...pw, [u.email]: '' })
+      setUserMsg(`Password updated for ${u.email}.`)
     } catch (err) {
       setError(errMsg(err))
     }
@@ -258,9 +273,10 @@ export default function Admin() {
 
       <div>
         <SectionTitle>Users</SectionTitle>
+        {userMsg && <p className="text-sm text-brand-green font-semibold mb-2">{userMsg}</p>}
         <div className="card p-0 overflow-hidden mb-3">
           <table className="w-full">
-            <thead><tr><th className="th">Email</th><th className="th">Name</th><th className="th">Role</th><th className="th">Nodes</th></tr></thead>
+            <thead><tr><th className="th">Email</th><th className="th">Name</th><th className="th">Role</th><th className="th">Nodes</th><th className="th">Set new password</th></tr></thead>
             <tbody>
               {users.map((u) => (
                 <tr key={u.email}>
@@ -268,6 +284,13 @@ export default function Admin() {
                   <td className="td font-semibold">{u.name}</td>
                   <td className="td capitalize">{u.role}</td>
                   <td className="td text-gray-500">{u.node_access === 'all' ? 'all' : (u.node_access as string[]).join(', ')}</td>
+                  <td className="td">
+                    <div className="flex items-center gap-2">
+                      <input className="input py-1 w-40" type="text" autoComplete="new-password" placeholder="new password"
+                             value={pw[u.email] || ''} onChange={(e) => setPw({ ...pw, [u.email]: e.target.value })} />
+                      <button type="button" className="btn-secondary py-1" disabled={(pw[u.email] || '').length < 6} onClick={() => resetPassword(u)}>Update</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
