@@ -113,28 +113,42 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               <input className="input w-48" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
             </div>
 
-            {/* Powder */}
+            {/* Powder — one line per grade received and/or issued */}
             <section>
-              <h3 className="text-sm font-bold text-brand-blue mb-1">Powder</h3>
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-sm font-bold text-brand-blue">Powder — received &amp; issued by grade</h3>
+                <button type="button" className="text-xs font-semibold text-brand-blue"
+                        onClick={() => setPowder((ls) => [...ls, { powder_type: '', received_kg: 0, issued_kg: 0 }])}>
+                  + add powder grade
+                </button>
+              </div>
               <table className="w-full text-sm">
-                <thead><tr><th className="th">Powder / colour</th><th className="th">Received (kg)</th><th className="th">Issued (kg)</th></tr></thead>
+                <thead><tr><th className="th">Powder grade</th><th className="th">Received from Fenix (kg)</th><th className="th">Issued to production (kg)</th><th className="th"></th></tr></thead>
                 <tbody>
                   {powder.map((p, i) => (
                     <tr key={i}>
                       <td className="td">
                         {config.powder_products.length ? (
-                          <span className="font-semibold">{config.powder_products.find((x) => x.code === p.powder_type)?.colour || p.powder_type}</span>
+                          <select className="input w-40" value={p.powder_type}
+                                  onChange={(e) => setPowder((ls) => ls.map((l, j) => j === i ? { ...l, powder_type: e.target.value } : l))}>
+                            <option value="">select grade…</option>
+                            {config.powder_products.map((x) => <option key={x.code} value={x.code}>{x.colour}</option>)}
+                          </select>
                         ) : (
-                          <input className="input w-32" placeholder="colour" value={p.powder_type}
+                          <input className="input w-40" placeholder="grade name" value={p.powder_type}
                                  onChange={(e) => setPowder((ls) => ls.map((l, j) => j === i ? { ...l, powder_type: e.target.value } : l))} />
                         )}
                       </td>
                       <td className="td">{numCell(p.received_kg, (n) => setPowder((ls) => ls.map((l, j) => j === i ? { ...l, received_kg: n } : l)), '0.1')}</td>
                       <td className="td">{numCell(p.issued_kg, (n) => setPowder((ls) => ls.map((l, j) => j === i ? { ...l, issued_kg: n } : l)), '0.1')}</td>
+                      <td className="td">{powder.length > 1 && <button type="button" className="text-xs text-brand-red" onClick={() => setPowder((ls) => ls.filter((_, j) => j !== i))}>×</button>}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {config.powder_products.length <= 1 && (
+                <p className="text-xs text-gray-400 mt-1">Add your colour grades (e.g. 6840 Emerald Green) in Admin → Config → Powder products, then pick them here and on moulded lines.</p>
+              )}
               <div className={`text-xs mt-1 rounded px-2 py-1 ${negativeGrades.length ? 'bg-red-50 text-brand-red' : 'bg-gray-50 text-gray-500'}`}>
                 Floor change this capture: {Object.entries(floorDelta).filter(([, v]) => Math.abs(v) > 0.001).map(([code, v]) => `${colourName(code)} ${v >= 0 ? '+' : ''}${v.toFixed(1)}kg`).join(', ') || 'none'}
                 {negativeGrades.length > 0 && ` · more moulded than issued (${negativeGrades.map(([c]) => colourName(c)).join(', ')}), this will flag`}
@@ -170,7 +184,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
                 </button>
               </div>
               <table className="w-full text-sm">
-                <thead><tr><th className="th">Tank</th><th className="th">Colour / grade</th><th className="th">A</th><th className="th">B</th><th className="th">Reject</th><th className="th"></th></tr></thead>
+                <thead><tr><th className="th">Tank</th><th className="th">Colour / grade</th><th className="th">A Grade</th><th className="th">B Grade</th><th className="th">Reject</th><th className="th"></th></tr></thead>
                 <tbody>
                   {prod.map((l, i) => (
                     <tr key={i}>
@@ -203,7 +217,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             <section>
               <h3 className="text-sm font-bold text-brand-blue mb-1">Tanks Booked to Store</h3>
               <table className="w-full text-sm">
-                <thead><tr><th className="th">Tank</th><th className="th">A</th><th className="th">B</th></tr></thead>
+                <thead><tr><th className="th">Tank</th><th className="th">A Grade</th><th className="th">B Grade</th></tr></thead>
                 <tbody>
                   {booked.map((l, i) => (
                     <tr key={l.tank_type}>

@@ -155,24 +155,24 @@ def daily_capture_sheet(node: dict, cfg: dict) -> bytes:
     c.drawString(MARGIN, y, "Date: ______ / ______ / ____________")
     y -= 9 * mm
 
-    powders = [p.get("colour") or p.get("code") for p in cfg.get("powder_products", [])]
-    fittings = [f.get("name") or f.get("code") for f in cfg.get("fitting_types", [])]
     tanks = [t["name"] for t in cfg["tank_types"]]
+    blank5 = [""] * 5   # powder grades vary day to day — leave open rows to write the grade in
+    blank3 = [""] * 3
 
     y = _capture_table(c, y, "Powder", DARK_BLUE,
-                       ["Powder / colour", "Received today (from Fenix)  kg", "Issued to production today  kg"],
-                       [0.40, 0.30, 0.30], powders)
+                       ["Powder grade", "Received today (from Fenix)  kg", "Issued to production today  kg"],
+                       [0.40, 0.30, 0.30], blank5)
     y = _capture_table(c, y, "Fittings", DARK_BLUE,
                        ["Fitting", "Received today (from Fenix)  qty", "Issued to production today  qty"],
-                       [0.40, 0.30, 0.30], fittings)
+                       [0.40, 0.30, 0.30], blank3)
     y = _capture_table(c, y, "Tanks Moulded Today", DARK_BLUE,
-                       ["Tank type", "Powder colour / grade", "A-grade", "B-grade", "Reject"],
+                       ["Tank type", "Powder grade", "A Grade", "B Grade", "Reject"],
                        [0.26, 0.28, 0.155, 0.155, 0.15], tanks)
     y = _capture_table(c, y, "Tanks Booked to Store Today", DARK_BLUE,
-                       ["Tank type", "A-grade", "B-grade"],
+                       ["Tank type", "A Grade", "B Grade"],
                        [0.40, 0.30, 0.30], tanks)
     y = _capture_table(c, y, "Tanks Dispatched Today", GREEN,
-                       ["Tank type", "A-grade", "B-grade", "Delivery note no."],
+                       ["Tank type", "A Grade", "B Grade", "Delivery note no."],
                        [0.30, 0.18, 0.18, 0.34], tanks)
 
     # notes line
