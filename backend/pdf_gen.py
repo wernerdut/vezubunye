@@ -107,7 +107,7 @@ def _footer(c: Canvas, note: str = ""):
 # ---------- Daily Capture Sheet ---------- #
 
 def _capture_table(c: Canvas, y: float, title: str, colour, headers: list[str],
-                   fracs: list[float], rows: list[str], row_h: float = 8 * mm) -> float:
+                   fracs: list[float], rows: list[str], row_h: float = 7 * mm) -> float:
     """A titled table: coloured section label, coloured header band, then blank cells to fill."""
     full = W - 2 * MARGIN
     xs = [MARGIN]
@@ -116,7 +116,7 @@ def _capture_table(c: Canvas, y: float, title: str, colour, headers: list[str],
     c.setFillColor(colour)
     c.setFont(_headline_font(), 12)
     c.drawString(MARGIN, y, title)
-    y -= 6 * mm
+    y -= 4 * mm   # heading sits right above its table
     # header band
     c.setFillColor(colour)
     c.rect(MARGIN, y - row_h, full, row_h, fill=1, stroke=0)
@@ -140,7 +140,7 @@ def _capture_table(c: Canvas, y: float, title: str, colour, headers: list[str],
         c.setFillColor(black)
         c.drawString(xs[0] + 2 * mm, y - row_h + 2.6 * mm, label)
         y -= row_h
-    return y - 4 * mm
+    return y - 8 * mm   # clear space below the table before the next heading
 
 
 def daily_capture_sheet(node: dict, cfg: dict) -> bytes:
@@ -148,6 +148,8 @@ def daily_capture_sheet(node: dict, cfg: dict) -> bytes:
     powder, fittings, tanks moulded (navy), booked (navy), dispatched (green)."""
     buf = BytesIO()
     c = Canvas(buf, pagesize=A4)
+    c.setTitle("Vezubunye Daily Capture Sheet")
+    c.setAuthor("Vezubunye")
     y = _header(c, "Daily Capture Sheet", f"{node['name']} — {node['location']}")
 
     c.setFillColor(black)

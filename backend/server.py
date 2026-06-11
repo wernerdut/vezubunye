@@ -226,7 +226,7 @@ async def capture_sheet(node_id: str, user: dict = Depends(auth.current_user)):
     cfg = await _get_cfg(node_id)
     pdf = pdf_gen.daily_capture_sheet(node, cfg)
     return Response(pdf, media_type="application/pdf", headers={
-        "Content-Disposition": f'inline; filename="{node_id}_daily_capture_sheet.pdf"'})
+        "Content-Disposition": 'inline; filename="Vezubunye Daily Capture Sheet.pdf"'})
 
 
 @app.post("/api/nodes/{node_id}/captures")
