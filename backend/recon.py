@@ -69,17 +69,8 @@ def black_codes(cfg: dict) -> set[str]:
     return {p["code"] for p in cfg.get("powder_products", []) if p.get("is_black")}
 
 
-def tank_consumption(t: dict, qty: int) -> tuple[float, float]:
-    """Return (black_kg, colour_kg) consumed by `qty` moulded tanks of this type.
-    Body W splits 50/50; lid L is black."""
-    w, l = t["weight"], t["lid"]
-    black = qty * (w / 2 + l)
-    colour = qty * (w / 2)
-    return black, colour
-
-
 async def total_moulded(node_id: str, up_to_date: str | None = None) -> dict:
-    """code -> {a, b, reject, total} moulded (all grades)."""
+    """code -> {a, b, reject, total} moulded (all grades, all colours)."""
     filt: dict = {"node_id": node_id}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
@@ -110,69 +101,64 @@ async def powder_warehouse(node_id: str, up_to_date: str | None = None) -> dict:
     return {k: round(v, 2) for k, v in bal.items()}
 
 
-async def powder_floor(node_id: str, cfg: dict, up_to_date: str | None = None) -> dict:
-    """Two derived pools: {'black': kg, 'colour': kg}.
-    issued(black) - consumed_black ; issued(non-black) - consumed_colour ; +/- floor adjustments."""
-    blacks = black_codes(cfg)
+async def powder_consumed(node_id: str, cfg: dict, up_to_date: str | None = None) -> dict:
+    """powder_type -> kg consumed by moulding. Each tank (body W, lid L) of colour C draws
+    W/2 of C plus W/2 + L of black. Black is drawn by every tank regardless of colour."""
     tmap = tank_map(cfg)
-    issued_black = issued_colour = 0.0
-    adj_black = adj_colour = 0.0
+    blacks = black_codes(cfg)
+    black_code = next(iter(blacks), None)
+    consumed: dict = {}
+    filt: dict = {"node_id": node_id}
+    if up_to_date:
+        filt["date"] = {"$lte": up_to_date}
+    async for r in db.production_runs().find(filt):
+        t = tmap.get(r["tank_type"])
+        if not t:
+            continue
+        n = r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]
+        if black_code:
+            consumed[black_code] = consumed.get(black_code, 0.0) + n * (t["weight"] / 2 + t["lid"])
+        colour = r.get("colour") or ""
+        if colour:
+            consumed[colour] = consumed.get(colour, 0.0) + n * (t["weight"] / 2)
+    return consumed
+
+
+async def powder_floor(node_id: str, cfg: dict, up_to_date: str | None = None) -> dict:
+    """powder_type -> floor kg = issued - consumed +/- floor adjustments. One balance per grade,
+    because each colour is a distinct material that is issued and drawn separately."""
+    issued: dict = {}
+    adj: dict = {}
     filt: dict = {"node_id": node_id}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     async for e in db.powder_ledger().find(filt):
         pt = e.get("powder_type", "?")
-        is_black = pt in blacks
         if e["type"] == "issued":
-            if is_black:
-                issued_black += e["kg"]
-            else:
-                issued_colour += e["kg"]
+            issued[pt] = issued.get(pt, 0.0) + e["kg"]
         elif e["type"] == "count_adjustment" and e.get("scope") == "floor":
-            if is_black:
-                adj_black += e["kg"]
-            else:
-                adj_colour += e["kg"]
-
-    consumed_black = consumed_colour = 0.0
-    for code, agg in (await total_moulded(node_id, up_to_date)).items():
-        t = tmap.get(code)
-        if not t:
-            continue
-        b, c = tank_consumption(t, agg["total"])
-        consumed_black += b
-        consumed_colour += c
-
-    return {
-        "black": round(issued_black + adj_black - consumed_black, 2),
-        "colour": round(issued_colour + adj_colour - consumed_colour, 2),
-    }
-
-
-async def total_powder_on_site(node_id: str, cfg: dict, up_to_date: str | None = None) -> dict:
-    """Per powder type: received - issued + issued - consumed = received - consumed, but consumption
-    is by pool (black/colour), not by individual colour. Returns per-type warehouse plus pool floors
-    so the count screen can sum store + floor per pool."""
-    wh = await powder_warehouse(node_id, up_to_date)
-    floor = await powder_floor(node_id, cfg, up_to_date)
-    return {"warehouse": wh, "floor": floor}
+            adj[pt] = adj.get(pt, 0.0) + e["kg"]
+    consumed = await powder_consumed(node_id, cfg, up_to_date)
+    types = set(list(issued.keys()) + list(adj.keys()) + list(consumed.keys()))
+    return {pt: round(issued.get(pt, 0.0) + adj.get(pt, 0.0) - consumed.get(pt, 0.0), 2) for pt in types}
 
 
 # ---------- Rule 1: powder floor identity ---------- #
 
 async def check_powder_floor(node_id: str, date: str, capture_id: str) -> list[str]:
-    """Each floor pool must stay >= 0: you cannot mould more than was issued (plus what was on the
-    floor). A negative pool means powder left the building without becoming a tank."""
+    """Each powder grade's floor must stay >= 0: you cannot mould more of a colour (or black)
+    than was issued. A negative floor means that material left the store without becoming a tank."""
     cfg = await get_config(node_id)
     floor = await powder_floor(node_id, cfg, date)
+    names = {p["code"]: (p.get("colour") or p["code"]) for p in cfg.get("powder_products", [])}
     raised = []
-    for pool in ("black", "colour"):
-        if floor[pool] < -EPS:
+    for pt, kg in floor.items():
+        if kg < -EPS:
             raised.append(await raise_flag(
                 node_id, "powder_variance",
-                f"{date}: {pool} powder on the production floor is {floor[pool]:.1f} kg — "
+                f"{date}: {names.get(pt, pt)} powder on the production floor is {kg:.1f} kg — "
                 f"more moulded than issued. Every kg consumed must have been issued from the store.",
-                {"capture_id": capture_id, "pool": pool, "date": date}, date))
+                {"capture_id": capture_id, "powder_type": pt, "date": date}, date))
     return raised
 
 

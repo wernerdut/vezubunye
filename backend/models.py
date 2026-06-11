@@ -79,6 +79,7 @@ class FittingMoveLine(BaseModel):
 
 class ProductionLine(BaseModel):
     tank_type: str
+    colour: str = ""          # powder grade moulded (a non-black powder product code)
     quantity_a: int = 0
     quantity_b: int = 0
     quantity_reject: int = 0

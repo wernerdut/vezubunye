@@ -21,8 +21,10 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
       : [{ powder_type: '', received_kg: 0, issued_kg: 0 }]
   const blankFittings = (): FittingMoveLine[] =>
     config.fitting_types.map((f) => ({ fitting_type: f.code, received_qty: 0, issued_qty: 0 }))
+  const colours = config.powder_products.filter((p) => !p.is_black)
+  const blackCode = config.powder_products.find((p) => p.is_black)?.code || ''
   const blankProd = (): ProductionLine[] =>
-    config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0, quantity_reject: 0 }))
+    config.tank_types.map((t) => ({ tank_type: t.code, colour: colours[0]?.code || '', quantity_a: 0, quantity_b: 0, quantity_reject: 0 }))
   const blankBooked = (): BookedLine[] =>
     config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0 }))
   const blankDispatch = (): DispatchLine[] => []
@@ -39,24 +41,23 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   useEffect(load, [load])
 
   const tankByCode = useMemo(() => Object.fromEntries(config.tank_types.map((t) => [t.code, t])), [config])
-  const blackCodes = useMemo(() => new Set(config.powder_products.filter((p) => p.is_black).map((p) => p.code)), [config])
+  const colourName = (code: string) => config.powder_products.find((p) => p.code === code)?.colour || code
 
-  // live floor-after-this-capture, by pool, from the recipe (W/2 colour, W/2 + lid black)
+  // live floor change this capture, per powder grade (issued − consumed). Each tank draws
+  // W/2 of its colour + W/2 + lid of black.
   const floorDelta = useMemo(() => {
-    let issuedBlack = 0, issuedColour = 0, consumedBlack = 0, consumedColour = 0
-    powder.forEach((p) => {
-      if (blackCodes.has(p.powder_type)) issuedBlack += p.issued_kg
-      else issuedColour += p.issued_kg
-    })
+    const d: Record<string, number> = {}
+    powder.forEach((p) => { if (p.powder_type) d[p.powder_type] = (d[p.powder_type] || 0) + p.issued_kg })
     prod.forEach((l) => {
       const t = tankByCode[l.tank_type]
       if (!t) return
       const n = l.quantity_a + l.quantity_b + l.quantity_reject
-      consumedBlack += n * (t.weight_kg / 2 + t.lid_weight_kg)
-      consumedColour += n * (t.weight_kg / 2)
+      if (blackCode) d[blackCode] = (d[blackCode] || 0) - n * (t.weight_kg / 2 + t.lid_weight_kg)
+      if (l.colour) d[l.colour] = (d[l.colour] || 0) - n * (t.weight_kg / 2)
     })
-    return { black: issuedBlack - consumedBlack, colour: issuedColour - consumedColour }
-  }, [powder, prod, tankByCode, blackCodes])
+    return d
+  }, [powder, prod, tankByCode, blackCode])
+  const negativeGrades = Object.entries(floorDelta).filter(([, v]) => v < -0.001)
 
   const reset = () => {
     setPowder(blankPowder()); setFittings(blankFittings()); setProd(blankProd())
@@ -134,10 +135,9 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
                   ))}
                 </tbody>
               </table>
-              <div className={`text-xs mt-1 rounded px-2 py-1 ${floorDelta.black < -0.001 || floorDelta.colour < -0.001 ? 'bg-red-50 text-brand-red' : 'bg-gray-50 text-gray-500'}`}>
-                Floor change this capture — black <b>{floorDelta.black >= 0 ? '+' : ''}{floorDelta.black.toFixed(1)}</b> kg,
-                colour <b>{floorDelta.colour >= 0 ? '+' : ''}{floorDelta.colour.toFixed(1)}</b> kg
-                {(floorDelta.black < -0.001 || floorDelta.colour < -0.001) && ' · moulding exceeds powder issued, this will flag'}
+              <div className={`text-xs mt-1 rounded px-2 py-1 ${negativeGrades.length ? 'bg-red-50 text-brand-red' : 'bg-gray-50 text-gray-500'}`}>
+                Floor change this capture: {Object.entries(floorDelta).filter(([, v]) => Math.abs(v) > 0.001).map(([code, v]) => `${colourName(code)} ${v >= 0 ? '+' : ''}${v.toFixed(1)}kg`).join(', ') || 'none'}
+                {negativeGrades.length > 0 && ` · more moulded than issued (${negativeGrades.map(([c]) => colourName(c)).join(', ')}), this will flag`}
               </div>
             </section>
 
@@ -160,18 +160,39 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               </section>
             )}
 
-            {/* Tanks moulded — navy */}
+            {/* Tanks moulded — navy. Each line records the powder colour/grade used. */}
             <section>
-              <h3 className="text-sm font-bold text-brand-blue mb-1">Tanks Moulded</h3>
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-sm font-bold text-brand-blue">Tanks Moulded</h3>
+                <button type="button" className="text-xs font-semibold text-brand-blue"
+                        onClick={() => setProd((ls) => [...ls, { tank_type: config.tank_types[0]?.code || '', colour: colours[0]?.code || '', quantity_a: 0, quantity_b: 0, quantity_reject: 0 }])}>
+                  + add moulded line
+                </button>
+              </div>
               <table className="w-full text-sm">
-                <thead><tr><th className="th">Tank</th><th className="th">A</th><th className="th">B</th><th className="th">Reject</th></tr></thead>
+                <thead><tr><th className="th">Tank</th><th className="th">Colour / grade</th><th className="th">A</th><th className="th">B</th><th className="th">Reject</th><th className="th"></th></tr></thead>
                 <tbody>
                   {prod.map((l, i) => (
-                    <tr key={l.tank_type}>
-                      <td className="td font-semibold">{tankByCode[l.tank_type]?.name || l.tank_type}</td>
+                    <tr key={i}>
+                      <td className="td">
+                        <select className="input w-24" value={l.tank_type} onChange={(e) => setProd((ls) => ls.map((x, j) => j === i ? { ...x, tank_type: e.target.value } : x))}>
+                          {config.tank_types.map((t) => <option key={t.code} value={t.code}>{t.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="td">
+                        {colours.length ? (
+                          <select className="input w-32" value={l.colour} onChange={(e) => setProd((ls) => ls.map((x, j) => j === i ? { ...x, colour: e.target.value } : x))}>
+                            <option value="">select…</option>
+                            {colours.map((p) => <option key={p.code} value={p.code}>{p.colour}</option>)}
+                          </select>
+                        ) : (
+                          <input className="input w-32" placeholder="colour grade" value={l.colour} onChange={(e) => setProd((ls) => ls.map((x, j) => j === i ? { ...x, colour: e.target.value } : x))} />
+                        )}
+                      </td>
                       {(['quantity_a', 'quantity_b', 'quantity_reject'] as const).map((f) => (
                         <td className="td" key={f}>{numCell(l[f], (n) => setProd((ls) => ls.map((x, j) => j === i ? { ...x, [f]: n } : x)))}</td>
                       ))}
+                      <td className="td">{prod.length > 1 && <button type="button" className="text-xs text-brand-red" onClick={() => setProd((ls) => ls.filter((_, j) => j !== i))}>×</button>}</td>
                     </tr>
                   ))}
                 </tbody>

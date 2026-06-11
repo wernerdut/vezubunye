@@ -35,34 +35,29 @@ export default function Powder({ nodeId, config, user }: TabProps) {
   return (
     <div className="space-y-6">
       <div>
-        <SectionTitle>Powder Warehouse</SectionTitle>
-        <p className="text-sm text-gray-500 mb-3">Per powder type: received from Fenix, less issued to production.</p>
-        <div className="flex flex-wrap gap-3">
-          {data.warehouse.length === 0 && <p className="text-sm text-gray-400">No powder received yet.</p>}
-          {data.warehouse.map((w) => (
-            <div key={w.powder_type} className={`card text-center min-w-40 ${w.balance < 0 ? 'border-brand-red' : ''}`}>
-              <div className={`font-headline text-3xl ${w.balance < 0 ? 'text-brand-red' : 'text-brand-blue'}`}>{fmt(w.balance)}</div>
-              <div className="text-xs text-gray-500 uppercase tracking-wide">kg in store</div>
-              <div className="text-sm font-semibold mt-1">{w.colour}{w.is_black && w.colour.toLowerCase() !== 'black' ? ' · black stock' : ''}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <SectionTitle>Production Floor</SectionTitle>
+        <SectionTitle>Powder Stock</SectionTitle>
         <p className="text-sm text-gray-500 mb-3">
-          Powder issued to the floor, less powder moulded into tanks. Each tank uses half colour, half black,
-          plus a black lid. Either pool going negative means more was moulded than issued — that flags.
+          Per powder grade. <b>Warehouse</b> = received from Fenix less issued. <b>Floor</b> = issued less
+          moulded into tanks (each tank draws half colour, half black, plus a black lid). A negative floor
+          means more of that grade was moulded than issued — that flags.
         </p>
-        <div className="flex flex-wrap gap-3">
-          {(['black', 'colour'] as const).map((pool) => (
-            <div key={pool} className={`card text-center min-w-40 ${data.floor[pool] < 0 ? 'border-brand-red' : ''}`}>
-              <div className={`font-headline text-3xl ${data.floor[pool] < 0 ? 'text-brand-red' : 'text-brand-blue'}`}>{fmt(data.floor[pool])}</div>
-              <div className="text-xs text-gray-500 uppercase tracking-wide">kg on floor</div>
-              <div className="text-sm font-semibold mt-1 capitalize">{pool} pool</div>
-            </div>
-          ))}
+        <div className="card p-0 overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr><th className="th">Powder grade</th><th className="th text-right">Warehouse (kg)</th><th className="th text-right">Floor (kg)</th><th className="th text-right">Total on site (kg)</th></tr>
+            </thead>
+            <tbody>
+              {data.stock.length === 0 && <tr><td className="td" colSpan={4}><Empty text="No powder yet" /></td></tr>}
+              {data.stock.map((s) => (
+                <tr key={s.powder_type}>
+                  <td className="td font-semibold">{s.colour}{s.is_black && s.colour.toLowerCase() !== 'black' ? ' · black stock' : ''}{s.is_black ? '' : ''}</td>
+                  <td className={`td text-right font-semibold ${s.warehouse < 0 ? 'text-brand-red' : 'text-brand-blue'}`}>{fmt(s.warehouse)}</td>
+                  <td className={`td text-right font-semibold ${s.floor < 0 ? 'text-brand-red' : ''}`}>{fmt(s.floor)}</td>
+                  <td className="td text-right">{fmt(s.warehouse + s.floor)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

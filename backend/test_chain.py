@@ -83,8 +83,8 @@ async def test_full_chain(client):
         ],
         "fittings": [{"fitting_type": "OUTLET", "received_qty": 100, "issued_qty": 8}],
         "production": [
-            {"tank_type": "2500L", "quantity_a": 2, "quantity_b": 1, "quantity_reject": 1},
-            {"tank_type": "5000L", "quantity_a": 2, "quantity_b": 0, "quantity_reject": 0},
+            {"tank_type": "2500L", "colour": "GREEN", "quantity_a": 2, "quantity_b": 1, "quantity_reject": 1},
+            {"tank_type": "5000L", "colour": "GREEN", "quantity_a": 2, "quantity_b": 0, "quantity_reject": 0},
         ],
         "booked": [
             {"tank_type": "2500L", "quantity_a": 2, "quantity_b": 1},
@@ -94,11 +94,10 @@ async def test_full_chain(client):
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "reconciled" and r.json()["flags_raised"] == []
 
-    # powder: warehouse per type, floor pools both 0
-    pw = (await c.get("/api/nodes/gogreen/powder", headers=ops)).json()
-    wh = {w["powder_type"]: w["balance"] for w in pw["warehouse"]}
-    assert wh == {"BLACK": 847.0, "GREEN": 853.0}
-    assert pw["floor"] == {"black": 0.0, "colour": 0.0}
+    # powder: per-grade warehouse + floor (each colour distinct), floors all 0
+    st = {s["powder_type"]: s for s in (await c.get("/api/nodes/gogreen/powder", headers=ops)).json()["stock"]}
+    assert st["BLACK"]["warehouse"] == 847.0 and st["BLACK"]["floor"] == 0.0
+    assert st["GREEN"]["warehouse"] == 853.0 and st["GREEN"]["floor"] == 0.0
 
     # fittings: warehouse 100-8=92, issued==expected
     fit = (await c.get("/api/nodes/gogreen/fittings", headers=ops)).json()["warehouse"][0]
@@ -169,7 +168,7 @@ async def test_full_chain(client):
         "powder": [{"powder_type": "BLACK", "received_kg": 0, "issued_kg": 19},
                    {"powder_type": "GREEN", "received_kg": 0, "issued_kg": 18}],
         "fittings": [{"fitting_type": "OUTLET", "received_qty": 0, "issued_qty": 5}],
-        "production": [{"tank_type": "2500L", "quantity_a": 1, "quantity_b": 0, "quantity_reject": 0}]})
+        "production": [{"tank_type": "2500L", "colour": "GREEN", "quantity_a": 1, "quantity_b": 0, "quantity_reject": 0}]})
     assert r.json()["flags_raised"]  # at least one flag id returned
     assert any(f["type"] == "fittings_variance" for f in (await c.get("/api/nodes/gogreen/flags?status=open", headers=audit)).json())
 
@@ -177,7 +176,7 @@ async def test_full_chain(client):
     cap7 = (await c.post("/api/nodes/gogreen/captures?date=2026-06-07", headers=ops)).json()["_id"]
     r = await c.post(f"/api/captures/{cap7}/entries", headers=ops, json={
         "fittings": [{"fitting_type": "OUTLET", "received_qty": 0, "issued_qty": 2}],
-        "production": [{"tank_type": "5000L", "quantity_a": 1, "quantity_b": 0, "quantity_reject": 0}]})
+        "production": [{"tank_type": "5000L", "colour": "GREEN", "quantity_a": 1, "quantity_b": 0, "quantity_reject": 0}]})
     assert r.json()["status"] == "captured"
     open_flags = (await c.get("/api/nodes/gogreen/flags?status=open", headers=audit)).json()
     assert any(f["type"] == "powder_variance" for f in open_flags)

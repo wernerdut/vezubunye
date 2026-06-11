@@ -358,8 +358,9 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
             continue
         await db.production_runs().insert_one({
             "_id": uuid4().hex, "node_id": node_id, "date": date,
-            "tank_type": line.tank_type, "quantity_a": line.quantity_a,
-            "quantity_b": line.quantity_b, "quantity_reject": line.quantity_reject,
+            "tank_type": line.tank_type, "colour": line.colour,
+            "quantity_a": line.quantity_a, "quantity_b": line.quantity_b,
+            "quantity_reject": line.quantity_reject,
             "source_capture_id": capture_id, "created_at": _now()})
         if line.quantity_reject > 0:
             t = tanks[line.tank_type]
@@ -422,20 +423,21 @@ async def list_captures(node_id: str, month: Optional[str] = None,
 
 @app.get("/api/nodes/{node_id}/powder")
 async def powder_ledger(node_id: str, user: dict = Depends(auth.current_user)):
-    """Per-type warehouse balances + the two production-floor pools (black, colour)."""
+    """Per-grade warehouse + production-floor balances. Each colour is a distinct material."""
     auth.check_node_access(user, node_id)
     cfg = await _get_cfg(node_id)
     entries = await _all(db.powder_ledger(), {"node_id": node_id}, sort=[("date", 1), ("created_at", 1)])
     warehouse = await recon.powder_warehouse(node_id)
     floor = await recon.powder_floor(node_id, cfg)
     products = {p["code"]: p for p in cfg.get("powder_products", [])}
+    codes = set(list(warehouse.keys()) + list(floor.keys()) + list(products.keys()))
     return {
         "entries": entries,
-        "warehouse": [{"powder_type": k, "balance": v,
-                       "colour": products.get(k, {}).get("colour", k),
-                       "is_black": products.get(k, {}).get("is_black", False)}
-                      for k, v in sorted(warehouse.items())],
-        "floor": floor,
+        "stock": [{"powder_type": k,
+                   "colour": products.get(k, {}).get("colour", k),
+                   "is_black": products.get(k, {}).get("is_black", False),
+                   "warehouse": warehouse.get(k, 0.0), "floor": floor.get(k, 0.0)}
+                  for k in sorted(codes)],
     }
 
 
@@ -793,7 +795,6 @@ async def create_count(node_id: str, payload: PhysicalCountIn,
     tol_kg = tol.get("powder_kg", 0.0)
     tol_tank = tol.get("tank_qty", 0)
     tol_fit = tol.get("fittings_qty", 0)
-    blacks = recon.black_codes(cfg)
     date = payload.date
     count_id = uuid4().hex
 
@@ -809,29 +810,26 @@ async def create_count(node_id: str, payload: PhysicalCountIn,
     async def flag(desc, ref):
         flags_raised.append(await recon.raise_flag(node_id, "count_mismatch", desc, ref, date))
 
-    # powder warehouse per type (store should be exact: received - issued)
+    # powder per grade: warehouse and floor each counted and reconciled separately
     counted_wh = {l.powder_type: l.warehouse_kg for l in payload.powder_counted}
-    counted_floor_pool = {"black": 0.0, "colour": 0.0}
-    for l in payload.powder_counted:
-        counted_floor_pool["black" if l.powder_type in blacks else "colour"] += l.floor_kg
+    counted_floor = {l.powder_type: l.floor_kg for l in payload.powder_counted}
+    names = {p["code"]: (p.get("colour") or p["code"]) for p in cfg.get("powder_products", [])}
     for pt in set(list(sys_wh.keys()) + list(counted_wh.keys())):
         var = round(counted_wh.get(pt, 0.0) - sys_wh.get(pt, 0.0), 2)
         variances["powder_warehouse"].append({"powder_type": pt, "system": sys_wh.get(pt, 0.0),
                                                "counted": counted_wh.get(pt, 0.0), "variance": var})
         if abs(var) > tol_kg + recon.EPS:
-            await flag(f"{date}: powder warehouse {pt} counted {counted_wh.get(pt,0.0):.1f} kg vs "
+            await flag(f"{date}: {names.get(pt, pt)} warehouse counted {counted_wh.get(pt,0.0):.1f} kg vs "
                        f"system {sys_wh.get(pt,0.0):.1f} kg (variance {var:+.1f} kg).",
                        {"count_id": count_id, "what": "powder_warehouse", "powder_type": pt})
-
-    # powder floor by pool (black / colour)
-    for pool in ("black", "colour"):
-        var = round(counted_floor_pool[pool] - sys_floor.get(pool, 0.0), 2)
-        variances["powder_floor"].append({"pool": pool, "system": sys_floor.get(pool, 0.0),
-                                          "counted": round(counted_floor_pool[pool], 2), "variance": var})
+    for pt in set(list(sys_floor.keys()) + list(counted_floor.keys())):
+        var = round(counted_floor.get(pt, 0.0) - sys_floor.get(pt, 0.0), 2)
+        variances["powder_floor"].append({"powder_type": pt, "system": sys_floor.get(pt, 0.0),
+                                          "counted": counted_floor.get(pt, 0.0), "variance": var})
         if abs(var) > tol_kg + recon.EPS:
-            await flag(f"{date}: {pool} powder on floor counted {counted_floor_pool[pool]:.1f} kg vs "
-                       f"system {sys_floor.get(pool,0.0):.1f} kg (variance {var:+.1f} kg).",
-                       {"count_id": count_id, "what": "powder_floor", "pool": pool})
+            await flag(f"{date}: {names.get(pt, pt)} on floor counted {counted_floor.get(pt,0.0):.1f} kg vs "
+                       f"system {sys_floor.get(pt,0.0):.1f} kg (variance {var:+.1f} kg).",
+                       {"count_id": count_id, "what": "powder_floor", "powder_type": pt})
 
     # tanks: store + floor counts summed vs system total (moulded - dispatched)
     counted_store = {(l.tank_type, l.grade): l.quantity for l in payload.fg_warehouse_counted}

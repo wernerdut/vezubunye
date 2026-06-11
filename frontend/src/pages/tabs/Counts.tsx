@@ -16,6 +16,7 @@ export default function Counts({ nodeId, config, user }: TabProps) {
 
   const canCount = user.role === 'audit' || user.role === 'admin'
   const names = Object.fromEntries(config.tank_types.map((t) => [t.code, t.name]))
+  const powderName = (code: string) => config.powder_products.find((p) => p.code === code)?.colour || code
   const cells = config.tank_types.flatMap((t) => (['A', 'B'] as const).map((g) => ({ code: t.code, grade: g })))
 
   const load = useCallback(() => {
@@ -123,8 +124,8 @@ export default function Counts({ nodeId, config, user }: TabProps) {
           {counts.map((c) => {
             const v = c.variances
             const probs = [
-              ...v.powder_warehouse.filter((x) => x.variance !== 0).map((x) => `Powder ${x.powder_type} store ${x.variance > 0 ? '+' : ''}${x.variance} kg`),
-              ...v.powder_floor.filter((x) => x.variance !== 0).map((x) => `${x.pool} floor ${x.variance > 0 ? '+' : ''}${x.variance} kg`),
+              ...v.powder_warehouse.filter((x) => x.variance !== 0).map((x) => `${powderName(x.powder_type)} store ${x.variance > 0 ? '+' : ''}${x.variance} kg`),
+              ...v.powder_floor.filter((x) => x.variance !== 0).map((x) => `${powderName(x.powder_type)} floor ${x.variance > 0 ? '+' : ''}${x.variance} kg`),
               ...v.tanks.filter((x) => x.variance !== 0).map((x) => `${names[x.tank_type] || x.tank_type} ${x.grade} ${x.variance > 0 ? '+' : ''}${x.variance}`),
               ...v.fittings.filter((x) => x.variance !== 0).map((x) => `Fitting ${x.fitting_type} ${x.variance > 0 ? '+' : ''}${x.variance}`),
             ]

@@ -67,6 +67,7 @@ export interface Capture {
 
 export interface ProductionLine {
   tank_type: string
+  colour: string
   quantity_a: number
   quantity_b: number
   quantity_reject: number
@@ -117,8 +118,7 @@ export interface PowderEntry {
 
 export interface PowderData {
   entries: PowderEntry[]
-  warehouse: { powder_type: string; balance: number; colour: string; is_black: boolean }[]
-  floor: { black: number; colour: number }
+  stock: { powder_type: string; colour: string; is_black: boolean; warehouse: number; floor: number }[]
 }
 
 export interface FittingsData {
@@ -138,6 +138,7 @@ export interface ProductionRun {
   _id: string
   date: string
   tank_type: string
+  colour?: string
   quantity_a: number
   quantity_b: number
   quantity_reject: number
@@ -238,7 +239,7 @@ export interface PhysicalCount {
   date: string
   variances: {
     powder_warehouse: { powder_type: string; system: number; counted: number; variance: number }[]
-    powder_floor: { pool: string; system: number; counted: number; variance: number }[]
+    powder_floor: { powder_type: string; system: number; counted: number; variance: number }[]
     tanks: { tank_type: string; grade: string; system: number; counted: number; variance: number; store_counted: number; floor_counted: number }[]
     fittings: { fitting_type: string; system: number; counted: number; variance: number }[]
   }
