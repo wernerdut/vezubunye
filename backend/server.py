@@ -304,72 +304,96 @@ async def get_capture_photo(capture_id: str, user: dict = Depends(auth.current_u
 @app.post("/api/captures/{capture_id}/entries")
 async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
                           user: dict = Depends(auth.require_role("operations", "admin"))):
-    """Key the day's sheet in one transaction: powder ledger, production runs,
-    finished goods, scrap log — all referencing the capture. Recon rules 1 and 2
-    evaluate immediately on save."""
+    """Key the day's sheet in one transaction. Movements only: powder received/issued,
+    fittings received/issued, tanks moulded, tanks booked to store, tanks dispatched.
+    The app derives every balance and runs the floor/fittings/finished-goods checks on save."""
     cap = await db.daily_captures().find_one({"_id": capture_id})
     if not cap:
         raise HTTPException(404, "Capture not found")
     node_id, date = cap["node_id"], cap["date"]
     auth.check_node_access(user, node_id)
     cfg = await _get_cfg(node_id)
-    weights = {t["code"]: t["weight_kg"] for t in cfg["tank_types"]}
-    for line in payload.production:
-        if line.tank_type not in weights:
+    tanks = {t["code"]: t for t in cfg["tank_types"]}
+    for line in payload.production + payload.booked:
+        if line.tank_type not in tanks:
             raise HTTPException(400, f"Unknown tank type {line.tank_type}")
+    for d in payload.dispatched:
+        if d.quantity > 0:
+            if d.tank_type not in tanks:
+                raise HTTPException(400, f"Unknown tank type {d.tank_type}")
+            if not d.dn_number.strip():
+                raise HTTPException(400, "Every dispatched line needs a delivery note number")
 
     # re-capture: remove prior derived entries for this capture (audit-logged)
     prior = await _all(db.powder_ledger(), {"source_capture_id": capture_id})
     if prior:
         await audit.log(user, node_id, "update", "daily_captures", capture_id,
                         before={"note": "re-capture, prior entries replaced"})
-    for coll in (db.powder_ledger(), db.production_runs(), db.scrap_log()):
+    for coll in (db.powder_ledger(), db.fittings_ledger(), db.production_runs(), db.scrap_log()):
         await coll.delete_many({"source_capture_id": capture_id})
-    await db.finished_goods().delete_many({"reference": capture_id, "type": "produced"})
+    await db.finished_goods().delete_many({"reference": capture_id})
 
-    docs_written = []
-    if payload.powder_in_kg:
-        d = {"_id": uuid4().hex, "node_id": node_id, "date": date, "type": "in",
-             "kg": payload.powder_in_kg, "source_capture_id": capture_id,
-             "notes": payload.notes or "", "created_at": _now()}
-        await db.powder_ledger().insert_one(d)
-        docs_written.append(("powder_ledger", d))
-    if payload.powder_drawn_kg:
-        d = {"_id": uuid4().hex, "node_id": node_id, "date": date, "type": "drawn",
-             "kg": payload.powder_drawn_kg, "source_capture_id": capture_id,
-             "notes": payload.notes or "", "created_at": _now()}
-        await db.powder_ledger().insert_one(d)
-        docs_written.append(("powder_ledger", d))
+    # powder warehouse in/out, per type
+    for line in payload.powder:
+        for mtype, kg in (("received", line.received_kg), ("issued", line.issued_kg)):
+            if kg:
+                await db.powder_ledger().insert_one({
+                    "_id": uuid4().hex, "node_id": node_id, "date": date,
+                    "powder_type": line.powder_type, "type": mtype, "kg": kg,
+                    "source_capture_id": capture_id, "notes": payload.notes or "",
+                    "created_at": _now()})
 
+    # fittings warehouse in/out, per type
+    for line in payload.fittings:
+        for mtype, qty in (("received", line.received_qty), ("issued", line.issued_qty)):
+            if qty:
+                await db.fittings_ledger().insert_one({
+                    "_id": uuid4().hex, "node_id": node_id, "date": date,
+                    "fitting_type": line.fitting_type, "type": mtype, "quantity": qty,
+                    "source_capture_id": capture_id, "created_at": _now()})
+
+    # tanks moulded -> production_runs (consumes floor powder); rejects -> scrap_log
     for line in payload.production:
         if line.quantity_a == line.quantity_b == line.quantity_reject == 0:
             continue
-        run = {"_id": uuid4().hex, "node_id": node_id, "date": date,
-               "tank_type": line.tank_type, "quantity_a": line.quantity_a,
-               "quantity_b": line.quantity_b, "quantity_reject": line.quantity_reject,
-               "source_capture_id": capture_id, "created_at": _now()}
-        await db.production_runs().insert_one(run)
-        docs_written.append(("production_runs", run))
-        # A and B enter finished goods; rejects never do — they exit via scrap_log
+        await db.production_runs().insert_one({
+            "_id": uuid4().hex, "node_id": node_id, "date": date,
+            "tank_type": line.tank_type, "quantity_a": line.quantity_a,
+            "quantity_b": line.quantity_b, "quantity_reject": line.quantity_reject,
+            "source_capture_id": capture_id, "created_at": _now()})
+        if line.quantity_reject > 0:
+            t = tanks[line.tank_type]
+            kg_lost = line.quantity_reject * (t["weight_kg"] + t.get("lid_weight_kg", 0.0))
+            await db.scrap_log().insert_one({
+                "_id": uuid4().hex, "node_id": node_id, "date": date,
+                "tank_type": line.tank_type, "quantity": line.quantity_reject,
+                "kg_lost": kg_lost,
+                "material_cost_lost": round(kg_lost * cfg["material_cost_per_kg"], 2),
+                "source_capture_id": capture_id, "notes": payload.notes or "",
+                "created_at": _now()})
+
+    # tanks booked to store: floor -> finished-goods warehouse
+    for line in payload.booked:
         for grade, qty in (("A", line.quantity_a), ("B", line.quantity_b)):
             if qty > 0:
-                fg = {"_id": uuid4().hex, "node_id": node_id, "date": date,
-                      "tank_type": line.tank_type, "grade": grade, "type": "produced",
-                      "quantity": qty, "reference": capture_id, "created_at": _now()}
-                await db.finished_goods().insert_one(fg)
-        if line.quantity_reject > 0:
-            kg_lost = line.quantity_reject * weights[line.tank_type]
-            scrap = {"_id": uuid4().hex, "node_id": node_id, "date": date,
-                     "tank_type": line.tank_type, "quantity": line.quantity_reject,
-                     "kg_lost": kg_lost,
-                     "material_cost_lost": round(kg_lost * cfg["material_cost_per_kg"], 2),
-                     "source_capture_id": capture_id, "notes": payload.notes or "",
-                     "created_at": _now()}
-            await db.scrap_log().insert_one(scrap)
+                await db.finished_goods().insert_one({
+                    "_id": uuid4().hex, "node_id": node_id, "date": date,
+                    "tank_type": line.tank_type, "grade": grade, "type": "booked",
+                    "quantity": qty, "reference": capture_id, "created_at": _now()})
 
-    # reconciliation rules 1 and 2 run on save
+    # tanks dispatched: finished-goods warehouse -> out (references a delivery note)
+    for d in payload.dispatched:
+        if d.quantity > 0:
+            await db.finished_goods().insert_one({
+                "_id": uuid4().hex, "node_id": node_id, "date": date,
+                "tank_type": d.tank_type, "grade": d.grade, "type": "dispatched",
+                "quantity": d.quantity, "dn_number": d.dn_number.strip(),
+                "reference": capture_id, "created_at": _now()})
+
+    # reconciliation runs on save: floor pools, fittings, finished-goods identity
     flags_raised = []
-    flags_raised += await recon.check_powder_vs_production(node_id, date, capture_id)
+    flags_raised += await recon.check_powder_floor(node_id, date, capture_id)
+    flags_raised += await recon.check_fittings(node_id, date, capture_id)
     flags_raised += await recon.check_finished_goods(node_id, date, {"capture_id": capture_id})
 
     status = "reconciled" if not flags_raised else "captured"
@@ -398,26 +422,71 @@ async def list_captures(node_id: str, month: Optional[str] = None,
 
 @app.get("/api/nodes/{node_id}/powder")
 async def powder_ledger(node_id: str, user: dict = Depends(auth.current_user)):
+    """Per-type warehouse balances + the two production-floor pools (black, colour)."""
     auth.check_node_access(user, node_id)
+    cfg = await _get_cfg(node_id)
     entries = await _all(db.powder_ledger(), {"node_id": node_id}, sort=[("date", 1), ("created_at", 1)])
-    bal = 0.0
-    for e in entries:
-        bal += e["kg"] if e["type"] in ("in", "count_adjustment") else -e["kg"]
-        e["running_balance"] = round(bal, 2)
-    return {"entries": entries, "balance": round(bal, 2)}
+    warehouse = await recon.powder_warehouse(node_id)
+    floor = await recon.powder_floor(node_id, cfg)
+    products = {p["code"]: p for p in cfg.get("powder_products", [])}
+    return {
+        "entries": entries,
+        "warehouse": [{"powder_type": k, "balance": v,
+                       "colour": products.get(k, {}).get("colour", k),
+                       "is_black": products.get(k, {}).get("is_black", False)}
+                      for k, v in sorted(warehouse.items())],
+        "floor": floor,
+    }
 
 
 @app.post("/api/nodes/{node_id}/powder/adjustment")
 async def powder_adjustment(node_id: str, payload: LedgerAdjustIn,
                             user: dict = Depends(auth.require_role("audit", "admin"))):
     auth.check_node_access(user, node_id)
-    if payload.kg is None:
-        raise HTTPException(400, "kg required")
+    if payload.kg is None or not payload.powder_type:
+        raise HTTPException(400, "kg and powder_type required")
     d = {"_id": uuid4().hex, "node_id": node_id, "date": payload.date,
-         "type": "count_adjustment", "kg": payload.kg, "source_capture_id": None,
+         "powder_type": payload.powder_type, "type": "count_adjustment",
+         "scope": payload.scope, "kg": payload.kg, "source_capture_id": None,
          "notes": payload.notes, "created_at": _now()}
     await db.powder_ledger().insert_one(d)
     await audit.log(user, node_id, "create", "powder_ledger", d["_id"], after=d)
+    return d
+
+
+@app.get("/api/nodes/{node_id}/fittings")
+async def fittings(node_id: str, user: dict = Depends(auth.current_user)):
+    """Per-type warehouse balance + issued-vs-expected (tanks produced x fittings-per-tank)."""
+    auth.check_node_access(user, node_id)
+    cfg = await _get_cfg(node_id)
+    entries = await _all(db.fittings_ledger(), {"node_id": node_id}, sort=[("date", 1), ("created_at", 1)])
+    warehouse = await recon.fittings_warehouse(node_id)
+    issued = await recon.fittings_issued(node_id)
+    expected = await recon.fittings_expected(node_id, cfg)
+    names = {f["code"]: f.get("name", f["code"]) for f in cfg.get("fitting_types", [])}
+    codes = set(list(warehouse.keys()) + list(issued.keys()) + list(expected.keys()))
+    return {
+        "entries": entries,
+        "warehouse": [{"fitting_type": c, "name": names.get(c, c),
+                       "balance": warehouse.get(c, 0),
+                       "issued": issued.get(c, 0), "expected": expected.get(c, 0),
+                       "variance": issued.get(c, 0) - expected.get(c, 0)}
+                      for c in sorted(codes)],
+    }
+
+
+@app.post("/api/nodes/{node_id}/fittings/adjustment")
+async def fittings_adjustment(node_id: str, payload: LedgerAdjustIn,
+                              user: dict = Depends(auth.require_role("audit", "admin"))):
+    auth.check_node_access(user, node_id)
+    if payload.quantity is None or not payload.fitting_type:
+        raise HTTPException(400, "quantity and fitting_type required")
+    d = {"_id": uuid4().hex, "node_id": node_id, "date": payload.date,
+         "fitting_type": payload.fitting_type, "type": "count_adjustment",
+         "quantity": payload.quantity, "source_capture_id": None,
+         "notes": payload.notes, "created_at": _now()}
+    await db.fittings_ledger().insert_one(d)
+    await audit.log(user, node_id, "create", "fittings_ledger", d["_id"], after=d)
     return d
 
 
@@ -430,23 +499,28 @@ async def production(node_id: str, month: Optional[str] = None,
         filt["date"] = {"$regex": f"^{month}"}
     runs = await _all(db.production_runs(), filt, sort=[("date", -1)])
     cfg = await _get_cfg(node_id)
-    weights = {t["code"]: t["weight_kg"] for t in cfg["tank_types"]}
+    consume = {t["code"]: t["weight_kg"] + t.get("lid_weight_kg", 0.0) for t in cfg["tank_types"]}
     for r in runs:
         r["implied_powder_kg"] = round(
-            (r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]) * weights.get(r["tank_type"], 0), 1)
+            (r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]) * consume.get(r["tank_type"], 0), 1)
     return runs
 
 
 @app.get("/api/nodes/{node_id}/finished-goods")
 async def finished_goods(node_id: str, user: dict = Depends(auth.current_user)):
+    """Tank floor (moulded, not yet booked) + finished-goods warehouse (booked, not dispatched)."""
     auth.check_node_access(user, node_id)
     entries = await _all(db.finished_goods(), {"node_id": node_id},
                          sort=[("date", 1), ("created_at", 1)])
-    on_hand = await recon.fg_on_hand(node_id)
+    floor = await recon.tank_floor(node_id)
+    store = await recon.fg_warehouse(node_id)
+    keys = sorted(set(list(floor.keys()) + list(store.keys())))
     return {
         "entries": entries,
-        "on_hand": [{"tank_type": k[0], "grade": k[1], "quantity": v}
-                    for k, v in sorted(on_hand.items())],
+        "positions": [{"tank_type": k[0], "grade": k[1],
+                       "floor": floor.get(k, 0), "store": store.get(k, 0),
+                       "total": floor.get(k, 0) + store.get(k, 0)}
+                      for k in keys],
     }
 
 
@@ -456,9 +530,10 @@ async def fg_adjustment(node_id: str, payload: LedgerAdjustIn,
     auth.check_node_access(user, node_id)
     if not payload.tank_type or payload.quantity is None or not payload.grade:
         raise HTTPException(400, "tank_type, grade, quantity required")
+    scope = "tank_floor" if payload.scope == "floor" else "fg_warehouse"
     d = {"_id": uuid4().hex, "node_id": node_id, "date": payload.date,
          "tank_type": payload.tank_type, "grade": payload.grade,
-         "type": "count_adjustment", "quantity": payload.quantity,
+         "type": "count_adjustment", "scope": scope, "quantity": payload.quantity,
          "reference": None, "notes": payload.notes, "created_at": _now()}
     await db.finished_goods().insert_one(d)
     await audit.log(user, node_id, "create", "finished_goods_ledger", d["_id"], after=d)
@@ -493,19 +568,15 @@ async def create_delivery_note(node_id: str, payload: DeliveryNoteIn,
         "lines": [l.model_dump() for l in payload.lines],
         "linked_invoice_id": None, "created_at": _now(),
     }
-    # delivered entries hit the finished goods ledger, per type per grade
-    for l in payload.lines:
-        await db.finished_goods().insert_one({
-            "_id": uuid4().hex, "node_id": node_id, "date": payload.date,
-            "tank_type": l.tank_type, "grade": l.grade, "type": "delivered",
-            "quantity": l.quantity, "reference": dn_id, "created_at": _now()})
+    # The delivery note is the document + number only. The finished-goods deduction is
+    # the dispatch movement captured on the daily sheet (single source of truth), keyed
+    # against this dn_number, so we do not deduct finished goods here.
     pdf = pdf_gen.delivery_note_pdf(node, cfg, dn)
     dn["content_b64"] = base64.b64encode(pdf).decode()
     dn["pdf_url"] = f"/api/delivery-notes/{dn_id}/pdf"
     await db.delivery_notes().insert_one(dn)
     await audit.log(user, node_id, "create", "delivery_notes", dn_id,
                     after={k: v for k, v in dn.items() if k != "content_b64"})
-    await recon.check_finished_goods(node_id, payload.date, {"delivery_note_id": dn_id})
     return {k: v for k, v in dn.items() if k != "content_b64"}
 
 
@@ -717,49 +788,101 @@ async def resolve_flag(flag_id: str, payload: FlagResolveIn,
 async def create_count(node_id: str, payload: PhysicalCountIn,
                        user: dict = Depends(auth.require_role("audit", "admin"))):
     auth.check_node_access(user, node_id)
-    system_powder = await recon.powder_balance(node_id, payload.date)
-    system_fg = await recon.fg_on_hand(node_id, payload.date)
-    powder_variance = round(payload.powder_kg_counted - system_powder, 2)
+    cfg = await _get_cfg(node_id)
+    tol = cfg.get("tolerances") or {}
+    tol_kg = tol.get("powder_kg", 0.0)
+    tol_tank = tol.get("tank_qty", 0)
+    tol_fit = tol.get("fittings_qty", 0)
+    blacks = recon.black_codes(cfg)
+    date = payload.date
+    count_id = uuid4().hex
 
-    fg_variances = []
-    counted = {(l.tank_type, l.grade): l.quantity for l in payload.finished_goods_counted}
-    for key in set(list(system_fg.keys()) + list(counted.keys())):
-        sys_q = system_fg.get(key, 0)
-        cnt_q = counted.get(key, 0)
-        if sys_q != cnt_q:
-            fg_variances.append({"tank_type": key[0], "grade": key[1],
-                                 "system": sys_q, "counted": cnt_q,
-                                 "variance": cnt_q - sys_q})
+    sys_wh = await recon.powder_warehouse(node_id, date)
+    sys_floor = await recon.powder_floor(node_id, cfg, date)
+    sys_tank_floor = await recon.tank_floor(node_id, date)
+    sys_store = await recon.fg_warehouse(node_id, date)
+    sys_fittings = await recon.fittings_warehouse(node_id, date)
+
+    flags_raised = []
+    variances: dict = {"powder_warehouse": [], "powder_floor": [], "tanks": [], "fittings": []}
+
+    async def flag(desc, ref):
+        flags_raised.append(await recon.raise_flag(node_id, "count_mismatch", desc, ref, date))
+
+    # powder warehouse per type (store should be exact: received - issued)
+    counted_wh = {l.powder_type: l.warehouse_kg for l in payload.powder_counted}
+    counted_floor_pool = {"black": 0.0, "colour": 0.0}
+    for l in payload.powder_counted:
+        counted_floor_pool["black" if l.powder_type in blacks else "colour"] += l.floor_kg
+    for pt in set(list(sys_wh.keys()) + list(counted_wh.keys())):
+        var = round(counted_wh.get(pt, 0.0) - sys_wh.get(pt, 0.0), 2)
+        variances["powder_warehouse"].append({"powder_type": pt, "system": sys_wh.get(pt, 0.0),
+                                               "counted": counted_wh.get(pt, 0.0), "variance": var})
+        if abs(var) > tol_kg + recon.EPS:
+            await flag(f"{date}: powder warehouse {pt} counted {counted_wh.get(pt,0.0):.1f} kg vs "
+                       f"system {sys_wh.get(pt,0.0):.1f} kg (variance {var:+.1f} kg).",
+                       {"count_id": count_id, "what": "powder_warehouse", "powder_type": pt})
+
+    # powder floor by pool (black / colour)
+    for pool in ("black", "colour"):
+        var = round(counted_floor_pool[pool] - sys_floor.get(pool, 0.0), 2)
+        variances["powder_floor"].append({"pool": pool, "system": sys_floor.get(pool, 0.0),
+                                          "counted": round(counted_floor_pool[pool], 2), "variance": var})
+        if abs(var) > tol_kg + recon.EPS:
+            await flag(f"{date}: {pool} powder on floor counted {counted_floor_pool[pool]:.1f} kg vs "
+                       f"system {sys_floor.get(pool,0.0):.1f} kg (variance {var:+.1f} kg).",
+                       {"count_id": count_id, "what": "powder_floor", "pool": pool})
+
+    # tanks: store + floor counts summed vs system total (moulded - dispatched)
+    counted_store = {(l.tank_type, l.grade): l.quantity for l in payload.fg_warehouse_counted}
+    counted_tfloor = {(l.tank_type, l.grade): l.quantity for l in payload.tank_floor_counted}
+    keys = set(list(sys_tank_floor.keys()) + list(sys_store.keys()) +
+               list(counted_store.keys()) + list(counted_tfloor.keys()))
+    for k in keys:
+        sys_total = sys_tank_floor.get(k, 0) + sys_store.get(k, 0)
+        cnt_total = counted_store.get(k, 0) + counted_tfloor.get(k, 0)
+        var = cnt_total - sys_total
+        variances["tanks"].append({"tank_type": k[0], "grade": k[1], "system": sys_total,
+                                   "counted": cnt_total, "variance": var,
+                                   "store_counted": counted_store.get(k, 0),
+                                   "floor_counted": counted_tfloor.get(k, 0)})
+        if abs(var) > tol_tank:
+            await flag(f"{date}: {k[0]} grade {k[1]} counted {cnt_total} (store + floor) vs system "
+                       f"{sys_total} (variance {var:+d}). Counting only the store throws a false variance.",
+                       {"count_id": count_id, "what": "tanks", "tank_type": k[0], "grade": k[1]})
+
+    # fittings warehouse per type
+    counted_fit = {l.fitting_type: l.warehouse_qty for l in payload.fittings_counted}
+    for ft in set(list(sys_fittings.keys()) + list(counted_fit.keys())):
+        var = counted_fit.get(ft, 0) - sys_fittings.get(ft, 0)
+        variances["fittings"].append({"fitting_type": ft, "system": sys_fittings.get(ft, 0),
+                                      "counted": counted_fit.get(ft, 0), "variance": var})
+        if abs(var) > tol_fit:
+            await flag(f"{date}: fitting {ft} warehouse counted {counted_fit.get(ft,0)} vs system "
+                       f"{sys_fittings.get(ft,0)} (variance {var:+d}).",
+                       {"count_id": count_id, "what": "fittings", "fitting_type": ft})
 
     doc = {
-        "_id": uuid4().hex, "node_id": node_id, "date": payload.date,
-        "powder_kg_counted": payload.powder_kg_counted,
-        "finished_goods_counted": [l.model_dump() for l in payload.finished_goods_counted],
+        "_id": uuid4().hex, "node_id": node_id, "date": date,
+        "powder_counted": [l.model_dump() for l in payload.powder_counted],
+        "fg_warehouse_counted": [l.model_dump() for l in payload.fg_warehouse_counted],
+        "tank_floor_counted": [l.model_dump() for l in payload.tank_floor_counted],
+        "fittings_counted": [l.model_dump() for l in payload.fittings_counted],
         "system_values_at_count": {
-            "powder_kg": system_powder,
-            "finished_goods": [{"tank_type": k[0], "grade": k[1], "quantity": v}
-                               for k, v in sorted(system_fg.items())],
+            "powder_warehouse": sys_wh, "powder_floor": sys_floor,
+            "tank_floor": [{"tank_type": k[0], "grade": k[1], "quantity": v} for k, v in sorted(sys_tank_floor.items())],
+            "fg_warehouse": [{"tank_type": k[0], "grade": k[1], "quantity": v} for k, v in sorted(sys_store.items())],
+            "fittings": sys_fittings,
         },
-        "variances": {"powder_kg": powder_variance, "finished_goods": fg_variances},
+        "variances": variances,
         "counted_by": user["email"], "created_at": _now(),
     }
     await db.physical_counts().insert_one(doc)
+    # backfill the real count id into the flags we raised
+    await db.flags().update_many(
+        {"node_id": node_id, "status": "open", "references.count_id": "pending"},
+        {"$set": {"references.count_id": doc["_id"]}})
     await audit.log(user, node_id, "create", "physical_counts", doc["_id"], after=doc)
-
-    flags_raised = []
-    if abs(powder_variance) > recon.EPS:
-        flags_raised.append(await recon.raise_flag(
-            node_id, "count_mismatch",
-            f"{payload.date}: physical powder count {payload.powder_kg_counted:.1f} kg vs "
-            f"system {system_powder:.1f} kg (variance {powder_variance:+.1f} kg).",
-            {"count_id": doc["_id"], "what": "powder"}, payload.date))
-    for v in fg_variances:
-        flags_raised.append(await recon.raise_flag(
-            node_id, "count_mismatch",
-            f"{payload.date}: physical count {v['tank_type']} grade {v['grade']} = {v['counted']} "
-            f"vs system {v['system']} (variance {v['variance']:+d}).",
-            {"count_id": doc["_id"], "tank_type": v["tank_type"], "grade": v["grade"]},
-            payload.date))
     return {**doc, "flags_raised": flags_raised}
 
 
@@ -826,7 +949,7 @@ async def recon_dashboard(node_id: str, month: Optional[str] = None,
 async def daily_report(node_id: str, date: str, user: dict = Depends(auth.current_user)):
     auth.check_node_access(user, node_id)
     cfg = await _get_cfg(node_id)
-    weights = {t["code"]: t["weight_kg"] for t in cfg["tank_types"]}
+    consume = {t["code"]: t["weight_kg"] + t.get("lid_weight_kg", 0.0) for t in cfg["tank_types"]}
     runs = await _all(db.production_runs(), {"node_id": node_id, "date": date})
     powder = await _all(db.powder_ledger(), {"node_id": node_id, "date": date})
     dns = await _all(db.delivery_notes(), {"node_id": node_id, "date": date})
@@ -834,16 +957,17 @@ async def daily_report(node_id: str, date: str, user: dict = Depends(auth.curren
     pays = await _all(db.payments(), {"node_id": node_id, "date": date})
     cap = await db.daily_captures().find_one({"node_id": node_id, "date": date})
     flags_open = await _all(db.flags(), {"node_id": node_id, "date_raised": date, "status": "open"})
+    fg_store = await recon.fg_warehouse(node_id, date)
     return {
         "date": date,
         "tanks_produced": [{"tank_type": r["tank_type"], "a": r["quantity_a"],
                             "b": r["quantity_b"], "reject": r["quantity_reject"]} for r in runs],
-        "powder_in_kg": sum(e["kg"] for e in powder if e["type"] == "in"),
-        "powder_drawn_kg": sum(e["kg"] for e in powder if e["type"] == "drawn"),
+        "powder_received_kg": sum(e["kg"] for e in powder if e["type"] == "received"),
+        "powder_issued_kg": sum(e["kg"] for e in powder if e["type"] == "issued"),
         "implied_kg": sum((r["quantity_a"] + r["quantity_b"] + r["quantity_reject"])
-                          * weights.get(r["tank_type"], 0) for r in runs),
+                          * consume.get(r["tank_type"], 0) for r in runs),
         "finished_goods_on_hand": [{"tank_type": k[0], "grade": k[1], "quantity": v}
-                                   for k, v in sorted((await recon.fg_on_hand(node_id, date)).items())],
+                                   for k, v in sorted(fg_store.items())],
         "deliveries": [{"dn_number": d["dn_number"], "client_name": d["client_name"],
                         "lines": d["lines"]} for d in dns],
         "invoices_raised": [{"invoice_number": i["invoice_number"], "total": i["total"],
@@ -858,7 +982,7 @@ async def daily_report(node_id: str, date: str, user: dict = Depends(auth.curren
 async def monthly_report(node_id: str, month: str, user: dict = Depends(auth.current_user)):
     auth.check_node_access(user, node_id)
     cfg = await _get_cfg(node_id)
-    weights = {t["code"]: t["weight_kg"] for t in cfg["tank_types"]}
+    consume = {t["code"]: t["weight_kg"] + t.get("lid_weight_kg", 0.0) for t in cfg["tank_types"]}
     prices = {t["code"]: t["ex_works_price"] for t in cfg["tank_types"]}
     b_pct = cfg.get("b_grade_exworks_pct", 100.0) / 100.0
     filt = {"node_id": node_id, "date": {"$regex": f"^{month}"}}
@@ -868,7 +992,7 @@ async def monthly_report(node_id: str, month: str, user: dict = Depends(auth.cur
     by_type: dict = {}
     for r in runs:
         total_q = r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]
-        kg += total_q * weights.get(r["tank_type"], 0)
+        kg += total_q * consume.get(r["tank_type"], 0)
         t = by_type.setdefault(r["tank_type"], {"a": 0, "b": 0, "reject": 0})
         t["a"] += r["quantity_a"]; t["b"] += r["quantity_b"]; t["reject"] += r["quantity_reject"]
 
@@ -905,12 +1029,13 @@ async def monthly_report(node_id: str, month: str, user: dict = Depends(auth.cur
 async def network_kg(user: dict = Depends(auth.current_user)):
     """The one network number: total kilograms through all nodes."""
     total = 0.0
-    weights_by_node: dict = {}
+    consume_by_node: dict = {}
     async for cfg in db.node_config().find({}):
-        weights_by_node[cfg["node_id"]] = {t["code"]: t["weight_kg"] for t in cfg["tank_types"]}
+        consume_by_node[cfg["node_id"]] = {
+            t["code"]: t["weight_kg"] + t.get("lid_weight_kg", 0.0) for t in cfg["tank_types"]}
     async for r in db.production_runs().find({}):
-        w = weights_by_node.get(r["node_id"], {}).get(r["tank_type"], 0)
-        total += (r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]) * w
+        c = consume_by_node.get(r["node_id"], {}).get(r["tank_type"], 0)
+        total += (r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]) * c
     return {"total_kg": round(total, 1)}
 
 

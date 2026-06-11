@@ -1,18 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FileDown } from 'lucide-react'
 import { api, errMsg, openAuthed } from '../../api'
 import { Empty, StatusBadge } from '../../components/ui'
-import type { Capture, ProductionLine } from '../../types'
+import type { BookedLine, Capture, DispatchLine, FittingMoveLine, PowderMoveLine, ProductionLine } from '../../types'
 import type { TabProps } from '../NodePage'
 
 export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const [captures, setCaptures] = useState<Capture[]>([])
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [powderIn, setPowderIn] = useState('')
-  const [powderDrawn, setPowderDrawn] = useState('')
-  const [lines, setLines] = useState<ProductionLine[]>(
-    config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0, quantity_reject: 0 })),
-  )
   const [photo, setPhoto] = useState<File | null>(null)
   const [notes, setNotes] = useState('')
   const [msg, setMsg] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null)
@@ -20,47 +15,75 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
 
   const canCapture = user.role === 'operations' || user.role === 'admin'
 
+  const blankPowder = (): PowderMoveLine[] =>
+    config.powder_products.length
+      ? config.powder_products.map((p) => ({ powder_type: p.code, received_kg: 0, issued_kg: 0 }))
+      : [{ powder_type: '', received_kg: 0, issued_kg: 0 }]
+  const blankFittings = (): FittingMoveLine[] =>
+    config.fitting_types.map((f) => ({ fitting_type: f.code, received_qty: 0, issued_qty: 0 }))
+  const blankProd = (): ProductionLine[] =>
+    config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0, quantity_reject: 0 }))
+  const blankBooked = (): BookedLine[] =>
+    config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0 }))
+  const blankDispatch = (): DispatchLine[] => []
+
+  const [powder, setPowder] = useState<PowderMoveLine[]>(blankPowder)
+  const [fittings, setFittings] = useState<FittingMoveLine[]>(blankFittings)
+  const [prod, setProd] = useState<ProductionLine[]>(blankProd)
+  const [booked, setBooked] = useState<BookedLine[]>(blankBooked)
+  const [dispatch, setDispatch] = useState<DispatchLine[]>(blankDispatch)
+
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/captures`).then((r) => setCaptures(r.data))
   }, [nodeId])
   useEffect(load, [load])
 
-  const impliedKg = lines.reduce((sum, l) => {
-    const w = config.tank_types.find((t) => t.code === l.tank_type)?.weight_kg || 0
-    return sum + (l.quantity_a + l.quantity_b + l.quantity_reject) * w
-  }, 0)
-  const drawn = parseFloat(powderDrawn) || 0
-  const gap = drawn - impliedKg
+  const tankByCode = useMemo(() => Object.fromEntries(config.tank_types.map((t) => [t.code, t])), [config])
+  const blackCodes = useMemo(() => new Set(config.powder_products.filter((p) => p.is_black).map((p) => p.code)), [config])
 
-  const setLine = (i: number, field: keyof ProductionLine, value: number) => {
-    setLines((ls) => ls.map((l, j) => (j === i ? { ...l, [field]: value } : l)))
+  // live floor-after-this-capture, by pool, from the recipe (W/2 colour, W/2 + lid black)
+  const floorDelta = useMemo(() => {
+    let issuedBlack = 0, issuedColour = 0, consumedBlack = 0, consumedColour = 0
+    powder.forEach((p) => {
+      if (blackCodes.has(p.powder_type)) issuedBlack += p.issued_kg
+      else issuedColour += p.issued_kg
+    })
+    prod.forEach((l) => {
+      const t = tankByCode[l.tank_type]
+      if (!t) return
+      const n = l.quantity_a + l.quantity_b + l.quantity_reject
+      consumedBlack += n * (t.weight_kg / 2 + t.lid_weight_kg)
+      consumedColour += n * (t.weight_kg / 2)
+    })
+    return { black: issuedBlack - consumedBlack, colour: issuedColour - consumedColour }
+  }, [powder, prod, tankByCode, blackCodes])
+
+  const reset = () => {
+    setPowder(blankPowder()); setFittings(blankFittings()); setProd(blankProd())
+    setBooked(blankBooked()); setDispatch(blankDispatch()); setNotes(''); setPhoto(null)
   }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setBusy(true)
-    setMsg(null)
+    setBusy(true); setMsg(null)
     try {
       const cap = (await api.post(`/api/nodes/${nodeId}/captures?date=${date}`)).data
       if (photo) {
-        const form = new FormData()
-        form.append('file', photo)
+        const form = new FormData(); form.append('file', photo)
         await api.post(`/api/captures/${cap._id}/photo`, form)
       }
       const r = await api.post(`/api/captures/${cap._id}/entries`, {
-        powder_in_kg: parseFloat(powderIn) || 0,
-        powder_drawn_kg: drawn,
-        production: lines,
+        powder: powder.filter((p) => p.powder_type),
+        fittings, production: prod, booked,
+        dispatched: dispatch.filter((d) => d.quantity > 0),
         notes,
       })
       if (r.data.status === 'reconciled') {
-        setMsg({ kind: 'ok', text: `Captured and reconciled. Powder balances exactly.` })
+        setMsg({ kind: 'ok', text: 'Captured and reconciled. Floor and finished-goods balance.' })
       } else {
         setMsg({ kind: 'warn', text: `Captured with ${r.data.flags_raised.length} flag(s) raised. The audit role will see them.` })
       }
-      setPowderIn(''); setPowderDrawn(''); setNotes(''); setPhoto(null)
-      setLines(config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0, quantity_reject: 0 })))
-      load()
+      reset(); load()
     } catch (err) {
       setMsg({ kind: 'err', text: errMsg(err) })
     } finally {
@@ -68,8 +91,13 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
     }
   }
 
+  const numCell = (val: number, on: (n: number) => void, step = '1') => (
+    <input className="input w-20" type="number" min="0" step={step}
+           value={val || ''} onChange={(e) => on(parseFloat(e.target.value) || 0)} />
+  )
+
   return (
-    <div className="grid lg:grid-cols-2 gap-6">
+    <div className="grid xl:grid-cols-2 gap-6">
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-headline text-3xl text-brand-blue">Capture the Day</h2>
@@ -78,76 +106,143 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
           </button>
         </div>
         {canCapture ? (
-          <form onSubmit={submit} className="card space-y-4">
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Date</label>
-                <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Powder in (kg)</label>
-                <input className="input" type="number" step="0.1" min="0" value={powderIn} onChange={(e) => setPowderIn(e.target.value)} />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Powder drawn (kg)</label>
-                <input className="input" type="number" step="0.1" min="0" value={powderDrawn} onChange={(e) => setPowderDrawn(e.target.value)} />
-              </div>
+          <form onSubmit={submit} className="card space-y-5">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Date</label>
+              <input className="input w-48" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
             </div>
-            <table className="w-full">
-              <thead>
-                <tr>
-                  <th className="th">Tank</th>
-                  <th className="th">A-grade</th>
-                  <th className="th">B-grade</th>
-                  <th className="th">Reject</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((l, i) => (
-                  <tr key={l.tank_type}>
-                    <td className="td font-semibold">{config.tank_types[i].name}</td>
-                    {(['quantity_a', 'quantity_b', 'quantity_reject'] as const).map((f) => (
-                      <td className="td" key={f}>
-                        <input
-                          className="input w-20"
-                          type="number"
-                          min="0"
-                          value={l[f]}
-                          onChange={(e) => setLine(i, f, parseInt(e.target.value) || 0)}
-                        />
+
+            {/* Powder */}
+            <section>
+              <h3 className="text-sm font-bold text-brand-blue mb-1">Powder</h3>
+              <table className="w-full text-sm">
+                <thead><tr><th className="th">Powder / colour</th><th className="th">Received (kg)</th><th className="th">Issued (kg)</th></tr></thead>
+                <tbody>
+                  {powder.map((p, i) => (
+                    <tr key={i}>
+                      <td className="td">
+                        {config.powder_products.length ? (
+                          <span className="font-semibold">{config.powder_products.find((x) => x.code === p.powder_type)?.colour || p.powder_type}</span>
+                        ) : (
+                          <input className="input w-32" placeholder="colour" value={p.powder_type}
+                                 onChange={(e) => setPowder((ls) => ls.map((l, j) => j === i ? { ...l, powder_type: e.target.value } : l))} />
+                        )}
                       </td>
+                      <td className="td">{numCell(p.received_kg, (n) => setPowder((ls) => ls.map((l, j) => j === i ? { ...l, received_kg: n } : l)), '0.1')}</td>
+                      <td className="td">{numCell(p.issued_kg, (n) => setPowder((ls) => ls.map((l, j) => j === i ? { ...l, issued_kg: n } : l)), '0.1')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className={`text-xs mt-1 rounded px-2 py-1 ${floorDelta.black < -0.001 || floorDelta.colour < -0.001 ? 'bg-red-50 text-brand-red' : 'bg-gray-50 text-gray-500'}`}>
+                Floor change this capture — black <b>{floorDelta.black >= 0 ? '+' : ''}{floorDelta.black.toFixed(1)}</b> kg,
+                colour <b>{floorDelta.colour >= 0 ? '+' : ''}{floorDelta.colour.toFixed(1)}</b> kg
+                {(floorDelta.black < -0.001 || floorDelta.colour < -0.001) && ' · moulding exceeds powder issued, this will flag'}
+              </div>
+            </section>
+
+            {/* Fittings */}
+            {config.fitting_types.length > 0 && (
+              <section>
+                <h3 className="text-sm font-bold text-brand-blue mb-1">Fittings</h3>
+                <table className="w-full text-sm">
+                  <thead><tr><th className="th">Fitting</th><th className="th">Received (qty)</th><th className="th">Issued (qty)</th></tr></thead>
+                  <tbody>
+                    {fittings.map((f, i) => (
+                      <tr key={f.fitting_type}>
+                        <td className="td font-semibold">{config.fitting_types.find((x) => x.code === f.fitting_type)?.name || f.fitting_type}</td>
+                        <td className="td">{numCell(f.received_qty, (n) => setFittings((ls) => ls.map((l, j) => j === i ? { ...l, received_qty: n } : l)))}</td>
+                        <td className="td">{numCell(f.issued_qty, (n) => setFittings((ls) => ls.map((l, j) => j === i ? { ...l, issued_qty: n } : l)))}</td>
+                      </tr>
                     ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className={`text-sm rounded px-3 py-2 ${Math.abs(gap) < 0.001 && drawn > 0 ? 'bg-green-50 text-brand-green' : drawn > 0 ? 'bg-red-50 text-brand-red' : 'bg-gray-50 text-gray-500'}`}>
-              Implied powder: <b>{impliedKg.toFixed(1)} kg</b> · drawn: <b>{drawn.toFixed(1)} kg</b>
-              {drawn > 0 && (Math.abs(gap) < 0.001
-                ? ' · balances exactly'
-                : ` · gap ${gap > 0 ? '+' : ''}${gap.toFixed(1)} kg, this will raise a flag (zero tolerance)`)}
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">WhatsApp photo of the sheet</label>
-              <input type="file" accept="image/*" onChange={(e) => setPhoto(e.target.files?.[0] || null)} className="text-sm" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">Notes</label>
-              <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                  </tbody>
+                </table>
+              </section>
+            )}
+
+            {/* Tanks moulded — navy */}
+            <section>
+              <h3 className="text-sm font-bold text-brand-blue mb-1">Tanks Moulded</h3>
+              <table className="w-full text-sm">
+                <thead><tr><th className="th">Tank</th><th className="th">A</th><th className="th">B</th><th className="th">Reject</th></tr></thead>
+                <tbody>
+                  {prod.map((l, i) => (
+                    <tr key={l.tank_type}>
+                      <td className="td font-semibold">{tankByCode[l.tank_type]?.name || l.tank_type}</td>
+                      {(['quantity_a', 'quantity_b', 'quantity_reject'] as const).map((f) => (
+                        <td className="td" key={f}>{numCell(l[f], (n) => setProd((ls) => ls.map((x, j) => j === i ? { ...x, [f]: n } : x)))}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+
+            {/* Tanks booked — navy */}
+            <section>
+              <h3 className="text-sm font-bold text-brand-blue mb-1">Tanks Booked to Store</h3>
+              <table className="w-full text-sm">
+                <thead><tr><th className="th">Tank</th><th className="th">A</th><th className="th">B</th></tr></thead>
+                <tbody>
+                  {booked.map((l, i) => (
+                    <tr key={l.tank_type}>
+                      <td className="td font-semibold">{tankByCode[l.tank_type]?.name || l.tank_type}</td>
+                      {(['quantity_a', 'quantity_b'] as const).map((f) => (
+                        <td className="td" key={f}>{numCell(l[f], (n) => setBooked((ls) => ls.map((x, j) => j === i ? { ...x, [f]: n } : x)))}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+
+            {/* Tanks dispatched — green */}
+            <section>
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-sm font-bold text-brand-green">Tanks Dispatched</h3>
+                <button type="button" className="text-xs font-semibold text-brand-green"
+                        onClick={() => setDispatch((d) => [...d, { tank_type: config.tank_types[0]?.code || '', grade: 'A', quantity: 0, dn_number: '' }])}>
+                  + add dispatch line
+                </button>
+              </div>
+              {dispatch.length === 0 && <p className="text-xs text-gray-400">No dispatches today.</p>}
+              {dispatch.map((d, i) => (
+                <div key={i} className="flex flex-wrap items-end gap-2 mb-2">
+                  <select className="input w-28" value={d.tank_type} onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, tank_type: e.target.value } : x))}>
+                    {config.tank_types.map((t) => <option key={t.code} value={t.code}>{t.name}</option>)}
+                  </select>
+                  <select className="input w-16" value={d.grade} onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, grade: e.target.value as 'A' | 'B' } : x))}>
+                    <option value="A">A</option><option value="B">B</option>
+                  </select>
+                  <input className="input w-20" type="number" min="0" placeholder="qty" value={d.quantity || ''}
+                         onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, quantity: parseInt(e.target.value) || 0 } : x))} />
+                  <input className="input w-36" placeholder="DN number (required)" value={d.dn_number}
+                         onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, dn_number: e.target.value } : x))} />
+                  <button type="button" className="text-xs text-brand-red" onClick={() => setDispatch((ls) => ls.filter((_, j) => j !== i))}>remove</button>
+                </div>
+              ))}
+            </section>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">WhatsApp photo of the sheet</label>
+                <input type="file" accept="image/*" onChange={(e) => setPhoto(e.target.files?.[0] || null)} className="text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Notes</label>
+                <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </div>
             </div>
             {msg && (
-              <p className={`text-sm font-semibold ${msg.kind === 'ok' ? 'text-brand-green' : msg.kind === 'warn' ? 'text-brand-orange' : 'text-brand-red'}`}>
-                {msg.text}
-              </p>
+              <p className={`text-sm font-semibold ${msg.kind === 'ok' ? 'text-brand-green' : msg.kind === 'warn' ? 'text-brand-orange' : 'text-brand-red'}`}>{msg.text}</p>
             )}
-            <button className="btn-primary w-full" disabled={busy}>
-              {busy ? 'Saving…' : 'Save capture'}
-            </button>
+            <button className="btn-primary w-full" disabled={busy}>{busy ? 'Saving…' : 'Save capture'}</button>
           </form>
         ) : (
           <p className="text-sm text-gray-500 card">Only the operations role keys in daily sheets. You can review captures and the documents they produced.</p>
         )}
       </div>
+
       <div>
         <h2 className="font-headline text-3xl text-brand-blue mb-3">Recent Captures</h2>
         <div className="card p-0 overflow-hidden">
@@ -155,14 +250,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             <Empty text="No captures yet" />
           ) : (
             <table className="w-full">
-              <thead>
-                <tr>
-                  <th className="th">Date</th>
-                  <th className="th">Status</th>
-                  <th className="th">By</th>
-                  <th className="th">Photo</th>
-                </tr>
-              </thead>
+              <thead><tr><th className="th">Date</th><th className="th">Status</th><th className="th">By</th><th className="th">Photo</th></tr></thead>
               <tbody>
                 {captures.map((c) => (
                   <tr key={c._id}>
@@ -171,25 +259,21 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
                     <td className="td text-gray-500">{c.captured_by}</td>
                     <td className="td">
                       {c.photo_url ? (
-                        <button
-                          className="text-brand-light font-semibold"
-                          onClick={() =>
-                            c.photo_url!.startsWith('http')
-                              ? window.open(c.photo_url!, '_blank')
-                              : openAuthed(c.photo_url!)
-                          }
-                        >
+                        <button className="text-brand-light font-semibold"
+                                onClick={() => c.photo_url!.startsWith('http') ? window.open(c.photo_url!, '_blank') : openAuthed(c.photo_url!)}>
                           view
                         </button>
-                      ) : (
-                        <span className="text-gray-300">none</span>
-                      )}
+                      ) : <span className="text-gray-300">none</span>}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+        </div>
+        <div className="mt-4 text-xs text-gray-500 flex gap-4">
+          <span><span className="inline-block w-3 h-3 rounded bg-brand-blue mr-1 align-middle" />moulded / booked (production)</span>
+          <span><span className="inline-block w-3 h-3 rounded bg-brand-green mr-1 align-middle" />dispatched</span>
         </div>
       </div>
     </div>

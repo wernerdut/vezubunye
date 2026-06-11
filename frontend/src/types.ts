@@ -21,6 +21,25 @@ export interface TankType {
   name: string
   ex_works_price: number
   weight_kg: number
+  lid_weight_kg: number
+}
+
+export interface PowderProduct {
+  code: string
+  colour: string
+  description?: string
+  is_black: boolean
+}
+
+export interface FittingType {
+  code: string
+  name: string
+}
+
+export interface Tolerances {
+  powder_kg: number
+  tank_qty: number
+  fittings_qty: number
 }
 
 export interface NodeConfig {
@@ -30,6 +49,10 @@ export interface NodeConfig {
   b_grade_exworks_pct: number
   vat_rate: number
   payment_terms_days: number
+  powder_products: PowderProduct[]
+  fitting_types: FittingType[]
+  fittings_per_tank: Record<string, Record<string, number>>
+  tolerances: Tolerances
 }
 
 export interface Capture {
@@ -49,20 +72,66 @@ export interface ProductionLine {
   quantity_reject: number
 }
 
+export interface PowderMoveLine {
+  powder_type: string
+  received_kg: number
+  issued_kg: number
+}
+
+export interface FittingMoveLine {
+  fitting_type: string
+  received_qty: number
+  issued_qty: number
+}
+
+export interface BookedLine {
+  tank_type: string
+  quantity_a: number
+  quantity_b: number
+}
+
+export interface DispatchLine {
+  tank_type: string
+  grade: 'A' | 'B'
+  quantity: number
+  dn_number: string
+}
+
 export interface CaptureEntries {
-  powder_in_kg: number
-  powder_drawn_kg: number
+  powder: PowderMoveLine[]
+  fittings: FittingMoveLine[]
   production: ProductionLine[]
+  booked: BookedLine[]
+  dispatched: DispatchLine[]
   notes?: string
 }
 
 export interface PowderEntry {
   _id: string
   date: string
-  type: 'in' | 'drawn' | 'count_adjustment'
+  powder_type: string
+  type: 'received' | 'issued' | 'count_adjustment'
   kg: number
   notes: string
-  running_balance: number
+}
+
+export interface PowderData {
+  entries: PowderEntry[]
+  warehouse: { powder_type: string; balance: number; colour: string; is_black: boolean }[]
+  floor: { black: number; colour: number }
+}
+
+export interface FittingsData {
+  entries: { _id: string; date: string; fitting_type: string; type: string; quantity: number }[]
+  warehouse: { fitting_type: string; name: string; balance: number; issued: number; expected: number; variance: number }[]
+}
+
+export interface FGPosition {
+  tank_type: string
+  grade: 'A' | 'B'
+  floor: number
+  store: number
+  total: number
 }
 
 export interface ProductionRun {
@@ -80,8 +149,9 @@ export interface FGEntry {
   date: string
   tank_type: string
   grade: 'A' | 'B'
-  type: 'produced' | 'delivered' | 'count_adjustment'
+  type: 'booked' | 'dispatched' | 'count_adjustment'
   quantity: number
+  dn_number?: string
 }
 
 export interface OnHand {
@@ -166,12 +236,11 @@ export interface Flag {
 export interface PhysicalCount {
   _id: string
   date: string
-  powder_kg_counted: number
-  finished_goods_counted: OnHand[]
-  system_values_at_count: { powder_kg: number; finished_goods: OnHand[] }
   variances: {
-    powder_kg: number
-    finished_goods: { tank_type: string; grade: string; system: number; counted: number; variance: number }[]
+    powder_warehouse: { powder_type: string; system: number; counted: number; variance: number }[]
+    powder_floor: { pool: string; system: number; counted: number; variance: number }[]
+    tanks: { tank_type: string; grade: string; system: number; counted: number; variance: number; store_counted: number; floor_counted: number }[]
+    fittings: { fitting_type: string; system: number; counted: number; variance: number }[]
   }
   counted_by: string
 }

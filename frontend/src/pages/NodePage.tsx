@@ -6,6 +6,7 @@ import Counts from './tabs/Counts'
 import DailyCapture from './tabs/DailyCapture'
 import Deliveries from './tabs/Deliveries'
 import FinishedGoods from './tabs/FinishedGoods'
+import Fittings from './tabs/Fittings'
 import FlagsTab from './tabs/FlagsTab'
 import Invoices from './tabs/Invoices'
 import Payments from './tabs/Payments'
@@ -15,6 +16,7 @@ import Production from './tabs/Production'
 const TABS = [
   { path: 'capture', label: 'Daily Capture' },
   { path: 'powder', label: 'Powder' },
+  { path: 'fittings', label: 'Fittings' },
   { path: 'production', label: 'Production' },
   { path: 'finished-goods', label: 'Finished Goods' },
   { path: 'deliveries', label: 'Deliveries' },
@@ -77,6 +79,7 @@ export default function NodePage({ user }: { user: User }) {
         <Route index element={<Navigate to="capture" replace />} />
         <Route path="capture" element={<DailyCapture {...props} />} />
         <Route path="powder" element={<Powder {...props} />} />
+        <Route path="fittings" element={<Fittings {...props} />} />
         <Route path="production" element={<Production {...props} />} />
         <Route path="finished-goods" element={<FinishedGoods {...props} />} />
         <Route path="deliveries" element={<Deliveries {...props} />} />

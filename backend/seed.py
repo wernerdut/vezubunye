@@ -39,18 +39,47 @@ async def seed():
             "_id": uuid4().hex,
             "node_id": "gogreen",
             "tank_types": [
-                {"code": "2500L", "name": "2500L Tank", "ex_works_price": 1620.0, "weight_kg": 36.0},
-                {"code": "5000L", "name": "5000L Tank", "ex_works_price": 3450.0, "weight_kg": 75.0},
+                {"code": "2500L", "name": "2500L Tank", "ex_works_price": 1620.0,
+                 "weight_kg": 36.0, "lid_weight_kg": 1.0},
+                {"code": "5000L", "name": "5000L Tank", "ex_works_price": 3450.0,
+                 "weight_kg": 75.0, "lid_weight_kg": 1.0},
             ],
             "material_cost_per_kg": 20.0,           # admin-only visibility
             "b_grade_exworks_pct": 100.0,           # OPEN ITEM: Werner to confirm the B-grade rule
             "vat_rate": 15.0,
             "payment_terms_days": 30,
+            "powder_products": [
+                {"code": "BLACK", "colour": "Black", "description": "Black powder (body + lids)",
+                 "is_black": True},
+            ],
+            "fitting_types": [],
+            "fittings_per_tank": {},
+            "tolerances": {"powder_kg": 0.0, "tank_qty": 0, "fittings_qty": 0},
             "updated_at": datetime.utcnow(),
         })
         print("config: gogreen created")
     else:
-        print("config: gogreen exists")
+        # idempotent migration: add Brief-2 fields to existing config without overwriting values
+        cfg = await db.node_config().find_one({"node_id": "gogreen"})
+        add: dict = {}
+        if not any("lid_weight_kg" in t for t in cfg.get("tank_types", [])):
+            tts = [dict(t, lid_weight_kg=t.get("lid_weight_kg", 1.0)) for t in cfg.get("tank_types", [])]
+            add["tank_types"] = tts
+        if "powder_products" not in cfg:
+            add["powder_products"] = [
+                {"code": "BLACK", "colour": "Black", "description": "Black powder (body + lids)",
+                 "is_black": True}]
+        if "fitting_types" not in cfg:
+            add["fitting_types"] = []
+        if "fittings_per_tank" not in cfg:
+            add["fittings_per_tank"] = {}
+        if "tolerances" not in cfg:
+            add["tolerances"] = {"powder_kg": 0.0, "tank_qty": 0, "fittings_qty": 0}
+        if add:
+            await db.node_config().update_one({"node_id": "gogreen"}, {"$set": add})
+            print(f"config: gogreen migrated ({', '.join(add)})")
+        else:
+            print("config: gogreen up to date")
 
     # --- users ---
     users = [

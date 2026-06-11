@@ -42,6 +42,8 @@ export default function Admin() {
     setConfig({ ...config, tank_types: tanks })
   }
 
+  const patch = (p: Partial<NodeConfig>) => config && setConfig({ ...config, ...p })
+
   const addUser = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
@@ -85,7 +87,7 @@ export default function Admin() {
           <div className="card space-y-4">
             <table className="w-full">
               <thead>
-                <tr><th className="th">Code</th><th className="th">Name</th><th className="th">Ex-works (R, ex VAT)</th><th className="th">Weight (kg)</th></tr>
+                <tr><th className="th">Code</th><th className="th">Name</th><th className="th">Ex-works (R, ex VAT)</th><th className="th">Body weight (kg)</th><th className="th">Lid weight (kg)</th></tr>
               </thead>
               <tbody>
                 {config.tank_types.map((t, i) => (
@@ -94,13 +96,82 @@ export default function Admin() {
                     <td className="td"><input className="input" value={t.name} onChange={(e) => setTank(i, 'name', e.target.value)} /></td>
                     <td className="td"><input className="input w-28" type="number" step="0.01" value={t.ex_works_price} onChange={(e) => setTank(i, 'ex_works_price', e.target.value)} /></td>
                     <td className="td"><input className="input w-24" type="number" step="0.1" value={t.weight_kg} onChange={(e) => setTank(i, 'weight_kg', e.target.value)} /></td>
+                    <td className="td"><input className="input w-24" type="number" step="0.1" value={t.lid_weight_kg} onChange={(e) => setTank(i, 'lid_weight_kg', e.target.value)} /></td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <button className="btn-secondary" onClick={() => setConfig({ ...config, tank_types: [...config.tank_types, { code: '', name: '', ex_works_price: 0, weight_kg: 0 }] })}>
+            <button className="btn-secondary" onClick={() => patch({ tank_types: [...config.tank_types, { code: '', name: '', ex_works_price: 0, weight_kg: 0, lid_weight_kg: 1 }] })}>
               Add tank type
             </button>
+
+            <div className="text-xs text-gray-500">Each tank body is 50% colour + 50% black powder; the lid is black. Set the black powder below.</div>
+
+            {/* Powder products */}
+            <div>
+              <div className="text-sm font-bold text-brand-blue mb-1">Powder products</div>
+              <table className="w-full text-sm">
+                <thead><tr><th className="th">Code</th><th className="th">Colour</th><th className="th">Description</th><th className="th">Black stock?</th><th className="th"></th></tr></thead>
+                <tbody>
+                  {config.powder_products.map((p, i) => (
+                    <tr key={i}>
+                      <td className="td"><input className="input w-24" value={p.code} onChange={(e) => patch({ powder_products: config.powder_products.map((x, j) => j === i ? { ...x, code: e.target.value } : x) })} /></td>
+                      <td className="td"><input className="input w-28" value={p.colour} onChange={(e) => patch({ powder_products: config.powder_products.map((x, j) => j === i ? { ...x, colour: e.target.value } : x) })} /></td>
+                      <td className="td"><input className="input" value={p.description || ''} onChange={(e) => patch({ powder_products: config.powder_products.map((x, j) => j === i ? { ...x, description: e.target.value } : x) })} /></td>
+                      <td className="td text-center"><input type="checkbox" checked={p.is_black} onChange={(e) => patch({ powder_products: config.powder_products.map((x, j) => ({ ...x, is_black: j === i ? e.target.checked : false })) })} /></td>
+                      <td className="td"><button className="text-xs text-brand-red" onClick={() => patch({ powder_products: config.powder_products.filter((_, j) => j !== i) })}>remove</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="btn-secondary mt-2" onClick={() => patch({ powder_products: [...config.powder_products, { code: '', colour: '', description: '', is_black: false }] })}>Add powder product</button>
+            </div>
+
+            {/* Fitting types */}
+            <div>
+              <div className="text-sm font-bold text-brand-blue mb-1">Fitting types</div>
+              <table className="w-full text-sm">
+                <thead><tr><th className="th">Code</th><th className="th">Name</th><th className="th"></th></tr></thead>
+                <tbody>
+                  {config.fitting_types.map((f, i) => (
+                    <tr key={i}>
+                      <td className="td"><input className="input w-28" value={f.code} onChange={(e) => patch({ fitting_types: config.fitting_types.map((x, j) => j === i ? { ...x, code: e.target.value } : x) })} /></td>
+                      <td className="td"><input className="input" value={f.name} onChange={(e) => patch({ fitting_types: config.fitting_types.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} /></td>
+                      <td className="td"><button className="text-xs text-brand-red" onClick={() => patch({ fitting_types: config.fitting_types.filter((_, j) => j !== i) })}>remove</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="btn-secondary mt-2" onClick={() => patch({ fitting_types: [...config.fitting_types, { code: '', name: '' }] })}>Add fitting type</button>
+            </div>
+
+            {/* Fittings per tank matrix */}
+            {config.fitting_types.length > 0 && (
+              <div>
+                <div className="text-sm font-bold text-brand-blue mb-1">Fittings per tank</div>
+                <table className="w-full text-sm">
+                  <thead><tr><th className="th">Tank</th>{config.fitting_types.map((f) => <th className="th" key={f.code}>{f.name || f.code}</th>)}</tr></thead>
+                  <tbody>
+                    {config.tank_types.map((t) => (
+                      <tr key={t.code}>
+                        <td className="td font-semibold">{t.name}</td>
+                        {config.fitting_types.map((f) => (
+                          <td className="td" key={f.code}>
+                            <input className="input w-16" type="number" min="0"
+                                   value={config.fittings_per_tank?.[t.code]?.[f.code] ?? ''}
+                                   onChange={(e) => {
+                                     const fpt = { ...(config.fittings_per_tank || {}) }
+                                     fpt[t.code] = { ...(fpt[t.code] || {}), [f.code]: parseInt(e.target.value) || 0 }
+                                     patch({ fittings_per_tank: fpt })
+                                   }} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Material cost (R/kg, admin-only)</label>
@@ -121,6 +192,26 @@ export default function Admin() {
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Payment terms (days)</label>
                 <input className="input" type="number" value={config.payment_terms_days}
                        onChange={(e) => setConfig({ ...config, payment_terms_days: parseInt(e.target.value) || 30 })} />
+              </div>
+            </div>
+            <div>
+              <div className="text-sm font-bold text-brand-blue mb-1">Variance tolerances (0 = exact)</div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Powder (kg)</label>
+                  <input className="input" type="number" step="0.1" value={config.tolerances?.powder_kg ?? 0}
+                         onChange={(e) => patch({ tolerances: { ...config.tolerances, powder_kg: parseFloat(e.target.value) || 0 } })} />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Tanks (qty)</label>
+                  <input className="input" type="number" value={config.tolerances?.tank_qty ?? 0}
+                         onChange={(e) => patch({ tolerances: { ...config.tolerances, tank_qty: parseInt(e.target.value) || 0 } })} />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Fittings (qty)</label>
+                  <input className="input" type="number" value={config.tolerances?.fittings_qty ?? 0}
+                         onChange={(e) => patch({ tolerances: { ...config.tolerances, fittings_qty: parseInt(e.target.value) || 0 } })} />
+                </div>
               </div>
             </div>
             <button className="btn-primary" onClick={saveConfig}>Save config</button>

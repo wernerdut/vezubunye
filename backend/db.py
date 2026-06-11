@@ -37,6 +37,10 @@ def production_runs():
     return db()["production_runs"]
 
 
+def fittings_ledger():
+    return db()["fittings_ledger"]
+
+
 def finished_goods():
     return db()["finished_goods_ledger"]
 
@@ -96,8 +100,8 @@ async def ensure_indexes():
     """node_id is indexed on every collection without exception."""
     for coll in (
         powder_ledger(), production_runs(), finished_goods(), scrap_log(),
-        daily_captures(), delivery_notes(), invoices(), payments(), flags(),
-        physical_counts(), audit_log(),
+        fittings_ledger(), daily_captures(), delivery_notes(), invoices(),
+        payments(), flags(), physical_counts(), audit_log(),
     ):
         await coll.create_index("node_id")
         await coll.create_index([("node_id", 1), ("date", 1)])
