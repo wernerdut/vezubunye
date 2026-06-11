@@ -106,21 +106,48 @@ def _footer(c: Canvas, note: str = ""):
 
 # ---------- Daily Capture Sheet ---------- #
 
+HEADER_FILL = HexColor("#e8e8e8")   # light grey, prints clean in black & white
+GRID = HexColor("#888888")
+
+
+def _bw_header(c: Canvas, title: str, subtitle: str) -> float:
+    """Print-friendly header: black logo + black title, a thin rule, no filled band."""
+    logo = LOGO_BLACK if os.path.exists(LOGO_BLACK) else None
+    if logo:
+        lw = 28 * mm
+        c.drawImage(logo, MARGIN, H - 4 * mm - lw / 1.37, width=lw, height=lw / 1.37,
+                    preserveAspectRatio=True, mask="auto")
+    c.setFillColor(black)
+    c.setFont(_headline_font(), 22)
+    c.drawRightString(W - MARGIN, H - 14 * mm, title)
+    c.setFillColor(GREY)
+    c.setFont(_font(), 10)
+    c.drawRightString(W - MARGIN, H - 20 * mm, subtitle)
+    c.setStrokeColor(black)
+    c.setLineWidth(1)
+    c.line(MARGIN, H - 27 * mm, W - MARGIN, H - 27 * mm)
+    return H - 35 * mm
+
+
 def _capture_table(c: Canvas, y: float, title: str, colour, headers: list[str],
                    fracs: list[float], rows: list[str], row_h: float = 7 * mm) -> float:
-    """A titled table: coloured section label, coloured header band, then blank cells to fill."""
+    """A titled table for the print-friendly sheet: black title, light-grey header band,
+    thin grid. `colour` is accepted for call-site clarity but not used (black & white)."""
     full = W - 2 * MARGIN
     xs = [MARGIN]
     for f in fracs:
         xs.append(xs[-1] + full * f)
-    c.setFillColor(colour)
+    c.setFillColor(black)
     c.setFont(_headline_font(), 12)
     c.drawString(MARGIN, y, title)
     y -= 4 * mm   # heading sits right above its table
-    # header band
-    c.setFillColor(colour)
+    # header band: light grey fill, black text, black outline
+    c.setFillColor(HEADER_FILL)
     c.rect(MARGIN, y - row_h, full, row_h, fill=1, stroke=0)
-    c.setFillColor(white)
+    c.setStrokeColor(black)
+    c.setLineWidth(0.8)
+    c.rect(MARGIN, y - row_h, full, row_h, fill=0)
+    c.setFillColor(black)
     c.setFont(_font(bold=True), 8.5)
     for i, h in enumerate(headers):
         if i == 0:
@@ -132,8 +159,8 @@ def _capture_table(c: Canvas, y: float, title: str, colour, headers: list[str],
     rows = rows or ["", ""]
     c.setFont(_font(), 9.5)
     for label in rows:
-        c.setStrokeColor(LIGHT_GREY)
-        c.setLineWidth(0.6)
+        c.setStrokeColor(GRID)
+        c.setLineWidth(0.5)
         c.rect(MARGIN, y - row_h, full, row_h, fill=0)
         for x in xs[1:-1]:
             c.line(x, y - row_h, x, y)
@@ -144,13 +171,14 @@ def _capture_table(c: Canvas, y: float, title: str, colour, headers: list[str],
 
 
 def daily_capture_sheet(node: dict, cfg: dict) -> bytes:
-    """Blank A4 sheet the on-site operator fills in by hand. Movements only:
-    powder, fittings, tanks moulded (navy), booked (navy), dispatched (green)."""
+    """Blank A4 sheet the on-site operator fills in by hand and prints daily.
+    Print-friendly: black & white, no heavy colour fills. Movements only:
+    powder, fittings, tanks moulded, booked, dispatched."""
     buf = BytesIO()
     c = Canvas(buf, pagesize=A4)
     c.setTitle("Vezubunye Daily Capture Sheet")
     c.setAuthor("Vezubunye")
-    y = _header(c, "Daily Capture Sheet", f"{node['name']} — {node['location']}")
+    y = _bw_header(c, "Daily Capture Sheet", f"{node['name']} — {node['location']}")
 
     c.setFillColor(black)
     c.setFont(_font(bold=True), 10)
@@ -161,19 +189,19 @@ def daily_capture_sheet(node: dict, cfg: dict) -> bytes:
     blank5 = [""] * 5   # powder grades vary day to day — leave open rows to write the grade in
     blank3 = [""] * 3
 
-    y = _capture_table(c, y, "Powder", DARK_BLUE,
+    y = _capture_table(c, y, "Powder", black,
                        ["Powder grade", "Received today (from Fenix)  kg", "Issued to production today  kg"],
                        [0.40, 0.30, 0.30], blank5)
-    y = _capture_table(c, y, "Fittings", DARK_BLUE,
+    y = _capture_table(c, y, "Fittings", black,
                        ["Fitting", "Received today (from Fenix)  qty", "Issued to production today  qty"],
                        [0.40, 0.30, 0.30], blank3)
-    y = _capture_table(c, y, "Tanks Moulded Today", DARK_BLUE,
+    y = _capture_table(c, y, "Tanks Moulded Today", black,
                        ["Tank type", "Powder grade", "A Grade", "B Grade", "Reject"],
                        [0.26, 0.28, 0.155, 0.155, 0.15], tanks)
-    y = _capture_table(c, y, "Tanks Booked to Store Today", DARK_BLUE,
+    y = _capture_table(c, y, "Tanks Booked to Store Today", black,
                        ["Tank type", "A Grade", "B Grade"],
                        [0.40, 0.30, 0.30], tanks)
-    y = _capture_table(c, y, "Tanks Dispatched Today", GREEN,
+    y = _capture_table(c, y, "Tanks Dispatched Today", black,
                        ["Tank type", "A Grade", "B Grade", "Delivery note no."],
                        [0.30, 0.18, 0.18, 0.34], tanks)
 
@@ -194,7 +222,13 @@ def daily_capture_sheet(node: dict, cfg: dict) -> bytes:
                  "Photograph this completed sheet and WhatsApp it before end of day. "
                  "Powder issued, less tanks moulded, must balance on the floor.")
 
-    _footer(c)
+    # print-friendly footer: black rule + grey text
+    c.setStrokeColor(black)
+    c.setLineWidth(0.8)
+    c.line(MARGIN, FOOTER_Y, W - MARGIN, FOOTER_Y)
+    c.setFillColor(GREY)
+    c.setFont(_font(), 7.5)
+    c.drawString(MARGIN, FOOTER_Y - 4 * mm, "Vezubunye  •  Together, We Build")
     c.showPage()
     c.save()
     return buf.getvalue()
