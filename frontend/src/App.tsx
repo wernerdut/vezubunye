@@ -16,6 +16,19 @@ export default function App() {
     if (!user && window.location.pathname !== '/login') navigate('/login')
   }, [user, navigate])
 
+  // Site-wide: focusing a number field selects its contents, so a leftover 0
+  // (or any value) is replaced as soon as you start typing instead of persisting.
+  useEffect(() => {
+    const onFocus = (e: FocusEvent) => {
+      const t = e.target as HTMLInputElement
+      if (t?.tagName === 'INPUT' && t.type === 'number') {
+        requestAnimationFrame(() => { try { t.select() } catch { /* noop */ } })
+      }
+    }
+    document.addEventListener('focusin', onFocus)
+    return () => document.removeEventListener('focusin', onFocus)
+  }, [])
+
   const handleLogout = () => {
     logout()
     setUser(null)

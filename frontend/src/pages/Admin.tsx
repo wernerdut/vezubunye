@@ -109,9 +109,9 @@ export default function Admin() {
                   <tr key={i}>
                     <td className="td"><input className="input w-24" value={t.code} onChange={(e) => setTank(i, 'code', e.target.value)} /></td>
                     <td className="td"><input className="input" value={t.name} onChange={(e) => setTank(i, 'name', e.target.value)} /></td>
-                    <td className="td"><input className="input w-28" type="number" step="0.01" value={t.ex_works_price} onChange={(e) => setTank(i, 'ex_works_price', e.target.value)} /></td>
-                    <td className="td"><input className="input w-24" type="number" step="0.1" value={t.weight_kg} onChange={(e) => setTank(i, 'weight_kg', e.target.value)} /></td>
-                    <td className="td"><input className="input w-24" type="number" step="0.1" value={t.lid_weight_kg} onChange={(e) => setTank(i, 'lid_weight_kg', e.target.value)} /></td>
+                    <td className="td"><input className="input w-28" type="number" step="0.01" value={t.ex_works_price || ''} onChange={(e) => setTank(i, 'ex_works_price', e.target.value)} /></td>
+                    <td className="td"><input className="input w-24" type="number" step="0.1" value={t.weight_kg || ''} onChange={(e) => setTank(i, 'weight_kg', e.target.value)} /></td>
+                    <td className="td"><input className="input w-24" type="number" step="0.1" value={t.lid_weight_kg || ''} onChange={(e) => setTank(i, 'lid_weight_kg', e.target.value)} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -190,22 +190,22 @@ export default function Admin() {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Material cost (R/kg, admin-only)</label>
-                <input className="input" type="number" step="0.01" value={config.material_cost_per_kg ?? 0}
+                <input className="input" type="number" step="0.01" value={config.material_cost_per_kg || ''}
                        onChange={(e) => setConfig({ ...config, material_cost_per_kg: parseFloat(e.target.value) || 0 })} />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">B-grade ex-works %</label>
-                <input className="input" type="number" step="1" value={config.b_grade_exworks_pct}
+                <input className="input" type="number" step="1" value={config.b_grade_exworks_pct || ''}
                        onChange={(e) => setConfig({ ...config, b_grade_exworks_pct: parseFloat(e.target.value) || 0 })} />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">VAT %</label>
-                <input className="input" type="number" step="0.5" value={config.vat_rate}
+                <input className="input" type="number" step="0.5" value={config.vat_rate || ''}
                        onChange={(e) => setConfig({ ...config, vat_rate: parseFloat(e.target.value) || 0 })} />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Payment terms (days)</label>
-                <input className="input" type="number" value={config.payment_terms_days}
+                <input className="input" type="number" value={config.payment_terms_days || ''}
                        onChange={(e) => setConfig({ ...config, payment_terms_days: parseInt(e.target.value) || 30 })} />
               </div>
             </div>
@@ -214,17 +214,17 @@ export default function Admin() {
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">Powder (kg)</label>
-                  <input className="input" type="number" step="0.1" value={config.tolerances?.powder_kg ?? 0}
+                  <input className="input" type="number" step="0.1" value={config.tolerances?.powder_kg || ''}
                          onChange={(e) => patch({ tolerances: { ...config.tolerances, powder_kg: parseFloat(e.target.value) || 0 } })} />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">Tanks (qty)</label>
-                  <input className="input" type="number" value={config.tolerances?.tank_qty ?? 0}
+                  <input className="input" type="number" value={config.tolerances?.tank_qty || ''}
                          onChange={(e) => patch({ tolerances: { ...config.tolerances, tank_qty: parseInt(e.target.value) || 0 } })} />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">Fittings (qty)</label>
-                  <input className="input" type="number" value={config.tolerances?.fittings_qty ?? 0}
+                  <input className="input" type="number" value={config.tolerances?.fittings_qty || ''}
                          onChange={(e) => patch({ tolerances: { ...config.tolerances, fittings_qty: parseInt(e.target.value) || 0 } })} />
                 </div>
               </div>
