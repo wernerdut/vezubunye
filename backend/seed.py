@@ -39,6 +39,8 @@ async def seed():
             "_id": uuid4().hex,
             "node_id": "gogreen",
             "tank_types": [
+                {"code": "1000L", "name": "1000L Horizontal Transport Tank", "ex_works_price": 2600.0,
+                 "weight_kg": 40.0, "lid_weight_kg": 1.0},
                 {"code": "2500L", "name": "2500L Tank", "ex_works_price": 1620.0,
                  "weight_kg": 36.0, "lid_weight_kg": 1.0},
                 {"code": "5000L", "name": "5000L Tank", "ex_works_price": 3450.0,
@@ -64,6 +66,11 @@ async def seed():
         add: dict = {}
         if not any("lid_weight_kg" in t for t in cfg.get("tank_types", [])):
             tts = [dict(t, lid_weight_kg=t.get("lid_weight_kg", 1.0)) for t in cfg.get("tank_types", [])]
+            add["tank_types"] = tts
+        if not any(t.get("code") == "1000L" for t in cfg.get("tank_types", [])):
+            tts = add.get("tank_types") or list(cfg.get("tank_types", []))
+            tts.append({"code": "1000L", "name": "1000L Horizontal Transport Tank",
+                        "ex_works_price": 2600.0, "weight_kg": 40.0, "lid_weight_kg": 1.0})
             add["tank_types"] = tts
         if "powder_products" not in cfg:
             add["powder_products"] = [
