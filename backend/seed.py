@@ -17,6 +17,39 @@ import auth
 import db
 
 
+async def migrate_config() -> list[str]:
+    """Idempotently bring the existing gogreen config up to the current shape.
+
+    Adds any missing fields/products without overwriting admin-edited values.
+    Safe to run on every app startup. Returns the list of fields touched.
+    """
+    cfg = await db.node_config().find_one({"node_id": "gogreen"})
+    if not cfg:
+        return []
+    add: dict = {}
+    if not any("lid_weight_kg" in t for t in cfg.get("tank_types", [])):
+        add["tank_types"] = [dict(t, lid_weight_kg=t.get("lid_weight_kg", 1.0))
+                             for t in cfg.get("tank_types", [])]
+    if not any(t.get("code") == "1000L" for t in cfg.get("tank_types", [])):
+        tts = add.get("tank_types") or list(cfg.get("tank_types", []))
+        tts.append({"code": "1000L", "name": "1000L Horizontal Transport Tank",
+                    "ex_works_price": 2600.0, "weight_kg": 40.0, "lid_weight_kg": 1.0})
+        add["tank_types"] = tts
+    if "powder_products" not in cfg:
+        add["powder_products"] = [
+            {"code": "BLACK", "colour": "Black", "description": "Black powder (body + lids)",
+             "is_black": True}]
+    if "fitting_types" not in cfg:
+        add["fitting_types"] = []
+    if "fittings_per_tank" not in cfg:
+        add["fittings_per_tank"] = {}
+    if "tolerances" not in cfg:
+        add["tolerances"] = {"powder_kg": 0.0, "tank_qty": 0, "fittings_qty": 0}
+    if add:
+        await db.node_config().update_one({"node_id": "gogreen"}, {"$set": add})
+    return list(add)
+
+
 async def seed():
     # --- node ---
     if not await db.nodes().find_one({"node_id": "gogreen"}):
@@ -61,30 +94,9 @@ async def seed():
         })
         print("config: gogreen created")
     else:
-        # idempotent migration: add Brief-2 fields to existing config without overwriting values
-        cfg = await db.node_config().find_one({"node_id": "gogreen"})
-        add: dict = {}
-        if not any("lid_weight_kg" in t for t in cfg.get("tank_types", [])):
-            tts = [dict(t, lid_weight_kg=t.get("lid_weight_kg", 1.0)) for t in cfg.get("tank_types", [])]
-            add["tank_types"] = tts
-        if not any(t.get("code") == "1000L" for t in cfg.get("tank_types", [])):
-            tts = add.get("tank_types") or list(cfg.get("tank_types", []))
-            tts.append({"code": "1000L", "name": "1000L Horizontal Transport Tank",
-                        "ex_works_price": 2600.0, "weight_kg": 40.0, "lid_weight_kg": 1.0})
-            add["tank_types"] = tts
-        if "powder_products" not in cfg:
-            add["powder_products"] = [
-                {"code": "BLACK", "colour": "Black", "description": "Black powder (body + lids)",
-                 "is_black": True}]
-        if "fitting_types" not in cfg:
-            add["fitting_types"] = []
-        if "fittings_per_tank" not in cfg:
-            add["fittings_per_tank"] = {}
-        if "tolerances" not in cfg:
-            add["tolerances"] = {"powder_kg": 0.0, "tank_qty": 0, "fittings_qty": 0}
-        if add:
-            await db.node_config().update_one({"node_id": "gogreen"}, {"$set": add})
-            print(f"config: gogreen migrated ({', '.join(add)})")
+        changed = await migrate_config()
+        if changed:
+            print(f"config: gogreen migrated ({', '.join(changed)})")
         else:
             print("config: gogreen up to date")
 

@@ -53,6 +53,16 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     await db.ensure_indexes()
+    # Self-heal the live config on every boot: idempotently adds any missing
+    # tank types / products (e.g. the 1000L horizontal transport tank) without
+    # overwriting admin edits. A bad migration must never block startup.
+    try:
+        import seed
+        changed = await seed.migrate_config()
+        if changed:
+            print(f"config migration applied: {', '.join(changed)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"config migration skipped: {exc}")
 
 
 @app.get("/api/health")
