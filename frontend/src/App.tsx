@@ -5,8 +5,19 @@ import type { User } from './types'
 import Layout from './components/Layout'
 import Admin from './pages/Admin'
 import Login from './pages/Login'
+import NetworkDashboard from './pages/NetworkDashboard'
 import NodePage from './pages/NodePage'
 import ReconDashboard from './pages/ReconDashboard'
+
+/** Where each role lands after login. */
+function homePath(user: User): string {
+  if (user.role === 'audit') return '/recon'
+  if (user.role === 'operations') {
+    const node = Array.isArray(user.node_access) ? user.node_access[0] : 'gogreen'
+    return `/node/${node || 'gogreen'}/capture`
+  }
+  return '/dashboard'
+}
 
 export default function App() {
   const [user, setUser] = useState<User | null>(storedUser())
@@ -38,20 +49,22 @@ export default function App() {
   if (!user) {
     return (
       <Routes>
-        <Route path="*" element={<Login onLogin={(u) => { setUser(u); navigate(u.role === 'audit' ? '/recon' : '/node/gogreen') }} />} />
+        <Route path="*" element={<Login onLogin={(u) => { setUser(u); navigate(homePath(u)) }} />} />
       </Routes>
     )
   }
 
+  const home = homePath(user)
   return (
     <Layout user={user} onLogout={handleLogout}>
       <Routes>
-        <Route path="/login" element={<Navigate to={user.role === 'audit' ? '/recon' : '/node/gogreen'} />} />
-        <Route path="/" element={<Navigate to={user.role === 'audit' ? '/recon' : '/node/gogreen'} />} />
+        <Route path="/login" element={<Navigate to={home} />} />
+        <Route path="/" element={<Navigate to={home} />} />
+        <Route path="/dashboard" element={<NetworkDashboard user={user} />} />
         <Route path="/node/:nodeId/*" element={<NodePage user={user} />} />
         <Route path="/recon" element={<ReconDashboard user={user} />} />
         {user.role === 'admin' && <Route path="/admin" element={<Admin />} />}
-        <Route path="*" element={<Navigate to="/" />} />
+        <Route path="*" element={<Navigate to={home} />} />
       </Routes>
     </Layout>
   )

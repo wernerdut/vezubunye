@@ -34,7 +34,15 @@ export default function Layout({ user, onLogout, children }: {
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-4">
           <img src="/logos/vezubunye_logo_white_transparent.png" alt="Vezubunye" className="h-12" />
           <nav className="flex gap-1 ml-2">
-            {navLink('/node/gogreen', 'GoGreen')}
+            <Link
+              to="/dashboard"
+              className={`px-3 py-1.5 rounded text-sm font-semibold ${
+                location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/node')
+                  ? 'bg-white/20 text-white' : 'text-blue-100 hover:text-white'
+              }`}
+            >
+              Dashboard
+            </Link>
             {(user.role === 'audit' || user.role === 'admin') && navLink('/recon', 'Reconciliation')}
             {user.role === 'admin' && navLink('/admin', 'Admin')}
           </nav>

@@ -260,6 +260,49 @@ export interface ReconData {
   unpaid_invoices: Invoice[]
 }
 
+export interface NetworkNode {
+  node_id: string
+  name: string
+  location: string
+  total_tanks: number
+  total_material_kg: number
+  tanks_by_type: { tank_type: string; name: string; qty: number }[]
+  material_cost?: number
+}
+
+export interface NetworkDashboardData {
+  nodes: NetworkNode[]
+  grand_total: { tanks: number; material_kg: number; material_cost?: number }
+}
+
+export interface DashTankRow {
+  tank_type: string
+  name: string
+  a: number
+  b: number
+  reject: number
+  total: number
+}
+
+export interface DashPeriod {
+  month?: string
+  tanks_by_type: DashTankRow[]
+  total_produced: number
+  total_sold: number
+  material_by_type: { tank_type: string; name: string; kg: number }[]
+  material_by_colour: { colour: string; kg: number }[]
+  total_material_kg: number
+  material_cost?: number
+}
+
+export interface NodeDashboardData {
+  year: string
+  years: string[]
+  months: DashPeriod[]
+  year_totals: DashPeriod
+  all_time: { total_produced: number; total_sold: number; total_material_kg: number; material_cost?: number }
+}
+
 export interface MonthlyReport {
   month: string
   kg_through_plant: number

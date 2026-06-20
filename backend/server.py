@@ -29,6 +29,7 @@ import auth
 import db
 import pdf_gen
 import recon
+import reports
 from models import (
     CaptureEntriesIn, DeliveryNoteIn, FlagResolveIn, InvoiceIn, LedgerAdjustIn,
     LoginIn, NodeConfigIn, NodeIn, PaymentIn, PaymentMatchIn, PhysicalCountIn,
@@ -1031,6 +1032,21 @@ async def monthly_report(node_id: str, month: str, user: dict = Depends(auth.cur
     if user["role"] == "admin":
         out["scrap_material_cost"] = round(sum(s.get("material_cost_lost", 0) for s in scrap_docs), 2)
     return out
+
+
+@app.get("/api/dashboard/network")
+async def dashboard_network(user: dict = Depends(auth.current_user)):
+    """Per-node headline totals (tanks + material) and a grand total. Material cost admin-only."""
+    return await reports.network_dashboard(user.get("node_access", "all"), user["role"] == "admin")
+
+
+@app.get("/api/nodes/{node_id}/dashboard")
+async def node_dashboard(node_id: str, year: Optional[str] = None,
+                         user: dict = Depends(auth.current_user)):
+    """Month-by-month tanks/material/sold for a node, with year + all-time totals."""
+    auth.check_node_access(user, node_id)
+    cfg = await _get_cfg(node_id)
+    return await reports.node_dashboard(node_id, cfg, year or _today()[:4], user["role"] == "admin")
 
 
 @app.get("/api/network/kg")

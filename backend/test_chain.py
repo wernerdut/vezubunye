@@ -218,6 +218,27 @@ async def test_full_chain(client):
     assert "scrap_material_cost" not in (await c.get("/api/nodes/gogreen/reports/monthly?month=2026-06", headers=audit)).json()
     assert (await c.get("/api/network/kg", headers=ops)).json()["total_kg"] == 413.0
 
+    # ---- dashboards ----
+    # produced all-time: day1 (4x2500 + 2x5000) + day5 (1x2500) + day7 (1x5000) = 8 tanks
+    # sold (dispatched): day3 2500 A2+B1 = 3, day8 5000 A99 = 99 -> 102
+    net = (await c.get("/api/dashboard/network", headers=admin)).json()
+    gg = next(n for n in net["nodes"] if n["node_id"] == "gogreen")
+    assert gg["total_tanks"] == 8 and gg["total_material_kg"] == 413.0
+    assert net["grand_total"]["tanks"] == 8 and net["grand_total"]["material_kg"] == 413.0
+    assert "material_cost" in gg                                   # admin sees cost
+    assert "material_cost" not in (await c.get("/api/dashboard/network", headers=ops)).json()["nodes"][0]
+
+    dash = (await c.get("/api/nodes/gogreen/dashboard?year=2026", headers=admin)).json()
+    assert dash["all_time"]["total_produced"] == 8
+    assert dash["all_time"]["total_sold"] == 102
+    assert dash["all_time"]["total_material_kg"] == 413.0
+    assert dash["all_time"]["material_cost"] == 8260.0            # 413 kg x R20
+    assert "2026" in dash["years"]
+    jun = next(m for m in dash["months"] if m["month"] == "2026-06")
+    colour = {x["colour"]: x["kg"] for x in jun["material_by_colour"]}
+    assert colour["Black"] == 210.5 and colour["Green"] == 202.5  # 413 split by the recipe
+    assert "material_cost" not in (await c.get("/api/nodes/gogreen/dashboard?year=2026", headers=ops)).json()["all_time"]
+
     # audit log is admin-only
     assert len((await c.get("/api/audit", headers=admin)).json()) > 10
     assert (await c.get("/api/audit", headers=audit)).status_code == 403
