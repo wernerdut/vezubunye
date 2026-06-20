@@ -30,7 +30,11 @@ async def migrate_config() -> list[str]:
     if not any("lid_weight_kg" in t for t in cfg.get("tank_types", [])):
         add["tank_types"] = [dict(t, lid_weight_kg=t.get("lid_weight_kg", 1.0))
                              for t in cfg.get("tank_types", [])]
-    if not any(t.get("code") == "1000L" for t in cfg.get("tank_types", [])):
+    # one-time add of the 1000L transport tank — match any 1000L-ish tank (code or name)
+    # so an admin who renamed it (e.g. T1000L) doesn't get a duplicate re-added on restart
+    has_1000 = any("1000" in (t.get("code", "") + t.get("name", ""))
+                   for t in cfg.get("tank_types", []))
+    if not has_1000:
         tts = add.get("tank_types") or list(cfg.get("tank_types", []))
         tts.append({"code": "1000L", "name": "1000L Horizontal Transport Tank",
                     "ex_works_price": 2600.0, "weight_kg": 40.0, "lid_weight_kg": 1.0})
