@@ -29,8 +29,16 @@ export default function Admin() {
   const saveConfig = async () => {
     if (!config) return
     setMsg(''); setError('')
+    // drop blank rows the user added but didn't fill in
+    const cleaned = {
+      ...config,
+      tank_types: config.tank_types.filter((t) => t.code.trim()),
+      powder_products: config.powder_products.filter((p) => p.code.trim()),
+      fitting_types: config.fitting_types.filter((f) => f.code.trim()),
+    }
     try {
-      await api.put('/api/nodes/gogreen/config', config)
+      await api.put('/api/nodes/gogreen/config', cleaned)
+      setConfig(cleaned)
       setMsg('Config saved.')
     } catch (e) {
       setError(errMsg(e))
@@ -125,8 +133,13 @@ export default function Admin() {
             {/* Powder products */}
             <div>
               <div className="text-sm font-bold text-brand-blue mb-1">Powder products</div>
+              <p className="text-xs text-gray-500 mb-2">
+                List every powder grade you stock. Tick <b>“Is black powder”</b> on the one black grade — every tank
+                draws it for half its body plus the lid, so the recipe needs to know which grade is the black. All the
+                others are colours. Only one grade can be the black.
+              </p>
               <table className="w-full text-sm">
-                <thead><tr><th className="th">Code</th><th className="th">Colour</th><th className="th">Description</th><th className="th">Black stock?</th><th className="th"></th></tr></thead>
+                <thead><tr><th className="th">Code</th><th className="th">Colour / grade</th><th className="th">Description</th><th className="th">Is black powder</th><th className="th"></th></tr></thead>
                 <tbody>
                   {config.powder_products.map((p, i) => (
                     <tr key={i}>
@@ -229,7 +242,12 @@ export default function Admin() {
                 </div>
               </div>
             </div>
-            <button className="btn-primary" onClick={saveConfig}>Save config</button>
+            <div className="sticky bottom-0 -mx-4 -mb-4 px-4 py-3 bg-white border-t border-gray-200 rounded-b-lg flex items-center gap-3">
+              <button className="btn-primary" onClick={saveConfig}>Save config</button>
+              <span className="text-xs text-gray-500">Changes only take effect after you save.</span>
+              {msg && <span className="text-sm text-brand-green font-semibold ml-auto">{msg}</span>}
+              {error && <span className="text-sm text-brand-red ml-auto">{error}</span>}
+            </div>
           </div>
         </div>
       )}
