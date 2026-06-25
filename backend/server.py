@@ -1049,6 +1049,15 @@ async def node_dashboard(node_id: str, year: Optional[str] = None,
     return await reports.node_dashboard(node_id, cfg, year or _today()[:4], user["role"] == "admin")
 
 
+@app.get("/api/nodes/{node_id}/dashboard/daily")
+async def node_dashboard_daily(node_id: str, month: Optional[str] = None,
+                               user: dict = Depends(auth.current_user)):
+    """Day-by-day tanks produced/sold for a node within `month` (YYYY-MM), grouped by ISO week."""
+    auth.check_node_access(user, node_id)
+    cfg = await _get_cfg(node_id)
+    return await reports.node_daily(node_id, cfg, month or _today()[:7], user["role"] == "admin")
+
+
 @app.get("/api/network/kg")
 async def network_kg(user: dict = Depends(auth.current_user)):
     """The one network number: total kilograms through all nodes."""

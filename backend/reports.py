@@ -6,12 +6,30 @@ Material *cost* (Rand) is admin-only and only included when include_cost is True
 """
 from __future__ import annotations
 
+import calendar
+from datetime import date as _date
+
 import db
 import recon
+
+WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def _empty():
     return {"by_type": {}, "by_colour": {}, "produced": 0, "sold": 0, "kg": 0.0}
+
+
+def _merge(into: dict, src: dict) -> None:
+    """Fold one _empty()-shaped accumulator into another (day -> week -> month)."""
+    for k, v in src["by_type"].items():
+        b = into["by_type"].setdefault(k, {"a": 0, "b": 0, "reject": 0, "total": 0})
+        for f in ("a", "b", "reject", "total"):
+            b[f] += v[f]
+    for k, v in src["by_colour"].items():
+        into["by_colour"][k] = into["by_colour"].get(k, 0.0) + v
+    into["produced"] += src["produced"]
+    into["sold"] += src["sold"]
+    into["kg"] += src["kg"]
 
 
 def _add_run(acc: dict, r: dict, tmap: dict, black_code: str | None) -> None:
@@ -134,4 +152,60 @@ async def node_dashboard(node_id: str, cfg: dict, year: str, include_cost: bool)
         "months": [serialize(months[m], m) for m in sorted(months)],
         "year_totals": serialize(year_acc),
         "all_time": all_time,
+    }
+
+
+async def node_daily(node_id: str, cfg: dict, month: str, include_cost: bool) -> dict:
+    """Day-by-day tanks produced/sold for `month` (YYYY-MM), grouped into ISO weeks.
+
+    Every calendar day of the month is returned (zero days included) so the dashboard
+    can show production for each day. Each week carries a subtotal; the month total caps it.
+    """
+    tmap = recon.tank_map(cfg)
+    black_code = next(iter(recon.black_codes(cfg)), None)
+    mcost = cfg.get("material_cost_per_kg", 0.0)
+    names = {t["code"]: t["name"] for t in cfg["tank_types"]}
+
+    day_acc: dict = {}
+    async for r in db.production_runs().find({"node_id": node_id, "date": {"$regex": f"^{month}"}}):
+        _add_run(day_acc.setdefault(r["date"], _empty()), r, tmap, black_code)
+    async for e in db.finished_goods().find(
+            {"node_id": node_id, "type": "dispatched", "date": {"$regex": f"^{month}"}}):
+        day_acc.setdefault(e["date"], _empty())["sold"] += e["quantity"]
+
+    def serialize(acc: dict, **extra) -> dict:
+        out = dict(extra)
+        out["tanks_by_type"] = [{"tank_type": k, "name": names.get(k, k), **v}
+                                for k, v in sorted(acc["by_type"].items())]
+        out["total_produced"] = acc["produced"]
+        out["total_sold"] = acc["sold"]
+        out["total_material_kg"] = round(acc["kg"], 1)
+        if include_cost:
+            out["material_cost"] = round(acc["kg"] * mcost, 2)
+        return out
+
+    yr, mo = int(month[:4]), int(month[5:7])
+    ndays = calendar.monthrange(yr, mo)[1]
+    weeks: list = []
+    month_acc = _empty()
+    cur_key = None
+    for d in range(1, ndays + 1):
+        dt = _date(yr, mo, d)
+        ds = dt.isoformat()
+        iso = dt.isocalendar()  # (iso_year, iso_week, iso_weekday)
+        if cur_key != (iso[0], iso[1]):
+            cur_key = (iso[0], iso[1])
+            weeks.append({"week": iso[1], "start": ds, "end": ds, "days": [], "_acc": _empty()})
+        wk = weeks[-1]
+        acc = day_acc.get(ds, _empty())
+        wk["days"].append(serialize(acc, date=ds, weekday=WEEKDAY[dt.weekday()]))
+        wk["end"] = ds
+        _merge(wk["_acc"], acc)
+        _merge(month_acc, acc)
+
+    return {
+        "month": month,
+        "weeks": [{"week": w["week"], "start": w["start"], "end": w["end"],
+                   "days": w["days"], "subtotal": serialize(w["_acc"])} for w in weeks],
+        "month_totals": serialize(month_acc),
     }

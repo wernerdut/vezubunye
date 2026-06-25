@@ -239,6 +239,27 @@ async def test_full_chain(client):
     assert colour["Black"] == 210.5 and colour["Green"] == 202.5  # 413 split by the recipe
     assert "material_cost" not in (await c.get("/api/nodes/gogreen/dashboard?year=2026", headers=ops)).json()["all_time"]
 
+    # ---- daily dashboard: every day of the month, split by tank type, grouped by ISO week ----
+    daily = (await c.get("/api/nodes/gogreen/dashboard/daily?month=2026-06", headers=admin)).json()
+    assert daily["month"] == "2026-06"
+    day_rows = {d["date"]: d for w in daily["weeks"] for d in w["days"]}
+    assert len(day_rows) == 30                                     # all of June present, zero days too
+    d1 = day_rows["2026-06-01"]
+    assert d1["total_produced"] == 6 and d1["total_sold"] == 0 and d1["total_material_kg"] == 300.0
+    bt = {t["tank_type"]: t for t in d1["tanks_by_type"]}
+    assert bt["2500L"]["a"] == 2 and bt["2500L"]["b"] == 1 and bt["2500L"]["reject"] == 1 and bt["5000L"]["total"] == 2
+    assert day_rows["2026-06-03"]["total_sold"] == 3 and day_rows["2026-06-03"]["total_produced"] == 0
+    assert day_rows["2026-06-05"]["total_produced"] == 1 and day_rows["2026-06-07"]["total_produced"] == 1
+    assert day_rows["2026-06-08"]["total_sold"] == 99
+    # week subtotals sum to the month total
+    assert sum(w["subtotal"]["total_produced"] for w in daily["weeks"]) == 8
+    assert sum(w["subtotal"]["total_sold"] for w in daily["weeks"]) == 102
+    assert daily["month_totals"]["total_produced"] == 8 and daily["month_totals"]["total_sold"] == 102
+    assert daily["month_totals"]["total_material_kg"] == 413.0
+    assert daily["month_totals"]["material_cost"] == 8260.0        # admin sees cost
+    assert "material_cost" not in (await c.get(
+        "/api/nodes/gogreen/dashboard/daily?month=2026-06", headers=ops)).json()["month_totals"]
+
     # audit log is admin-only
     assert len((await c.get("/api/audit", headers=admin)).json()) > 10
     assert (await c.get("/api/audit", headers=audit)).status_code == 403

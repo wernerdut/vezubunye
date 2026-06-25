@@ -303,6 +303,33 @@ export interface NodeDashboardData {
   all_time: { total_produced: number; total_sold: number; total_material_kg: number; material_cost?: number }
 }
 
+export interface DashAgg {
+  tanks_by_type: DashTankRow[]
+  total_produced: number
+  total_sold: number
+  total_material_kg: number
+  material_cost?: number
+}
+
+export interface DashDay extends DashAgg {
+  date: string
+  weekday: string
+}
+
+export interface DashWeek {
+  week: number
+  start: string
+  end: string
+  days: DashDay[]
+  subtotal: DashAgg
+}
+
+export interface NodeDailyData {
+  month: string
+  weeks: DashWeek[]
+  month_totals: DashAgg
+}
+
 export interface MonthlyReport {
   month: string
   kg_through_plant: number
