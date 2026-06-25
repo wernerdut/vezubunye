@@ -86,27 +86,23 @@ async def test_full_chain(client):
             {"tank_type": "2500L", "colour": "GREEN", "quantity_a": 2, "quantity_b": 1, "quantity_reject": 1},
             {"tank_type": "5000L", "colour": "GREEN", "quantity_a": 2, "quantity_b": 0, "quantity_reject": 0},
         ],
-        "booked": [
-            {"tank_type": "2500L", "quantity_a": 2, "quantity_b": 1},
-            {"tank_type": "5000L", "quantity_a": 2, "quantity_b": 0},
-        ],
     })
     assert r.status_code == 200, r.text
-    assert r.json()["status"] == "reconciled" and r.json()["flags_raised"] == []
+    # capture no longer reconciles: it records, produced tanks go straight to stock, no flags
+    assert r.json()["status"] == "captured" and r.json()["flags_raised"] == []
 
-    # powder: per-grade warehouse + floor (each colour distinct), floors all 0
+    # powder still recorded per grade (warehouse + floor balances exist), no flag raised
     st = {s["powder_type"]: s for s in (await c.get("/api/nodes/gogreen/powder", headers=ops)).json()["stock"]}
     assert st["BLACK"]["warehouse"] == 847.0 and st["BLACK"]["floor"] == 0.0
     assert st["GREEN"]["warehouse"] == 853.0 and st["GREEN"]["floor"] == 0.0
 
-    # fittings: warehouse 100-8=92, issued==expected
+    # fittings warehouse still recorded
     fit = (await c.get("/api/nodes/gogreen/fittings", headers=ops)).json()["warehouse"][0]
-    assert fit["balance"] == 92 and fit["issued"] == 8 and fit["expected"] == 8 and fit["variance"] == 0
+    assert fit["balance"] == 92
 
-    # finished goods: booked into the store, nothing on the floor
+    # finished goods: produced A/B tanks are in stock immediately (auto-booked)
     fg = {(p["tank_type"], p["grade"]): p for p in (await c.get("/api/nodes/gogreen/finished-goods", headers=ops)).json()["positions"]}
-    assert fg[("2500L", "A")]["store"] == 2 and fg[("2500L", "B")]["store"] == 1 and fg[("5000L", "A")]["store"] == 2
-    assert all(p["floor"] == 0 for p in fg.values())
+    assert fg[("2500L", "A")]["total"] == 2 and fg[("2500L", "B")]["total"] == 1 and fg[("5000L", "A")]["total"] == 2
 
     # scrap: reject consumes full powder incl. lid (37 kg), cost admin-only
     sc = (await c.get("/api/nodes/gogreen/scrap", headers=admin)).json()[0]
@@ -129,9 +125,9 @@ async def test_full_chain(client):
             {"tank_type": "2500L", "grade": "A", "quantity": 2, "dn_number": "GG-DN-0001"},
             {"tank_type": "2500L", "grade": "B", "quantity": 1, "dn_number": "GG-DN-0001"},
         ]})
-    assert r.status_code == 200 and r.json()["status"] == "reconciled", r.text
+    assert r.status_code == 200 and r.json()["status"] == "captured", r.text
     fg = {(p["tank_type"], p["grade"]): p for p in (await c.get("/api/nodes/gogreen/finished-goods", headers=ops)).json()["positions"]}
-    assert fg[("2500L", "A")]["store"] == 0 and fg[("5000L", "A")]["store"] == 2
+    assert fg[("2500L", "A")]["total"] == 0 and fg[("5000L", "A")]["total"] == 2
 
     # dispatch requires a DN number
     cap_bad = (await c.post("/api/nodes/gogreen/captures?date=2026-06-03", headers=ops)).json()["_id"]
@@ -162,42 +158,29 @@ async def test_full_chain(client):
     assert m["split"]["fenix_exworks_value"] == 4860.0  # 2*1620 (A) + 1*1620 (B at 100%)
     assert m["invoice_status"] == "paid"
 
-    # ---- Day 5: fittings variance (issue 5 outlets for 1 tank that needs 1) ----
+    # ---- Day 5 & 7: more production. No powder issued, no flags raised at capture
+    # (this is the point: reconciliation must not hold up capturing produced tanks). ----
     cap5 = (await c.post("/api/nodes/gogreen/captures?date=2026-06-05", headers=ops)).json()["_id"]
     r = await c.post(f"/api/captures/{cap5}/entries", headers=ops, json={
-        "powder": [{"powder_type": "BLACK", "received_kg": 0, "issued_kg": 19},
-                   {"powder_type": "GREEN", "received_kg": 0, "issued_kg": 18}],
-        "fittings": [{"fitting_type": "OUTLET", "received_qty": 0, "issued_qty": 5}],
         "production": [{"tank_type": "2500L", "colour": "GREEN", "quantity_a": 1, "quantity_b": 0, "quantity_reject": 0}]})
-    assert r.json()["flags_raised"]  # at least one flag id returned
-    assert any(f["type"] == "fittings_variance" for f in (await c.get("/api/nodes/gogreen/flags?status=open", headers=audit)).json())
-
-    # ---- Day 7: powder floor goes negative (mould a 5000 with no powder issued) ----
+    assert r.json()["status"] == "captured" and r.json()["flags_raised"] == []
     cap7 = (await c.post("/api/nodes/gogreen/captures?date=2026-06-07", headers=ops)).json()["_id"]
     r = await c.post(f"/api/captures/{cap7}/entries", headers=ops, json={
-        "fittings": [{"fitting_type": "OUTLET", "received_qty": 0, "issued_qty": 2}],
         "production": [{"tank_type": "5000L", "colour": "GREEN", "quantity_a": 1, "quantity_b": 0, "quantity_reject": 0}]})
-    assert r.json()["status"] == "captured"
-    open_flags = (await c.get("/api/nodes/gogreen/flags?status=open", headers=audit)).json()
-    assert any(f["type"] == "powder_variance" for f in open_flags)
+    assert r.json()["status"] == "captured" and r.json()["flags_raised"] == []
+    # produced tanks are in stock right away
+    fg = {(p["tank_type"], p["grade"]): p for p in (await c.get("/api/nodes/gogreen/finished-goods", headers=ops)).json()["positions"]}
+    assert fg[("2500L", "A")]["total"] == 1   # day5 produced, none dispatched
 
-    # operations cannot resolve; audit resolves with a note
-    pv = next(f for f in open_flags if f["type"] == "powder_variance")
-    assert (await c.post(f"/api/flags/{pv['_id']}/resolve", headers=ops, json={"resolution_note": "x"})).status_code == 403
-    assert (await c.post(f"/api/flags/{pv['_id']}/resolve", headers=audit, json={"resolution_note": "  "})).status_code == 400
-    assert (await c.post(f"/api/flags/{pv['_id']}/resolve", headers=audit,
-                         json={"resolution_note": "Re-issued 76kg that was already on the floor; corrected."})).status_code == 200
-
-    # ---- Day 8: over-dispatch breaks the finished-goods identity ----
+    # ---- Day 8: dispatch (records the sale; no capture-time flag) ----
     await c.post("/api/nodes/gogreen/delivery-notes", headers=ops, json={
         "date": "2026-06-08", "client_name": "Test", "lines": [{"tank_type": "5000L", "grade": "A", "quantity": 99}]})
     cap8 = (await c.post("/api/nodes/gogreen/captures?date=2026-06-08", headers=ops)).json()["_id"]
     r = await c.post(f"/api/captures/{cap8}/entries", headers=ops, json={
         "dispatched": [{"tank_type": "5000L", "grade": "A", "quantity": 99, "dn_number": "GG-DN-0002"}]})
-    assert r.json()["flags_raised"]
-    assert any(f["type"] == "finished_goods_mismatch" for f in (await c.get("/api/nodes/gogreen/flags?status=open", headers=audit)).json())
+    assert r.json()["status"] == "captured" and r.json()["flags_raised"] == []
 
-    # ---- physical count: powder warehouse short -> count_mismatch ----
+    # ---- reconciliation happens afterwards: a stocktake variance flags, and the flow holds ----
     r = await c.post("/api/nodes/gogreen/counts", headers=audit, json={
         "date": "2026-06-09",
         "powder_counted": [{"powder_type": "BLACK", "warehouse_kg": 800, "floor_kg": 0},
@@ -205,6 +188,13 @@ async def test_full_chain(client):
         "fg_warehouse_counted": [], "tank_floor_counted": [],
         "fittings_counted": [{"fitting_type": "OUTLET", "warehouse_qty": 85}]})
     assert r.status_code == 200 and len(r.json()["flags_raised"]) >= 1
+    cm = next(f for f in (await c.get("/api/nodes/gogreen/flags?status=open", headers=audit)).json()
+              if f["type"] == "count_mismatch")
+    # operations can't resolve; audit needs a real note
+    assert (await c.post(f"/api/flags/{cm['_id']}/resolve", headers=ops, json={"resolution_note": "x"})).status_code == 403
+    assert (await c.post(f"/api/flags/{cm['_id']}/resolve", headers=audit, json={"resolution_note": "  "})).status_code == 400
+    assert (await c.post(f"/api/flags/{cm['_id']}/resolve", headers=audit,
+                         json={"resolution_note": "Recount confirmed; bag miscount corrected."})).status_code == 200
 
     # ---- recon dashboard + reports + network kg (lids included) ----
     days = {d["date"]: d["status"] for d in (await c.get("/api/nodes/gogreen/recon?month=2026-06", headers=audit)).json()["days"]}

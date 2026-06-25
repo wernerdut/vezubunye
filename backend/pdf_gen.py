@@ -195,12 +195,9 @@ def daily_capture_sheet(node: dict, cfg: dict) -> bytes:
     y = _capture_table(c, y, "Fittings", black,
                        ["Fitting", "Received today (from Fenix)  qty", "Issued to production today  qty"],
                        [0.40, 0.30, 0.30], blank3)
-    y = _capture_table(c, y, "Tanks Moulded Today", black,
+    y = _capture_table(c, y, "Tanks Produced Today", black,
                        ["Tank type", "Powder grade", "A Grade", "B Grade", "Reject"],
                        [0.26, 0.28, 0.155, 0.155, 0.15], tanks)
-    y = _capture_table(c, y, "Tanks Booked to Store Today", black,
-                       ["Tank type", "A Grade", "B Grade"],
-                       [0.40, 0.30, 0.30], tanks)
     y = _capture_table(c, y, "Tanks Dispatched Today", black,
                        ["Tank type", "A Grade", "B Grade", "Delivery note no."],
                        [0.30, 0.18, 0.18, 0.34], tanks)

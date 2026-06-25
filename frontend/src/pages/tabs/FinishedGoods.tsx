@@ -38,26 +38,22 @@ export default function FinishedGoods({ nodeId, config, user }: TabProps) {
   return (
     <div className="space-y-6">
       <div>
-        <SectionTitle>Tanks on Hand</SectionTitle>
-        <p className="text-sm text-gray-500 mb-3">Moulded tanks sit on the floor until booked into the store, then leave on dispatch.</p>
+        <SectionTitle>Tanks in Stock</SectionTitle>
+        <p className="text-sm text-gray-500 mb-3">Tanks produced and captured, less those dispatched. Produced tanks are in stock immediately.</p>
         <div className="card p-0 overflow-hidden">
           <table className="w-full">
             <thead>
               <tr>
                 <th className="th">Tank</th><th className="th">Grade</th>
-                <th className="th text-right">On floor (not booked)</th>
-                <th className="th text-right">In store (not dispatched)</th>
-                <th className="th text-right">Total on hand</th>
+                <th className="th text-right">In stock</th>
               </tr>
             </thead>
             <tbody>
-              {positions.length === 0 && <tr><td className="td" colSpan={5}><Empty text="Nothing in stock yet" /></td></tr>}
+              {positions.length === 0 && <tr><td className="td" colSpan={3}><Empty text="Nothing in stock yet" /></td></tr>}
               {positions.map((p) => (
                 <tr key={`${p.tank_type}-${p.grade}`}>
                   <td className="td font-semibold">{names[p.tank_type] || p.tank_type}</td>
                   <td className={`td font-semibold ${p.grade === 'A' ? 'text-brand-green' : 'text-brand-orange'}`}>{p.grade}</td>
-                  <td className={`td text-right ${p.floor < 0 ? 'text-brand-red font-semibold' : ''}`}>{p.floor}</td>
-                  <td className={`td text-right ${p.store < 0 ? 'text-brand-red font-semibold' : ''}`}>{p.store}</td>
                   <td className={`td text-right font-bold ${p.total < 0 ? 'text-brand-red' : 'text-brand-blue'}`}>{p.total}</td>
                 </tr>
               ))}
@@ -82,13 +78,6 @@ export default function FinishedGoods({ nodeId, config, user }: TabProps) {
             <label className="block text-xs font-semibold text-gray-600 mb-1">Grade</label>
             <select className="input" value={adj.grade} onChange={(e) => setAdj({ ...adj, grade: e.target.value })}>
               <option value="A">A</option><option value="B">B</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Position</label>
-            <select className="input" value={adj.scope} onChange={(e) => setAdj({ ...adj, scope: e.target.value })}>
-              <option value="warehouse">store</option>
-              <option value="floor">floor</option>
             </select>
           </div>
           <div>

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FileDown } from 'lucide-react'
 import { api, errMsg, openAuthed } from '../../api'
 import { Empty, StatusBadge } from '../../components/ui'
-import type { BookedLine, Capture, DispatchLine, FittingMoveLine, PowderMoveLine, ProductionLine } from '../../types'
+import type { Capture, DispatchLine, FittingMoveLine, PowderMoveLine, ProductionLine } from '../../types'
 import type { TabProps } from '../NodePage'
 
 export default function DailyCapture({ nodeId, config, user }: TabProps) {
@@ -25,14 +25,11 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const blackCode = config.powder_products.find((p) => p.is_black)?.code || ''
   const blankProd = (): ProductionLine[] =>
     config.tank_types.map((t) => ({ tank_type: t.code, colour: colours[0]?.code || '', quantity_a: 0, quantity_b: 0, quantity_reject: 0 }))
-  const blankBooked = (): BookedLine[] =>
-    config.tank_types.map((t) => ({ tank_type: t.code, quantity_a: 0, quantity_b: 0 }))
   const blankDispatch = (): DispatchLine[] => []
 
   const [powder, setPowder] = useState<PowderMoveLine[]>(blankPowder)
   const [fittings, setFittings] = useState<FittingMoveLine[]>(blankFittings)
   const [prod, setProd] = useState<ProductionLine[]>(blankProd)
-  const [booked, setBooked] = useState<BookedLine[]>(blankBooked)
   const [dispatch, setDispatch] = useState<DispatchLine[]>(blankDispatch)
 
   const load = useCallback(() => {
@@ -61,7 +58,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
 
   const reset = () => {
     setPowder(blankPowder()); setFittings(blankFittings()); setProd(blankProd())
-    setBooked(blankBooked()); setDispatch(blankDispatch()); setNotes(''); setPhoto(null)
+    setDispatch(blankDispatch()); setNotes(''); setPhoto(null)
   }
 
   const submit = async (e: React.FormEvent) => {
@@ -73,17 +70,13 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
         const form = new FormData(); form.append('file', photo)
         await api.post(`/api/captures/${cap._id}/photo`, form)
       }
-      const r = await api.post(`/api/captures/${cap._id}/entries`, {
+      await api.post(`/api/captures/${cap._id}/entries`, {
         powder: powder.filter((p) => p.powder_type),
-        fittings, production: prod, booked,
+        fittings, production: prod,
         dispatched: dispatch.filter((d) => d.quantity > 0),
         notes,
       })
-      if (r.data.status === 'reconciled') {
-        setMsg({ kind: 'ok', text: 'Captured and reconciled. Floor and finished-goods balance.' })
-      } else {
-        setMsg({ kind: 'warn', text: `Captured with ${r.data.flags_raised.length} flag(s) raised. The audit role will see them.` })
-      }
+      setMsg({ kind: 'ok', text: 'Captured. Produced tanks are in stock. Reconciliation happens at stocktake.' })
       reset(); load()
     } catch (err) {
       setMsg({ kind: 'err', text: errMsg(err) })
@@ -151,7 +144,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               )}
               <div className={`text-xs mt-1 rounded px-2 py-1 ${negativeGrades.length ? 'bg-red-50 text-brand-red' : 'bg-gray-50 text-gray-500'}`}>
                 Floor change this capture: {Object.entries(floorDelta).filter(([, v]) => Math.abs(v) > 0.001).map(([code, v]) => `${colourName(code)} ${v >= 0 ? '+' : ''}${v.toFixed(1)}kg`).join(', ') || 'none'}
-                {negativeGrades.length > 0 && ` · more moulded than issued (${negativeGrades.map(([c]) => colourName(c)).join(', ')}), this will flag`}
+                {negativeGrades.length > 0 && ` · more moulded than issued (${negativeGrades.map(([c]) => colourName(c)).join(', ')}) — double-check powder issued`}
               </div>
             </section>
 
@@ -177,10 +170,11 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             {/* Tanks moulded — navy. Each line records the powder colour/grade used. */}
             <section>
               <div className="flex items-center justify-between mb-1">
-                <h3 className="text-sm font-bold text-brand-blue">Tanks Moulded</h3>
+                <h3 className="text-sm font-bold text-brand-blue">Tanks Produced</h3>
+
                 <button type="button" className="text-xs font-semibold text-brand-blue"
                         onClick={() => setProd((ls) => [...ls, { tank_type: config.tank_types[0]?.code || '', colour: colours[0]?.code || '', quantity_a: 0, quantity_b: 0, quantity_reject: 0 }])}>
-                  + add moulded line
+                  + add production line
                 </button>
               </div>
               <table className="w-full text-sm">
@@ -207,24 +201,6 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
                         <td className="td" key={f}>{numCell(l[f], (n) => setProd((ls) => ls.map((x, j) => j === i ? { ...x, [f]: n } : x)))}</td>
                       ))}
                       <td className="td">{prod.length > 1 && <button type="button" className="text-xs text-brand-red" onClick={() => setProd((ls) => ls.filter((_, j) => j !== i))}>×</button>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </section>
-
-            {/* Tanks booked — navy */}
-            <section>
-              <h3 className="text-sm font-bold text-brand-blue mb-1">Tanks Booked to Store</h3>
-              <table className="w-full text-sm">
-                <thead><tr><th className="th">Tank</th><th className="th">A Grade</th><th className="th">B Grade</th></tr></thead>
-                <tbody>
-                  {booked.map((l, i) => (
-                    <tr key={l.tank_type}>
-                      <td className="td font-semibold">{tankByCode[l.tank_type]?.name || l.tank_type}</td>
-                      {(['quantity_a', 'quantity_b'] as const).map((f) => (
-                        <td className="td" key={f}>{numCell(l[f], (n) => setBooked((ls) => ls.map((x, j) => j === i ? { ...x, [f]: n } : x)))}</td>
-                      ))}
                     </tr>
                   ))}
                 </tbody>
@@ -307,7 +283,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
           )}
         </div>
         <div className="mt-4 text-xs text-gray-500 flex gap-4">
-          <span><span className="inline-block w-3 h-3 rounded bg-brand-blue mr-1 align-middle" />moulded / booked (production)</span>
+          <span><span className="inline-block w-3 h-3 rounded bg-brand-blue mr-1 align-middle" />produced (in stock)</span>
           <span><span className="inline-block w-3 h-3 rounded bg-brand-green mr-1 align-middle" />dispatched</span>
         </div>
       </div>

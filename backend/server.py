@@ -325,7 +325,7 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
     auth.check_node_access(user, node_id)
     cfg = await _get_cfg(node_id)
     tanks = {t["code"]: t for t in cfg["tank_types"]}
-    for line in payload.production + payload.booked:
+    for line in payload.production:
         if line.tank_type not in tanks:
             raise HTTPException(400, f"Unknown tank type {line.tank_type}")
     for d in payload.dispatched:
@@ -363,7 +363,9 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
                     "fitting_type": line.fitting_type, "type": mtype, "quantity": qty,
                     "source_capture_id": capture_id, "created_at": _now()})
 
-    # tanks moulded -> production_runs (consumes floor powder); rejects -> scrap_log
+    # tanks moulded -> production_runs (records production + consumes powder).
+    # A/B-grade tanks go straight into finished-goods stock on capture (no separate
+    # 'book to store' step): produced and captured == in stock. Rejects -> scrap_log.
     for line in payload.production:
         if line.quantity_a == line.quantity_b == line.quantity_reject == 0:
             continue
@@ -373,6 +375,12 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
             "quantity_a": line.quantity_a, "quantity_b": line.quantity_b,
             "quantity_reject": line.quantity_reject,
             "source_capture_id": capture_id, "created_at": _now()})
+        for grade, qty in (("A", line.quantity_a), ("B", line.quantity_b)):
+            if qty > 0:
+                await db.finished_goods().insert_one({
+                    "_id": uuid4().hex, "node_id": node_id, "date": date,
+                    "tank_type": line.tank_type, "grade": grade, "type": "booked",
+                    "quantity": qty, "reference": capture_id, "created_at": _now()})
         if line.quantity_reject > 0:
             t = tanks[line.tank_type]
             kg_lost = line.quantity_reject * (t["weight_kg"] + t.get("lid_weight_kg", 0.0))
@@ -384,15 +392,6 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
                 "source_capture_id": capture_id, "notes": payload.notes or "",
                 "created_at": _now()})
 
-    # tanks booked to store: floor -> finished-goods warehouse
-    for line in payload.booked:
-        for grade, qty in (("A", line.quantity_a), ("B", line.quantity_b)):
-            if qty > 0:
-                await db.finished_goods().insert_one({
-                    "_id": uuid4().hex, "node_id": node_id, "date": date,
-                    "tank_type": line.tank_type, "grade": grade, "type": "booked",
-                    "quantity": qty, "reference": capture_id, "created_at": _now()})
-
     # tanks dispatched: finished-goods warehouse -> out (references a delivery note)
     for d in payload.dispatched:
         if d.quantity > 0:
@@ -402,21 +401,16 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
                 "quantity": d.quantity, "dn_number": d.dn_number.strip(),
                 "reference": capture_id, "created_at": _now()})
 
-    # reconciliation runs on save: floor pools, fittings, finished-goods identity
-    flags_raised = []
-    flags_raised += await recon.check_powder_floor(node_id, date, capture_id)
-    flags_raised += await recon.check_fittings(node_id, date, capture_id)
-    flags_raised += await recon.check_finished_goods(node_id, date, {"capture_id": capture_id})
-
-    status = "reconciled" if not flags_raised else "captured"
+    # No reconciliation at capture: production is just recorded and the tanks are in stock.
+    # Powder/fittings/finished-goods reconciliation happens afterwards, at stocktake (Counts)
+    # and on the Reconciliation dashboard — it must not hold up capturing production.
     await db.daily_captures().update_one(
         {"_id": capture_id},
-        {"$set": {"status": status, "entries": payload.model_dump(),
+        {"$set": {"status": "captured", "entries": payload.model_dump(),
                   "captured_by": user["email"], "captured_at": _now()}})
     await audit.log(user, node_id, "update", "daily_captures", capture_id,
-                    after={"entries": payload.model_dump(), "status": status,
-                           "flags_raised": flags_raised})
-    return {"capture_id": capture_id, "status": status, "flags_raised": flags_raised}
+                    after={"entries": payload.model_dump(), "status": "captured"})
+    return {"capture_id": capture_id, "status": "captured", "flags_raised": []}
 
 
 @app.get("/api/nodes/{node_id}/captures")
@@ -929,12 +923,12 @@ async def recon_dashboard(node_id: str, month: Optional[str] = None,
         if d > _today():
             break
         cap = cap_by_date.get(d)
+        # capture no longer reconciles; a captured day is clear unless a flag (from a
+        # stocktake or a sweep) was raised on it. Reconciliation is an afterwards activity.
         if d in flag_dates:
             day_status = "flagged"
-        elif cap and cap["status"] == "reconciled":
-            day_status = "clear"
         elif cap:
-            day_status = "captured"
+            day_status = "clear"
         else:
             day_status = "no_capture"
         days.append({"date": d, "status": day_status,
