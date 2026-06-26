@@ -234,15 +234,14 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               ))}
             </section>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">WhatsApp photo of the sheet</label>
-                <input type="file" accept="image/*" onChange={(e) => setPhoto(e.target.files?.[0] || null)} className="text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Notes</label>
-                <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} />
-              </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">WhatsApp photo of the sheet</label>
+              <input type="file" accept="image/*" onChange={(e) => setPhoto(e.target.files?.[0] || null)} className="text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Production notes — what happened on the floor today?</label>
+              <textarea className="input" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
+                        placeholder="Breakdowns, delays, quality or material issues, machine downtime, staff — anything worth flagging. Optional." />
             </div>
             {msg && (
               <p className={`text-sm font-semibold ${msg.kind === 'ok' ? 'text-brand-green' : msg.kind === 'warn' ? 'text-brand-orange' : 'text-brand-red'}`}>{msg.text}</p>
@@ -261,13 +260,16 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             <Empty text="No captures yet" />
           ) : (
             <table className="w-full">
-              <thead><tr><th className="th">Date</th><th className="th">Status</th><th className="th">By</th><th className="th">Photo</th></tr></thead>
+              <thead><tr><th className="th">Date</th><th className="th">Status</th><th className="th">By</th><th className="th">Production notes</th><th className="th">Photo</th></tr></thead>
               <tbody>
                 {captures.map((c) => (
-                  <tr key={c._id}>
-                    <td className="td font-semibold">{c.date}</td>
+                  <tr key={c._id} className="align-top">
+                    <td className="td font-semibold whitespace-nowrap">{c.date}</td>
                     <td className="td"><StatusBadge status={c.status} /></td>
                     <td className="td text-gray-500">{c.captured_by}</td>
+                    <td className="td text-gray-600 max-w-xs whitespace-pre-wrap break-words">
+                      {c.entries?.notes ? c.entries.notes : <span className="text-gray-300">—</span>}
+                    </td>
                     <td className="td">
                       {c.photo_url ? (
                         <button className="text-brand-light font-semibold"
