@@ -81,7 +81,7 @@ async def seed():
                 {"code": "2500L", "name": "2500L Tank", "ex_works_price": 1620.0,
                  "weight_kg": 36.0, "lid_weight_kg": 1.0},
                 {"code": "5000L", "name": "5000L Tank", "ex_works_price": 3450.0,
-                 "weight_kg": 75.0, "lid_weight_kg": 1.0},
+                 "weight_kg": 76.0, "lid_weight_kg": 1.0},
             ],
             "material_cost_per_kg": 20.0,           # admin-only visibility
             "b_grade_exworks_pct": 100.0,           # OPEN ITEM: Werner to confirm the B-grade rule
