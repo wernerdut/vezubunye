@@ -7,7 +7,7 @@ export function StatusBadge({ status }: { status: string }) {
     matched: 'bg-brand-green text-white',
     resolved: 'bg-brand-green text-white',
     active: 'bg-brand-green text-white',
-    captured: 'bg-brand-orange text-white',
+    captured: 'bg-brand-green text-white',
     part_paid: 'bg-brand-orange text-white',
     pending: 'bg-gray-300 text-gray-700',
     no_capture: 'bg-gray-200 text-gray-500',
