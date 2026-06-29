@@ -104,17 +104,18 @@ class CaptureEntriesIn(BaseModel):
     fittings: List[FittingMoveLine] = []
     production: List[ProductionLine] = []
     booked: List[BookedLine] = []
-    dispatched: List[DispatchLine] = []
     paraffin_received: float = 0.0   # litres of paraffin received into stock that day
     notes: Optional[str] = None
+    # Tank dispatch (stock-out) is no longer captured here — it happens on the Deliveries tab.
 
 
-# ---------- delivery notes & invoices ---------- #
+# ---------- delivery notes (priced in-app, no price on the PDF) ---------- #
 
 class DNLine(BaseModel):
     tank_type: str
     grade: Literal["A", "B"] = "A"
     quantity: int
+    unit_price: float = 0.0   # ex-VAT sale price; tracked in-app to reconcile, never on the PDF
 
 
 class DeliveryNoteIn(BaseModel):
@@ -122,21 +123,6 @@ class DeliveryNoteIn(BaseModel):
     client_name: str
     client_details: str = ""
     lines: List[DNLine]
-
-
-class InvoiceLine(BaseModel):
-    tank_type: str
-    grade: Literal["A", "B"] = "A"
-    quantity: int
-    unit_price: float  # partner's sale price ex VAT; B-grade lines carry the reduced price
-
-
-class InvoiceIn(BaseModel):
-    date: str
-    client_name: str
-    client_details: str = ""
-    lines: List[InvoiceLine]
-    delivery_note_ids: List[str] = []
 
 
 # ---------- payments ---------- #
@@ -148,14 +134,14 @@ class PaymentIn(BaseModel):
 
 
 class PaymentMatchIn(BaseModel):
-    invoice_id: str
+    delivery_id: str
 
 
 # ---------- flags ---------- #
 
 FlagType = Literal[
     "powder_variance", "fittings_variance", "finished_goods_mismatch",
-    "delivery_without_invoice", "invoice_unpaid", "payment_unmatched",
+    "delivery_unpaid", "payment_unmatched",
     "short_paid", "over_paid", "count_mismatch",
 ]
 

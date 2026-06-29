@@ -111,57 +111,38 @@ async def test_full_chain(client):
     assert sc["kg_lost"] == 37.0 and sc["material_cost_lost"] == 740.0
     assert "material_cost_lost" not in (await c.get("/api/nodes/gogreen/scrap", headers=ops)).json()[0]
 
-    # ---- delivery note (document + number only; no FG deduction here) ----
+    # ---- delivery: priced in-app, deducts stock, no price on the PDF ----
     r = await c.post("/api/nodes/gogreen/delivery-notes", headers=ops, json={
         "date": "2026-06-03", "client_name": "Buffalo Builders", "client_details": "12 Main Rd",
-        "lines": [{"tank_type": "2500L", "grade": "A", "quantity": 2},
-                  {"tank_type": "2500L", "grade": "B", "quantity": 1}]})
+        "lines": [{"tank_type": "2500L", "grade": "A", "quantity": 2, "unit_price": 2200},
+                  {"tank_type": "2500L", "grade": "B", "quantity": 1, "unit_price": 1500}]})
     dn = r.json()
     assert dn["dn_number"] == "GG-DN-0001"
+    assert dn["subtotal"] == 5900.0 and dn["total"] == 6785.0          # 5900 ex VAT + 15%
+    assert dn["fenix_exworks_value"] == 4860.0                         # 2*1620 (A) + 1*1620 (B at 100%)
+    assert dn["status"] == "unpaid"
     assert (await c.get(f"/api/delivery-notes/{dn['_id']}/pdf", headers=ops)).content[:4] == b"%PDF"
-
-    # ---- Day 3: dispatch capture deducts FG, references the DN ----
-    cap3 = (await c.post("/api/nodes/gogreen/captures?date=2026-06-03", headers=ops)).json()["_id"]
-    r = await c.post(f"/api/captures/{cap3}/entries", headers=ops, json={
-        "dispatched": [
-            {"tank_type": "2500L", "grade": "A", "quantity": 2, "dn_number": "GG-DN-0001"},
-            {"tank_type": "2500L", "grade": "B", "quantity": 1, "dn_number": "GG-DN-0001"},
-        ]})
-    assert r.status_code == 200 and r.json()["status"] == "captured", r.text
+    # the delivery deducted those tanks from stock (no daily-capture dispatch step)
     fg = {(p["tank_type"], p["grade"]): p for p in (await c.get("/api/nodes/gogreen/finished-goods", headers=ops)).json()["positions"]}
-    assert fg[("2500L", "A")]["total"] == 0 and fg[("5000L", "A")]["total"] == 2
+    assert fg[("2500L", "A")]["total"] == 0 and fg[("2500L", "B")]["total"] == 0 and fg[("5000L", "A")]["total"] == 2
 
-    # dispatch requires a DN number
-    cap_bad = (await c.post("/api/nodes/gogreen/captures?date=2026-06-03", headers=ops)).json()["_id"]
-    r = await c.post(f"/api/captures/{cap_bad}/entries", headers=ops, json={
-        "dispatched": [{"tank_type": "5000L", "grade": "A", "quantity": 1, "dn_number": ""}]})
-    assert r.status_code == 400
-
-    # ---- sweep flags the DN without an invoice; invoicing resolves it ----
-    assert len((await c.post("/api/nodes/gogreen/recon/sweep", headers=audit)).json()["delivery_without_invoice"]) >= 1
-    r = await c.post("/api/nodes/gogreen/invoices", headers=ops, json={
-        "date": "2026-06-03", "client_name": "Buffalo Builders",
-        "lines": [{"tank_type": "2500L", "grade": "A", "quantity": 2, "unit_price": 2200},
-                  {"tank_type": "2500L", "grade": "B", "quantity": 1, "unit_price": 1500}],
-        "delivery_note_ids": [dn["_id"]]})
-    inv = r.json()
-    assert inv["invoice_number"] == "GG-INV-0001" and inv["total"] == 6785.0
-    open_flags = (await c.get("/api/nodes/gogreen/flags?status=open", headers=audit)).json()
-    assert not any(f["type"] == "delivery_without_invoice" and f["references"].get("delivery_note_id") == dn["_id"] for f in open_flags)
+    # cannot deliver more than is in stock
+    assert (await c.post("/api/nodes/gogreen/delivery-notes", headers=ops, json={
+        "date": "2026-06-03", "client_name": "X",
+        "lines": [{"tank_type": "5000L", "grade": "A", "quantity": 99, "unit_price": 1}]})).status_code == 400
 
     # operations cannot create payments (separation of duties)
     assert (await c.post("/api/nodes/gogreen/payments", headers=ops,
                          json={"date": "2026-06-05", "amount": 6785})).status_code == 403
 
-    # ---- payment + match + split ----
+    # ---- payment matched to the delivery + Fenix/partner split ----
     pay = (await c.post("/api/nodes/gogreen/payments", headers=audit,
-                        json={"date": "2026-06-05", "amount": 6785, "bank_reference": "GG-INV-0001"})).json()
-    m = (await c.post(f"/api/payments/{pay['_id']}/match", headers=audit, json={"invoice_id": inv["_id"]})).json()
-    assert m["split"]["fenix_exworks_value"] == 4860.0  # 2*1620 (A) + 1*1620 (B at 100%)
-    assert m["invoice_status"] == "paid"
+                        json={"date": "2026-06-05", "amount": 6785, "bank_reference": "GG-DN-0001"})).json()
+    m = (await c.post(f"/api/payments/{pay['_id']}/match", headers=audit, json={"delivery_id": dn["_id"]})).json()
+    assert m["split"]["fenix_exworks_value"] == 4860.0
+    assert m["delivery_status"] == "paid"
 
-    # ---- Day 5 & 7: more production. No powder issued, no flags raised at capture
-    # (this is the point: reconciliation must not hold up capturing produced tanks). ----
+    # ---- Day 5 & 7: more production, straight to stock, no flags at capture ----
     cap5 = (await c.post("/api/nodes/gogreen/captures?date=2026-06-05", headers=ops)).json()["_id"]
     r = await c.post(f"/api/captures/{cap5}/entries", headers=ops, json={
         "production": [{"tank_type": "2500L", "colour": "GREEN", "quantity_a": 1, "quantity_b": 0, "quantity_reject": 0}]})
@@ -172,15 +153,15 @@ async def test_full_chain(client):
     assert r.json()["status"] == "captured" and r.json()["flags_raised"] == []
     # produced tanks are in stock right away
     fg = {(p["tank_type"], p["grade"]): p for p in (await c.get("/api/nodes/gogreen/finished-goods", headers=ops)).json()["positions"]}
-    assert fg[("2500L", "A")]["total"] == 1   # day5 produced, none dispatched
+    assert fg[("2500L", "A")]["total"] == 1   # day5 produced, not yet delivered
 
-    # ---- Day 8: dispatch (records the sale; no capture-time flag) ----
-    await c.post("/api/nodes/gogreen/delivery-notes", headers=ops, json={
-        "date": "2026-06-08", "client_name": "Test", "lines": [{"tank_type": "5000L", "grade": "A", "quantity": 99}]})
-    cap8 = (await c.post("/api/nodes/gogreen/captures?date=2026-06-08", headers=ops)).json()["_id"]
-    r = await c.post(f"/api/captures/{cap8}/entries", headers=ops, json={
-        "dispatched": [{"tank_type": "5000L", "grade": "A", "quantity": 99, "dn_number": "GG-DN-0002"}]})
-    assert r.json()["status"] == "captured" and r.json()["flags_raised"] == []
+    # ---- Day 8: another delivery (stock-out of all remaining 5000L A: day1 2 + day7 1) ----
+    r = await c.post("/api/nodes/gogreen/delivery-notes", headers=ops, json={
+        "date": "2026-06-08", "client_name": "Test",
+        "lines": [{"tank_type": "5000L", "grade": "A", "quantity": 3, "unit_price": 3450}]})
+    assert r.json()["dn_number"] == "GG-DN-0002"
+    fg = {(p["tank_type"], p["grade"]): p for p in (await c.get("/api/nodes/gogreen/finished-goods", headers=ops)).json()["positions"]}
+    assert fg.get(("5000L", "A"), {"total": 0})["total"] == 0
 
     # ---- reconciliation happens afterwards: a stocktake variance flags, and the flow holds ----
     r = await c.post("/api/nodes/gogreen/counts", headers=audit, json={
@@ -212,7 +193,7 @@ async def test_full_chain(client):
 
     # ---- dashboards ----
     # produced all-time: day1 (4x2500 + 2x5000) + day5 (1x2500) + day7 (1x5000) = 8 tanks
-    # sold (dispatched): day3 2500 A2+B1 = 3, day8 5000 A99 = 99 -> 102
+    # sold (delivered): day3 2500 A2+B1 = 3, day8 5000 A x3 = 3 -> 6
     net = (await c.get("/api/dashboard/network", headers=admin)).json()
     gg = next(n for n in net["nodes"] if n["node_id"] == "gogreen")
     assert gg["total_tanks"] == 8 and gg["total_material_kg"] == 413.0
@@ -222,7 +203,7 @@ async def test_full_chain(client):
 
     dash = (await c.get("/api/nodes/gogreen/dashboard?year=2026", headers=admin)).json()
     assert dash["all_time"]["total_produced"] == 8
-    assert dash["all_time"]["total_sold"] == 102
+    assert dash["all_time"]["total_sold"] == 6
     assert dash["all_time"]["total_material_kg"] == 413.0
     assert dash["all_time"]["material_cost"] == 8260.0            # 413 kg x R20
     assert "2026" in dash["years"]
@@ -242,11 +223,11 @@ async def test_full_chain(client):
     assert bt["2500L"]["a"] == 2 and bt["2500L"]["b"] == 1 and bt["2500L"]["reject"] == 1 and bt["5000L"]["total"] == 2
     assert day_rows["2026-06-03"]["total_sold"] == 3 and day_rows["2026-06-03"]["total_produced"] == 0
     assert day_rows["2026-06-05"]["total_produced"] == 1 and day_rows["2026-06-07"]["total_produced"] == 1
-    assert day_rows["2026-06-08"]["total_sold"] == 99
+    assert day_rows["2026-06-08"]["total_sold"] == 3
     # week subtotals sum to the month total
     assert sum(w["subtotal"]["total_produced"] for w in daily["weeks"]) == 8
-    assert sum(w["subtotal"]["total_sold"] for w in daily["weeks"]) == 102
-    assert daily["month_totals"]["total_produced"] == 8 and daily["month_totals"]["total_sold"] == 102
+    assert sum(w["subtotal"]["total_sold"] for w in daily["weeks"]) == 6
+    assert daily["month_totals"]["total_produced"] == 8 and daily["month_totals"]["total_sold"] == 6
     assert daily["month_totals"]["total_material_kg"] == 413.0
     assert daily["month_totals"]["material_cost"] == 8260.0        # admin sees cost
     assert "material_cost" not in (await c.get(

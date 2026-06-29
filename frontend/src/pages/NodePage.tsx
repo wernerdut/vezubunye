@@ -8,7 +8,6 @@ import Deliveries from './tabs/Deliveries'
 import FinishedGoods from './tabs/FinishedGoods'
 import Fittings from './tabs/Fittings'
 import FlagsTab from './tabs/FlagsTab'
-import Invoices from './tabs/Invoices'
 import Overview from './tabs/Overview'
 import Payments from './tabs/Payments'
 import Powder from './tabs/Powder'
@@ -22,7 +21,6 @@ const TABS = [
   { path: 'production', label: 'Production' },
   { path: 'finished-goods', label: 'Finished Goods' },
   { path: 'deliveries', label: 'Deliveries' },
-  { path: 'invoices', label: 'Invoices' },
   { path: 'payments', label: 'Payments' },
   { path: 'flags', label: 'Flags' },
   { path: 'counts', label: 'Counts' },
@@ -86,7 +84,6 @@ export default function NodePage({ user }: { user: User }) {
         <Route path="production" element={<Production {...props} />} />
         <Route path="finished-goods" element={<FinishedGoods {...props} />} />
         <Route path="deliveries" element={<Deliveries {...props} />} />
-        <Route path="invoices" element={<Invoices {...props} />} />
         <Route path="payments" element={<Payments {...props} />} />
         <Route path="flags" element={<FlagsTab {...props} />} />
         <Route path="counts" element={<Counts {...props} />} />

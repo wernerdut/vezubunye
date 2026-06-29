@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FileDown } from 'lucide-react'
 import { api, errMsg, openAuthed } from '../../api'
 import { Empty, StatusBadge } from '../../components/ui'
-import type { Capture, DispatchLine, FittingMoveLine, PowderMoveLine, ProductionLine } from '../../types'
+import type { Capture, FittingMoveLine, PowderMoveLine, ProductionLine } from '../../types'
 import type { TabProps } from '../NodePage'
 
 export default function DailyCapture({ nodeId, config, user }: TabProps) {
@@ -25,12 +25,10 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const blackCode = config.powder_products.find((p) => p.is_black)?.code || ''
   const blankProd = (): ProductionLine[] =>
     config.tank_types.map((t) => ({ tank_type: t.code, colour: colours[0]?.code || '', quantity_a: 0, quantity_b: 0, quantity_reject: 0 }))
-  const blankDispatch = (): DispatchLine[] => []
 
   const [powder, setPowder] = useState<PowderMoveLine[]>(blankPowder)
   const [fittings, setFittings] = useState<FittingMoveLine[]>(blankFittings)
   const [prod, setProd] = useState<ProductionLine[]>(blankProd)
-  const [dispatch, setDispatch] = useState<DispatchLine[]>(blankDispatch)
   const [paraffin, setParaffin] = useState('')
 
   const load = useCallback(() => {
@@ -60,7 +58,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
 
   const reset = () => {
     setPowder(blankPowder()); setFittings(blankFittings()); setProd(blankProd())
-    setDispatch(blankDispatch()); setNotes(''); setPhoto(null); setParaffin('')
+    setNotes(''); setPhoto(null); setParaffin('')
   }
 
   const submit = async (e: React.FormEvent) => {
@@ -75,7 +73,6 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
       await api.post(`/api/captures/${cap._id}/entries`, {
         powder: powder.filter((p) => p.powder_type),
         fittings, production: prod,
-        dispatched: dispatch.filter((d) => d.quantity > 0),
         paraffin_received: parseFloat(paraffin) || 0,
         notes,
       })
@@ -227,32 +224,6 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               </table>
             </section>
 
-            {/* Tanks dispatched — green */}
-            <section>
-              <div className="flex items-center justify-between mb-1">
-                <h3 className="text-sm font-bold text-brand-green">Tanks Dispatched</h3>
-                <button type="button" className="text-xs font-semibold text-brand-green"
-                        onClick={() => setDispatch((d) => [...d, { tank_type: config.tank_types[0]?.code || '', grade: 'A', quantity: 0, dn_number: '' }])}>
-                  + add dispatch line
-                </button>
-              </div>
-              {dispatch.length === 0 && <p className="text-xs text-gray-400">No dispatches today.</p>}
-              {dispatch.map((d, i) => (
-                <div key={i} className="flex flex-wrap items-end gap-2 mb-2">
-                  <select className="input w-28" value={d.tank_type} onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, tank_type: e.target.value } : x))}>
-                    {config.tank_types.map((t) => <option key={t.code} value={t.code}>{t.name}</option>)}
-                  </select>
-                  <select className="input w-16" value={d.grade} onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, grade: e.target.value as 'A' | 'B' } : x))}>
-                    <option value="A">A</option><option value="B">B</option>
-                  </select>
-                  <input className="input w-20" type="number" min="0" placeholder="qty" value={d.quantity || ''}
-                         onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, quantity: parseInt(e.target.value) || 0 } : x))} />
-                  <input className="input w-36" placeholder="DN number (required)" value={d.dn_number}
-                         onChange={(e) => setDispatch((ls) => ls.map((x, j) => j === i ? { ...x, dn_number: e.target.value } : x))} />
-                  <button type="button" className="text-xs text-brand-red" onClick={() => setDispatch((ls) => ls.filter((_, j) => j !== i))}>remove</button>
-                </div>
-              ))}
-            </section>
 
             <div>
               <label className="block text-xs font-semibold text-gray-600 mb-1">WhatsApp photo of the sheet</label>
@@ -304,9 +275,8 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             </table>
           )}
         </div>
-        <div className="mt-4 text-xs text-gray-500 flex gap-4">
-          <span><span className="inline-block w-3 h-3 rounded bg-brand-blue mr-1 align-middle" />produced (in stock)</span>
-          <span><span className="inline-block w-3 h-3 rounded bg-brand-green mr-1 align-middle" />dispatched</span>
+        <div className="mt-4 text-xs text-gray-500">
+          Produced tanks go straight into stock. Tank dispatch happens on the Deliveries tab.
         </div>
       </div>
     </div>

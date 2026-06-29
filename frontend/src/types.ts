@@ -92,19 +92,11 @@ export interface BookedLine {
   quantity_b: number
 }
 
-export interface DispatchLine {
-  tank_type: string
-  grade: 'A' | 'B'
-  quantity: number
-  dn_number: string
-}
-
 export interface CaptureEntries {
   powder: PowderMoveLine[]
   fittings: FittingMoveLine[]
   production: ProductionLine[]
   booked: BookedLine[]
-  dispatched: DispatchLine[]
   paraffin_received?: number
   notes?: string
 }
@@ -186,6 +178,7 @@ export interface DNLine {
   tank_type: string
   grade: 'A' | 'B'
   quantity: number
+  unit_price: number
 }
 
 export interface DeliveryNote {
@@ -195,30 +188,13 @@ export interface DeliveryNote {
   client_name: string
   client_details: string
   lines: DNLine[]
-  linked_invoice_id: string | null
-  pdf_url: string
-}
-
-export interface InvoiceLine {
-  tank_type: string
-  grade: 'A' | 'B'
-  quantity: number
-  unit_price: number
-}
-
-export interface Invoice {
-  _id: string
-  invoice_number: string
-  date: string
-  client_name: string
-  client_details: string
-  lines: InvoiceLine[]
   subtotal: number
-  vat: number
   vat_rate: number
+  vat: number
   total: number
-  linked_delivery_note_ids: string[]
-  linked_delivery_note_numbers: string[]
+  amount_paid: number
+  fenix_exworks_value: number
+  partner_balance: number
   status: 'unpaid' | 'part_paid' | 'paid' | 'flagged'
   pdf_url: string
 }
@@ -228,7 +204,7 @@ export interface Payment {
   date: string
   amount: number
   bank_reference: string
-  matched_invoice_id: string | null
+  matched_delivery_id: string | null
   split: { fenix_exworks_value: number; partner_balance: number } | null
   status: 'unmatched' | 'matched' | 'flagged'
 }
@@ -268,7 +244,7 @@ export interface ReconData {
   days: ReconDay[]
   open_flags: Flag[]
   unmatched_payments: Payment[]
-  unpaid_invoices: Invoice[]
+  unpaid_deliveries: DeliveryNote[]
 }
 
 export interface NetworkNode {

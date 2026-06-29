@@ -311,33 +311,21 @@ async def check_finished_goods(node_id: str, date: str, reference: dict | None =
     return raised
 
 
-# ---------- Rule 3 & 4 sweeps (unchanged) ---------- #
+# ---------- payment sweeps ---------- #
 
-async def sweep_delivery_notes(node_id: str) -> list[str]:
-    raised = []
-    async for dn in db.delivery_notes().find({"node_id": node_id, "linked_invoice_id": None}):
-        fid = await raise_flag(
-            node_id, "delivery_without_invoice",
-            f"Delivery note {dn['dn_number']} ({dn['date']}, {dn['client_name']}) has no linked invoice. "
-            "No tank leaves without both.",
-            {"delivery_note_id": dn["_id"]}, dn["date"])
-        raised.append(fid)
-    return raised
-
-
-async def sweep_unpaid_invoices(node_id: str) -> list[str]:
+async def sweep_unpaid_deliveries(node_id: str) -> list[str]:
     cfg = await get_config(node_id)
     terms = cfg.get("payment_terms_days", 30)
     cutoff = (datetime.utcnow() - timedelta(days=terms)).strftime("%Y-%m-%d")
     raised = []
-    async for inv in db.invoices().find({"node_id": node_id,
-                                         "status": {"$in": ["unpaid", "part_paid"]},
-                                         "date": {"$lt": cutoff}}):
+    async for dn in db.delivery_notes().find({"node_id": node_id,
+                                              "status": {"$in": ["unpaid", "part_paid"]},
+                                              "date": {"$lt": cutoff}}):
         fid = await raise_flag(
-            node_id, "invoice_unpaid",
-            f"Invoice {inv['invoice_number']} ({inv['date']}, {inv['client_name']}, "
-            f"R{inv['total']:.2f}) is {inv['status']} past {terms}-day terms.",
-            {"invoice_id": inv["_id"]}, inv["date"])
+            node_id, "delivery_unpaid",
+            f"Delivery {dn['dn_number']} ({dn['date']}, {dn['client_name']}, "
+            f"R{dn.get('total', 0):.2f}) is {dn['status']} past {terms}-day terms.",
+            {"delivery_id": dn["_id"]}, dn["date"])
         raised.append(fid)
     return raised
 
@@ -348,7 +336,7 @@ async def sweep_unmatched_payments(node_id: str) -> list[str]:
         fid = await raise_flag(
             node_id, "payment_unmatched",
             f"Payment of R{p['amount']:.2f} on {p['date']} (ref '{p['bank_reference']}') "
-            "is not matched to an invoice.",
+            "is not matched to a delivery.",
             {"payment_id": p["_id"]}, p["date"])
         raised.append(fid)
     return raised
@@ -356,8 +344,7 @@ async def sweep_unmatched_payments(node_id: str) -> list[str]:
 
 async def run_sweeps(node_id: str) -> dict:
     return {
-        "delivery_without_invoice": await sweep_delivery_notes(node_id),
-        "invoice_unpaid": await sweep_unpaid_invoices(node_id),
+        "delivery_unpaid": await sweep_unpaid_deliveries(node_id),
         "payment_unmatched": await sweep_unmatched_payments(node_id),
     }
 

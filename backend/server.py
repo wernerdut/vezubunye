@@ -31,7 +31,7 @@ import pdf_gen
 import recon
 import reports
 from models import (
-    CaptureEntriesIn, DeliveryNoteIn, FlagResolveIn, InvoiceIn, LedgerAdjustIn,
+    CaptureEntriesIn, DeliveryNoteIn, FlagResolveIn, LedgerAdjustIn,
     LoginIn, NodeConfigIn, NodeIn, PaymentIn, PaymentMatchIn, PhysicalCountIn,
     UserIn,
 )
@@ -315,9 +315,9 @@ async def get_capture_photo(capture_id: str, user: dict = Depends(auth.current_u
 @app.post("/api/captures/{capture_id}/entries")
 async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
                           user: dict = Depends(auth.require_role("operations", "admin"))):
-    """Key the day's sheet in one transaction. Movements only: powder received/issued,
-    fittings received/issued, tanks moulded, tanks booked to store, tanks dispatched.
-    The app derives every balance and runs the floor/fittings/finished-goods checks on save."""
+    """Key the day's sheet: powder received/issued, fittings received/issued, paraffin
+    received, tanks moulded (straight to stock). Tank dispatch is no longer captured here —
+    it happens on the Deliveries tab. The app derives every balance from these movements."""
     cap = await db.daily_captures().find_one({"_id": capture_id})
     if not cap:
         raise HTTPException(404, "Capture not found")
@@ -328,12 +328,6 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
     for line in payload.production:
         if line.tank_type not in tanks:
             raise HTTPException(400, f"Unknown tank type {line.tank_type}")
-    for d in payload.dispatched:
-        if d.quantity > 0:
-            if d.tank_type not in tanks:
-                raise HTTPException(400, f"Unknown tank type {d.tank_type}")
-            if not d.dn_number.strip():
-                raise HTTPException(400, "Every dispatched line needs a delivery note number")
 
     # re-capture: remove prior derived entries for this capture (audit-logged)
     prior = await _all(db.powder_ledger(), {"source_capture_id": capture_id})
@@ -401,14 +395,7 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
                 "source_capture_id": capture_id, "notes": payload.notes or "",
                 "created_at": _now()})
 
-    # tanks dispatched: finished-goods warehouse -> out (references a delivery note)
-    for d in payload.dispatched:
-        if d.quantity > 0:
-            await db.finished_goods().insert_one({
-                "_id": uuid4().hex, "node_id": node_id, "date": date,
-                "tank_type": d.tank_type, "grade": d.grade, "type": "dispatched",
-                "quantity": d.quantity, "dn_number": d.dn_number.strip(),
-                "reference": capture_id, "created_at": _now()})
+    # (Tank dispatch / stock-out now happens when a delivery is created, not here.)
 
     # No reconciliation at capture: production is just recorded and the tanks are in stock.
     # Powder/fittings/finished-goods reconciliation happens afterwards, at stocktake (Counts)
@@ -582,22 +569,51 @@ async def scrap(node_id: str, user: dict = Depends(auth.current_user)):
 @app.post("/api/nodes/{node_id}/delivery-notes")
 async def create_delivery_note(node_id: str, payload: DeliveryNoteIn,
                                user: dict = Depends(auth.require_role("operations", "admin"))):
+    """A delivery is the stock-out movement AND the priced record we reconcile against.
+    It deducts the tanks from finished-goods stock and carries its value in-app; the PDF
+    is a plain delivery note with no prices."""
     auth.check_node_access(user, node_id)
     node = await _get_node(node_id)
     cfg = await _get_cfg(node_id)
+    if not payload.lines:
+        raise HTTPException(400, "A delivery needs at least one line")
+    names = {t["code"]: t["name"] for t in cfg["tank_types"]}
+    store = await recon.fg_warehouse(node_id)          # tanks in stock, per (tank_type, grade)
+    want: dict = {}
+    for l in payload.lines:
+        if l.tank_type not in names:
+            raise HTTPException(400, f"Unknown tank type {l.tank_type}")
+        if l.quantity <= 0:
+            raise HTTPException(400, "Each line needs a quantity above zero")
+        want[(l.tank_type, l.grade)] = want.get((l.tank_type, l.grade), 0) + l.quantity
+    for (tt, gr), qty in want.items():
+        have = store.get((tt, gr), 0)
+        if qty > have:
+            raise HTTPException(400, f"Only {have} × {names.get(tt, tt)} grade {gr} in stock — cannot deliver {qty}")
+
     seq = await db.next_number(node_id, "dn")
     dn_number = f"{node.get('prefix', node_id.upper())}-DN-{seq:04d}"
     dn_id = uuid4().hex
+    vat_rate = cfg.get("vat_rate", 15.0)
+    subtotal = round(sum(l.quantity * l.unit_price for l in payload.lines), 2)
+    vat = round(subtotal * vat_rate / 100.0, 2)
+    total = round(subtotal + vat, 2)
     dn = {
         "_id": dn_id, "node_id": node_id, "dn_number": dn_number,
         "date": payload.date, "client_name": payload.client_name,
         "client_details": payload.client_details,
         "lines": [l.model_dump() for l in payload.lines],
-        "linked_invoice_id": None, "created_at": _now(),
+        "subtotal": subtotal, "vat_rate": vat_rate, "vat": vat, "total": total,
+        "amount_paid": 0.0, "status": "unpaid", "created_at": _now(),
     }
-    # The delivery note is the document + number only. The finished-goods deduction is
-    # the dispatch movement captured on the daily sheet (single source of truth), keyed
-    # against this dn_number, so we do not deduct finished goods here.
+    dn.update(recon.compute_split(dn, cfg, total))     # fenix_exworks_value + partner_balance at full pay
+    # deduct the tanks from finished-goods stock — this delivery IS the stock-out movement
+    for l in payload.lines:
+        await db.finished_goods().insert_one({
+            "_id": uuid4().hex, "node_id": node_id, "date": payload.date,
+            "tank_type": l.tank_type, "grade": l.grade, "type": "dispatched",
+            "quantity": l.quantity, "dn_number": dn_number, "reference": dn_id,
+            "created_at": _now()})
     pdf = pdf_gen.delivery_note_pdf(node, cfg, dn)
     dn["content_b64"] = base64.b64encode(pdf).decode()
     dn["pdf_url"] = f"/api/delivery-notes/{dn_id}/pdf"
@@ -624,78 +640,6 @@ async def delivery_note_pdf_endpoint(dn_id: str, user: dict = Depends(auth.curre
                     headers={"Content-Disposition": f'inline; filename="{dn["dn_number"]}.pdf"'})
 
 
-# ============================== invoices ============================== #
-
-@app.post("/api/nodes/{node_id}/invoices")
-async def create_invoice(node_id: str, payload: InvoiceIn,
-                         user: dict = Depends(auth.require_role("operations", "admin"))):
-    auth.check_node_access(user, node_id)
-    node = await _get_node(node_id)
-    cfg = await _get_cfg(node_id)
-    if not payload.lines:
-        raise HTTPException(400, "Invoice needs at least one line")
-    dns = []
-    for dn_id in payload.delivery_note_ids:
-        dn = await db.delivery_notes().find_one({"_id": dn_id})
-        if not dn or dn["node_id"] != node_id:
-            raise HTTPException(400, f"Delivery note {dn_id} not found on this node")
-        if dn.get("linked_invoice_id"):
-            raise HTTPException(400, f"{dn['dn_number']} is already invoiced")
-        dns.append(dn)
-
-    seq = await db.next_number(node_id, "inv")
-    invoice_number = f"{node.get('prefix', node_id.upper())}-INV-{seq:04d}"
-    subtotal = round(sum(l.quantity * l.unit_price for l in payload.lines), 2)
-    vat_rate = cfg.get("vat_rate", 15.0)
-    vat = round(subtotal * vat_rate / 100.0, 2)
-    inv_id = uuid4().hex
-    inv = {
-        "_id": inv_id, "node_id": node_id, "invoice_number": invoice_number,
-        "date": payload.date, "client_name": payload.client_name,
-        "client_details": payload.client_details,
-        "lines": [l.model_dump() for l in payload.lines],
-        "subtotal": subtotal, "vat_rate": vat_rate, "vat": vat,
-        "total": round(subtotal + vat, 2),
-        "linked_delivery_note_ids": payload.delivery_note_ids,
-        "linked_delivery_note_numbers": [d["dn_number"] for d in dns],
-        "status": "unpaid", "created_at": _now(),
-    }
-    pdf = pdf_gen.invoice_pdf(node, cfg, inv)
-    inv["content_b64"] = base64.b64encode(pdf).decode()
-    inv["pdf_url"] = f"/api/invoices/{inv_id}/pdf"
-    await db.invoices().insert_one(inv)
-    for dn in dns:
-        await db.delivery_notes().update_one({"_id": dn["_id"]},
-                                             {"$set": {"linked_invoice_id": inv_id}})
-        # resolve is manual everywhere else; linking the invoice is the fix itself,
-        # so close any open delivery_without_invoice flag with a system note
-        await db.flags().update_many(
-            {"node_id": node_id, "type": "delivery_without_invoice",
-             "references.delivery_note_id": dn["_id"], "status": "open"},
-            {"$set": {"status": "resolved", "resolved_by": user["email"],
-                      "resolution_note": f"Invoice {invoice_number} raised and linked."}})
-    await audit.log(user, node_id, "create", "invoices", inv_id,
-                    after={k: v for k, v in inv.items() if k != "content_b64"})
-    return {k: v for k, v in inv.items() if k != "content_b64"}
-
-
-@app.get("/api/nodes/{node_id}/invoices")
-async def list_invoices(node_id: str, user: dict = Depends(auth.current_user)):
-    auth.check_node_access(user, node_id)
-    docs = await _all(db.invoices(), {"node_id": node_id}, sort=[("invoice_number", -1)])
-    return [{k: v for k, v in d.items() if k != "content_b64"} for d in docs]
-
-
-@app.get("/api/invoices/{inv_id}/pdf")
-async def invoice_pdf_endpoint(inv_id: str, user: dict = Depends(auth.current_user)):
-    inv = await db.invoices().find_one({"_id": inv_id})
-    if not inv:
-        raise HTTPException(404, "Invoice not found")
-    auth.check_node_access(user, inv["node_id"])
-    return Response(base64.b64decode(inv["content_b64"]), media_type="application/pdf",
-                    headers={"Content-Disposition": f'inline; filename="{inv["invoice_number"]}.pdf"'})
-
-
 # ============================== payments ============================== #
 
 @app.post("/api/nodes/{node_id}/payments")
@@ -704,7 +648,7 @@ async def create_payment(node_id: str, payload: PaymentIn,
     auth.check_node_access(user, node_id)
     d = {"_id": uuid4().hex, "node_id": node_id, "date": payload.date,
          "amount": payload.amount, "bank_reference": payload.bank_reference,
-         "matched_invoice_id": None, "split": None, "status": "unmatched",
+         "matched_delivery_id": None, "split": None, "status": "unmatched",
          "created_at": _now()}
     await db.payments().insert_one(d)
     await audit.log(user, node_id, "create", "payments", d["_id"], after=d)
@@ -714,57 +658,58 @@ async def create_payment(node_id: str, payload: PaymentIn,
 @app.post("/api/payments/{payment_id}/match")
 async def match_payment(payment_id: str, payload: PaymentMatchIn,
                         user: dict = Depends(auth.require_role("audit", "admin"))):
-    """Match a payment to an invoice and compute the Fenix/partner split.
+    """Match a bank receipt to a delivery and compute the Fenix/partner split.
     Fenix draws ex-works value: full for A-grade lines, b_grade_exworks_pct for B."""
     p = await db.payments().find_one({"_id": payment_id})
     if not p:
         raise HTTPException(404, "Payment not found")
     auth.check_node_access(user, p["node_id"])
-    inv = await db.invoices().find_one({"_id": payload.invoice_id})
-    if not inv or inv["node_id"] != p["node_id"]:
-        raise HTTPException(400, "Invoice not found on this node")
+    dn = await db.delivery_notes().find_one({"_id": payload.delivery_id})
+    if not dn or dn["node_id"] != p["node_id"]:
+        raise HTTPException(400, "Delivery not found on this node")
     cfg = await _get_cfg(p["node_id"])
 
-    split = recon.compute_split(inv, cfg, p["amount"])
+    split = recon.compute_split(dn, cfg, p["amount"])
     paid_so_far = 0.0
-    async for other in db.payments().find({"matched_invoice_id": inv["_id"]}):
+    async for other in db.payments().find({"matched_delivery_id": dn["_id"]}):
         paid_so_far += other["amount"]
-    total_paid = paid_so_far + p["amount"]
+    total_paid = round(paid_so_far + p["amount"], 2)
 
     status = "matched"
     flags_raised = []
-    if total_paid + 0.005 < inv["total"]:
-        inv_status = "part_paid"
+    if total_paid + 0.005 < dn["total"]:
+        dn_status = "part_paid"
         status = "flagged"
         flags_raised.append(await recon.raise_flag(
             p["node_id"], "short_paid",
-            f"Invoice {inv['invoice_number']}: paid R{total_paid:.2f} of R{inv['total']:.2f} "
-            f"(short R{inv['total'] - total_paid:.2f}).",
-            {"invoice_id": inv["_id"], "payment_id": payment_id}, p["date"]))
-    elif total_paid > inv["total"] + 0.005:
-        inv_status = "flagged"
+            f"Delivery {dn['dn_number']}: paid R{total_paid:.2f} of R{dn['total']:.2f} "
+            f"(short R{dn['total'] - total_paid:.2f}).",
+            {"delivery_id": dn["_id"], "payment_id": payment_id}, p["date"]))
+    elif total_paid > dn["total"] + 0.005:
+        dn_status = "flagged"
         status = "flagged"
         flags_raised.append(await recon.raise_flag(
             p["node_id"], "over_paid",
-            f"Invoice {inv['invoice_number']}: paid R{total_paid:.2f} against R{inv['total']:.2f} "
-            f"(over by R{total_paid - inv['total']:.2f}).",
-            {"invoice_id": inv["_id"], "payment_id": payment_id}, p["date"]))
+            f"Delivery {dn['dn_number']}: paid R{total_paid:.2f} against R{dn['total']:.2f} "
+            f"(over by R{total_paid - dn['total']:.2f}).",
+            {"delivery_id": dn["_id"], "payment_id": payment_id}, p["date"]))
     else:
-        inv_status = "paid"
+        dn_status = "paid"
 
     before = dict(p)
-    update = {"matched_invoice_id": inv["_id"], "split": split, "status": status}
+    update = {"matched_delivery_id": dn["_id"], "split": split, "status": status}
     await db.payments().update_one({"_id": payment_id}, {"$set": update})
-    await db.invoices().update_one({"_id": inv["_id"]}, {"$set": {"status": inv_status}})
+    await db.delivery_notes().update_one({"_id": dn["_id"]},
+                                         {"$set": {"status": dn_status, "amount_paid": total_paid}})
     # matching is the fix for an unmatched-payment flag
     await db.flags().update_many(
         {"node_id": p["node_id"], "type": "payment_unmatched",
          "references.payment_id": payment_id, "status": "open"},
         {"$set": {"status": "resolved", "resolved_by": user["email"],
-                  "resolution_note": f"Matched to {inv['invoice_number']}."}})
+                  "resolution_note": f"Matched to {dn['dn_number']}."}})
     await audit.log(user, p["node_id"], "match", "payments", payment_id,
                     before=before, after=update)
-    return {**p, **update, "invoice_status": inv_status, "flags_raised": flags_raised}
+    return {**p, **update, "delivery_status": dn_status, "flags_raised": flags_raised}
 
 
 @app.get("/api/nodes/{node_id}/payments")
@@ -955,14 +900,14 @@ async def recon_dashboard(node_id: str, month: Optional[str] = None,
                      "capture_id": cap["_id"] if cap else None})
 
     unmatched = await _all(db.payments(), {"node_id": node_id, "status": "unmatched"})
-    unpaid = await _all(db.invoices(), {"node_id": node_id,
-                                        "status": {"$in": ["unpaid", "part_paid", "flagged"]}})
+    unpaid = await _all(db.delivery_notes(), {"node_id": node_id,
+                                              "status": {"$in": ["unpaid", "part_paid", "flagged"]}})
     return {
         "month": month,
         "days": days,
         "open_flags": open_flags,
         "unmatched_payments": unmatched,
-        "unpaid_invoices": [{k: v for k, v in i.items() if k != "content_b64"} for i in unpaid],
+        "unpaid_deliveries": [{k: v for k, v in d.items() if k != "content_b64"} for d in unpaid],
     }
 
 
@@ -976,7 +921,6 @@ async def daily_report(node_id: str, date: str, user: dict = Depends(auth.curren
     runs = await _all(db.production_runs(), {"node_id": node_id, "date": date})
     powder = await _all(db.powder_ledger(), {"node_id": node_id, "date": date})
     dns = await _all(db.delivery_notes(), {"node_id": node_id, "date": date})
-    invs = await _all(db.invoices(), {"node_id": node_id, "date": date})
     pays = await _all(db.payments(), {"node_id": node_id, "date": date})
     cap = await db.daily_captures().find_one({"node_id": node_id, "date": date})
     flags_open = await _all(db.flags(), {"node_id": node_id, "date_raised": date, "status": "open"})
@@ -992,9 +936,8 @@ async def daily_report(node_id: str, date: str, user: dict = Depends(auth.curren
         "finished_goods_on_hand": [{"tank_type": k[0], "grade": k[1], "quantity": v}
                                    for k, v in sorted(fg_store.items())],
         "deliveries": [{"dn_number": d["dn_number"], "client_name": d["client_name"],
-                        "lines": d["lines"]} for d in dns],
-        "invoices_raised": [{"invoice_number": i["invoice_number"], "total": i["total"],
-                             "status": i["status"]} for i in invs],
+                        "lines": d["lines"], "total": d.get("total", 0),
+                        "status": d.get("status", "unpaid")} for d in dns],
         "payments_received": [{"amount": p["amount"], "status": p["status"]} for p in pays],
         "reconciliation_status": (cap or {}).get("status", "no_capture"),
         "open_flags": len(flags_open),
@@ -1019,18 +962,18 @@ async def monthly_report(node_id: str, month: str, user: dict = Depends(auth.cur
         t = by_type.setdefault(r["tank_type"], {"a": 0, "b": 0, "reject": 0})
         t["a"] += r["quantity_a"]; t["b"] += r["quantity_b"]; t["reject"] += r["quantity_reject"]
 
-    invs = await _all(db.invoices(), filt)
-    invoiced = sum(i["total"] for i in invs)
+    dels = await _all(db.delivery_notes(), filt)
+    invoiced = sum(d.get("total", 0) for d in dels)
     exworks = 0.0
-    for i in invs:
-        for l in i["lines"]:
+    for d in dels:
+        for l in d["lines"]:
             factor = 1.0 if l["grade"] == "A" else b_pct
             exworks += l["quantity"] * prices.get(l["tank_type"], 0) * factor
 
     pays = await _all(db.payments(), filt)
     cash = sum(p["amount"] for p in pays)
-    outstanding = sum(i["total"] for i in await _all(
-        db.invoices(), {"node_id": node_id, "status": {"$in": ["unpaid", "part_paid"]}}))
+    outstanding = sum(d.get("total", 0) for d in await _all(
+        db.delivery_notes(), {"node_id": node_id, "status": {"$in": ["unpaid", "part_paid"]}}))
 
     scrap_docs = await _all(db.scrap_log(), filt)
     out = {

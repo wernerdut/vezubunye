@@ -50,7 +50,7 @@ export default function ReconDashboard({ user }: { user: User }) {
         <h1 className="font-headline text-4xl text-brand-blue">Reconciliation</h1>
         <input className="input w-40" type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
         {canAct && (
-          <button className="btn-secondary flex items-center gap-2" onClick={sweep} title="Check delivery notes without invoices, unpaid invoices past terms, unmatched payments">
+          <button className="btn-secondary flex items-center gap-2" onClick={sweep} title="Check deliveries unpaid past terms and unmatched payments">
             <RefreshCw size={14} /> Run checks
           </button>
         )}
@@ -125,20 +125,20 @@ export default function ReconDashboard({ user }: { user: User }) {
             <Link to={`/node/${NODE_ID}/payments`} className="text-sm text-brand-light font-semibold">Go match payments →</Link>
           </div>
           <div>
-            <SectionTitle>Unpaid Invoices ({data.unpaid_invoices.length})</SectionTitle>
+            <SectionTitle>Unpaid Deliveries ({data.unpaid_deliveries.length})</SectionTitle>
             <div className="card p-0 overflow-hidden">
-              {data.unpaid_invoices.length === 0 ? (
-                <p className="text-sm text-gray-400 p-4">Every invoice is paid.</p>
+              {data.unpaid_deliveries.length === 0 ? (
+                <p className="text-sm text-gray-400 p-4">Every delivery is paid.</p>
               ) : (
                 <table className="w-full">
                   <thead><tr><th className="th">Number</th><th className="th">Client</th><th className="th text-right">Total</th><th className="th">Status</th></tr></thead>
                   <tbody>
-                    {data.unpaid_invoices.map((i) => (
-                      <tr key={i._id}>
-                        <td className="td font-semibold">{i.invoice_number}</td>
-                        <td className="td">{i.client_name}</td>
-                        <td className="td text-right">R {i.total.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</td>
-                        <td className="td"><StatusBadge status={i.status} /></td>
+                    {data.unpaid_deliveries.map((d) => (
+                      <tr key={d._id}>
+                        <td className="td font-semibold">{d.dn_number}</td>
+                        <td className="td">{d.client_name}</td>
+                        <td className="td text-right">R {d.total.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</td>
+                        <td className="td"><StatusBadge status={d.status} /></td>
                       </tr>
                     ))}
                   </tbody>
