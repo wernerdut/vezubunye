@@ -340,7 +340,8 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
     if prior:
         await audit.log(user, node_id, "update", "daily_captures", capture_id,
                         before={"note": "re-capture, prior entries replaced"})
-    for coll in (db.powder_ledger(), db.fittings_ledger(), db.production_runs(), db.scrap_log()):
+    for coll in (db.powder_ledger(), db.fittings_ledger(), db.paraffin_ledger(),
+                 db.production_runs(), db.scrap_log()):
         await coll.delete_many({"source_capture_id": capture_id})
     await db.finished_goods().delete_many({"reference": capture_id})
 
@@ -353,6 +354,14 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
                     "powder_type": line.powder_type, "type": mtype, "kg": kg,
                     "source_capture_id": capture_id, "notes": payload.notes or "",
                     "created_at": _now()})
+
+    # paraffin received into stock (consumption is derived from tanks moulded)
+    if payload.paraffin_received:
+        await db.paraffin_ledger().insert_one({
+            "_id": uuid4().hex, "node_id": node_id, "date": date,
+            "type": "received", "litres": payload.paraffin_received,
+            "source_capture_id": capture_id, "notes": payload.notes or "",
+            "created_at": _now()})
 
     # fittings warehouse in/out, per type
     for line in payload.fittings:
@@ -444,6 +453,17 @@ async def powder_ledger(node_id: str, user: dict = Depends(auth.current_user)):
                    "warehouse": warehouse.get(k, 0.0), "floor": floor.get(k, 0.0)}
                   for k in sorted(codes)],
     }
+
+
+@app.get("/api/nodes/{node_id}/paraffin")
+async def paraffin(node_id: str, user: dict = Depends(auth.current_user)):
+    """Paraffin (release agent) stock: received less consumed by moulding, plus movements."""
+    auth.check_node_access(user, node_id)
+    cfg = await _get_cfg(node_id)
+    bal = await recon.paraffin_balance(node_id, cfg)
+    entries = await _all(db.paraffin_ledger(), {"node_id": node_id},
+                         sort=[("date", 1), ("created_at", 1)])
+    return {**bal, "entries": entries}
 
 
 @app.post("/api/nodes/{node_id}/powder/adjustment")

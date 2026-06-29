@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, errMsg } from '../../api'
 import { Empty, SectionTitle } from '../../components/ui'
-import type { PowderData } from '../../types'
+import type { ParaffinData, PowderData } from '../../types'
 import type { TabProps } from '../NodePage'
 
 export default function Powder({ nodeId, config, user }: TabProps) {
   const [data, setData] = useState<PowderData | null>(null)
+  const [paraffin, setParaffin] = useState<ParaffinData | null>(null)
   const [adj, setAdj] = useState({ date: new Date().toISOString().slice(0, 10), powder_type: '', scope: 'warehouse', kg: '', notes: '' })
   const [error, setError] = useState('')
 
@@ -14,6 +15,7 @@ export default function Powder({ nodeId, config, user }: TabProps) {
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/powder`).then((r) => setData(r.data))
+    api.get(`/api/nodes/${nodeId}/paraffin`).then((r) => setParaffin(r.data)).catch(() => {})
   }, [nodeId])
   useEffect(load, [load])
 
@@ -60,6 +62,30 @@ export default function Powder({ nodeId, config, user }: TabProps) {
           </table>
         </div>
       </div>
+
+      {paraffin && (
+        <div>
+          <SectionTitle>Paraffin</SectionTitle>
+          <p className="text-sm text-gray-500 mb-3">
+            Release agent. <b>On hand</b> = received less used, drawn at <b>{paraffin.litres_per_tank} L per tank</b> moulded.
+          </p>
+          <div className="card p-0 overflow-hidden">
+            <table className="w-full">
+              <thead>
+                <tr><th className="th text-right">Received (L)</th><th className="th text-right">Used (L)</th><th className="th text-right">On hand (L)</th><th className="th text-right">Tanks moulded</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="td text-right font-semibold text-brand-green">{fmt(paraffin.received)}</td>
+                  <td className="td text-right font-semibold">{fmt(paraffin.consumed)}</td>
+                  <td className={`td text-right font-semibold ${paraffin.balance < 0 ? 'text-brand-red' : 'text-brand-blue'}`}>{fmt(paraffin.balance)}</td>
+                  <td className="td text-right text-gray-500">{paraffin.tanks}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {canAdjust && (
         <form onSubmit={adjust} className="card flex flex-wrap items-end gap-3">

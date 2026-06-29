@@ -60,6 +60,7 @@ class NodeConfigIn(BaseModel):
     powder_products: List[PowderProduct] = []
     fitting_types: List[FittingType] = []
     fittings_per_tank: dict = {}        # { tank_code: { fitting_code: qty } }
+    paraffin_litres_per_tank: float = 11.0  # release agent drawn per tank moulded
     tolerances: Tolerances = Tolerances()
 
 
@@ -104,6 +105,7 @@ class CaptureEntriesIn(BaseModel):
     production: List[ProductionLine] = []
     booked: List[BookedLine] = []
     dispatched: List[DispatchLine] = []
+    paraffin_received: float = 0.0   # litres of paraffin received into stock that day
     notes: Optional[str] = None
 
 

@@ -47,6 +47,7 @@ CONFIG = {
     ],
     "fitting_types": [{"code": "OUTLET", "name": "Outlet kit"}],
     "fittings_per_tank": {"2500L": {"OUTLET": 1}, "5000L": {"OUTLET": 2}},
+    "paraffin_litres_per_tank": 5,
     "tolerances": {"powder_kg": 0, "tank_qty": 0, "fittings_qty": 0},
 }
 
@@ -82,6 +83,7 @@ async def test_full_chain(client):
             {"powder_type": "GREEN", "received_kg": 1000, "issued_kg": 147},
         ],
         "fittings": [{"fitting_type": "OUTLET", "received_qty": 100, "issued_qty": 8}],
+        "paraffin_received": 100,
         "production": [
             {"tank_type": "2500L", "colour": "GREEN", "quantity_a": 2, "quantity_b": 1, "quantity_reject": 1},
             {"tank_type": "5000L", "colour": "GREEN", "quantity_a": 2, "quantity_b": 0, "quantity_reject": 0},
@@ -249,6 +251,15 @@ async def test_full_chain(client):
     assert daily["month_totals"]["material_cost"] == 8260.0        # admin sees cost
     assert "material_cost" not in (await c.get(
         "/api/nodes/gogreen/dashboard/daily?month=2026-06", headers=ops)).json()["month_totals"]
+
+    # ---- paraffin: received less consumed (each tank draws litres_per_tank) ----
+    para = (await c.get("/api/nodes/gogreen/paraffin", headers=ops)).json()
+    assert para["litres_per_tank"] == 5
+    assert para["received"] == 100.0           # one receipt on day 1
+    assert para["tanks"] == 8                   # all moulded tanks (A+B+reject)
+    assert para["consumed"] == 40.0            # 8 tanks x 5 L
+    assert para["balance"] == 60.0             # 100 received - 40 used
+    assert len(para["entries"]) == 1
 
     # audit log is admin-only
     assert len((await c.get("/api/audit", headers=admin)).json()) > 10

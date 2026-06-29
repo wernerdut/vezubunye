@@ -162,6 +162,28 @@ async def check_powder_floor(node_id: str, date: str, capture_id: str) -> list[s
     return raised
 
 
+# ---------- paraffin (release agent) ---------- #
+
+async def paraffin_balance(node_id: str, cfg: dict, up_to_date: str | None = None) -> dict:
+    """Single paraffin stock: received (+ adjustments) less consumed by moulding.
+    Each tank moulded (A, B or reject) draws `paraffin_litres_per_tank` litres."""
+    rate = float(cfg.get("paraffin_litres_per_tank", 0.0) or 0.0)
+    filt: dict = {"node_id": node_id}
+    if up_to_date:
+        filt["date"] = {"$lte": up_to_date}
+    received = 0.0
+    async for e in db.paraffin_ledger().find(filt):
+        if e.get("type") in ("received", "count_adjustment"):
+            received += e.get("litres", 0.0)
+    tanks = 0
+    async for r in db.production_runs().find(filt):
+        tanks += r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]
+    consumed = tanks * rate
+    return {"litres_per_tank": rate, "received": round(received, 1),
+            "consumed": round(consumed, 1), "balance": round(received - consumed, 1),
+            "tanks": tanks}
+
+
 # ---------- fittings ---------- #
 
 async def fittings_warehouse(node_id: str, up_to_date: str | None = None) -> dict:

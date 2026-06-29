@@ -47,6 +47,8 @@ async def migrate_config() -> list[str]:
         add["fitting_types"] = []
     if "fittings_per_tank" not in cfg:
         add["fittings_per_tank"] = {}
+    if "paraffin_litres_per_tank" not in cfg:
+        add["paraffin_litres_per_tank"] = 11.0
     if "tolerances" not in cfg:
         add["tolerances"] = {"powder_kg": 0.0, "tank_qty": 0, "fittings_qty": 0}
     if add:
@@ -93,6 +95,7 @@ async def seed():
             ],
             "fitting_types": [],
             "fittings_per_tank": {},
+            "paraffin_litres_per_tank": 11.0,
             "tolerances": {"powder_kg": 0.0, "tank_qty": 0, "fittings_qty": 0},
             "updated_at": datetime.utcnow(),
         })

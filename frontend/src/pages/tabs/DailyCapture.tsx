@@ -31,6 +31,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const [fittings, setFittings] = useState<FittingMoveLine[]>(blankFittings)
   const [prod, setProd] = useState<ProductionLine[]>(blankProd)
   const [dispatch, setDispatch] = useState<DispatchLine[]>(blankDispatch)
+  const [paraffin, setParaffin] = useState('')
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/captures`).then((r) => setCaptures(r.data))
@@ -55,10 +56,11 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
     return d
   }, [powder, prod, tankByCode, blackCode])
   const negativeGrades = Object.entries(floorDelta).filter(([, v]) => v < -0.001)
+  const tanksThisCapture = prod.reduce((s, l) => s + l.quantity_a + l.quantity_b + l.quantity_reject, 0)
 
   const reset = () => {
     setPowder(blankPowder()); setFittings(blankFittings()); setProd(blankProd())
-    setDispatch(blankDispatch()); setNotes(''); setPhoto(null)
+    setDispatch(blankDispatch()); setNotes(''); setPhoto(null); setParaffin('')
   }
 
   const submit = async (e: React.FormEvent) => {
@@ -74,6 +76,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
         powder: powder.filter((p) => p.powder_type),
         fittings, production: prod,
         dispatched: dispatch.filter((d) => d.quantity > 0),
+        paraffin_received: parseFloat(paraffin) || 0,
         notes,
       })
       setMsg({ kind: 'ok', text: 'Captured. Produced tanks are in stock. Reconciliation happens at stocktake.' })
@@ -145,6 +148,23 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               <div className={`text-xs mt-1 rounded px-2 py-1 ${negativeGrades.length ? 'bg-red-50 text-brand-red' : 'bg-gray-50 text-gray-500'}`}>
                 Floor change this capture: {Object.entries(floorDelta).filter(([, v]) => Math.abs(v) > 0.001).map(([code, v]) => `${colourName(code)} ${v >= 0 ? '+' : ''}${v.toFixed(1)}kg`).join(', ') || 'none'}
                 {negativeGrades.length > 0 && ` · more moulded than issued (${negativeGrades.map(([c]) => colourName(c)).join(', ')}) — double-check powder issued`}
+              </div>
+            </section>
+
+            {/* Paraffin (release agent) — received here, drawn down per tank moulded */}
+            <section>
+              <h3 className="text-sm font-bold text-brand-blue mb-1">Paraffin</h3>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Received today (litres)</label>
+                  <input className="input w-32" type="number" min="0" step="0.1" value={paraffin}
+                         onChange={(e) => setParaffin(e.target.value)} placeholder="0" />
+                </div>
+                <div className="text-xs text-gray-500 rounded bg-gray-50 px-2 py-1">
+                  Used this capture:{' '}
+                  <b>{(tanksThisCapture * (config.paraffin_litres_per_tank || 0)).toLocaleString('en-ZA', { maximumFractionDigits: 1 })} L</b>
+                  {' '}({tanksThisCapture} tank{tanksThisCapture === 1 ? '' : 's'} × {config.paraffin_litres_per_tank || 0} L)
+                </div>
               </div>
             </section>
 

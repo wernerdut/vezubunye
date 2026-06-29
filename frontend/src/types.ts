@@ -52,6 +52,7 @@ export interface NodeConfig {
   powder_products: PowderProduct[]
   fitting_types: FittingType[]
   fittings_per_tank: Record<string, Record<string, number>>
+  paraffin_litres_per_tank: number
   tolerances: Tolerances
 }
 
@@ -104,7 +105,17 @@ export interface CaptureEntries {
   production: ProductionLine[]
   booked: BookedLine[]
   dispatched: DispatchLine[]
+  paraffin_received?: number
   notes?: string
+}
+
+export interface ParaffinData {
+  litres_per_tank: number
+  received: number
+  consumed: number
+  balance: number
+  tanks: number
+  entries: { _id: string; date: string; type: string; litres: number; notes?: string }[]
 }
 
 export interface PowderEntry {

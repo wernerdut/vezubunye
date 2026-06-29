@@ -221,6 +221,11 @@ export default function Admin() {
                 <input className="input" type="number" value={config.payment_terms_days || ''}
                        onChange={(e) => setConfig({ ...config, payment_terms_days: parseInt(e.target.value) || 30 })} />
               </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Paraffin (L per tank)</label>
+                <input className="input" type="number" step="0.1" value={config.paraffin_litres_per_tank || ''}
+                       onChange={(e) => setConfig({ ...config, paraffin_litres_per_tank: parseFloat(e.target.value) || 0 })} />
+              </div>
             </div>
             <div>
               <div className="text-sm font-bold text-brand-blue mb-1">Variance tolerances (0 = exact)</div>
