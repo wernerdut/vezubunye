@@ -96,8 +96,8 @@ export default function Payments({ nodeId, user }: TabProps) {
                       <span className="flex items-center gap-1">
                         <select className="input py-1" value={matchSel[p._id] || ''} onChange={(e) => setMatchSel({ ...matchSel, [p._id]: e.target.value })}>
                           <option value="">select…</option>
-                          {deliveries.filter((d) => d.status !== 'paid').map((d) => (
-                            <option key={d._id} value={d._id}>{d.dn_number} (R {d.total.toFixed(2)})</option>
+                          {deliveries.filter((d) => (d.status ?? 'unpaid') !== 'paid').map((d) => (
+                            <option key={d._id} value={d._id}>{d.dn_number} (R {(d.total ?? 0).toFixed(2)})</option>
                           ))}
                         </select>
                         <button className="btn-secondary py-1" disabled={!matchSel[p._id]} onClick={() => match(p._id)} type="button">Match</button>

@@ -137,7 +137,7 @@ export default function ReconDashboard({ user }: { user: User }) {
                       <tr key={d._id}>
                         <td className="td font-semibold">{d.dn_number}</td>
                         <td className="td">{d.client_name}</td>
-                        <td className="td text-right">R {d.total.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</td>
+                        <td className="td text-right">R {(d.total ?? 0).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}</td>
                         <td className="td"><StatusBadge status={d.status} /></td>
                       </tr>
                     ))}
