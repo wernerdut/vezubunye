@@ -3,6 +3,7 @@ import { api, errMsg } from '../../api'
 import { Empty, SectionTitle } from '../../components/ui'
 import type { ParaffinData, PowderData } from '../../types'
 import type { TabProps } from '../NodePage'
+import Fittings from './Fittings'
 
 export default function Powder({ nodeId, config, user }: TabProps) {
   const [data, setData] = useState<PowderData | null>(null)
@@ -121,7 +122,7 @@ export default function Powder({ nodeId, config, user }: TabProps) {
       )}
 
       <div>
-        <SectionTitle>Movements</SectionTitle>
+        <SectionTitle>Powder movements</SectionTitle>
         <div className="card p-0 overflow-hidden">
           {data.entries.length === 0 ? (
             <Empty text="No powder movements yet" />
@@ -147,6 +148,9 @@ export default function Powder({ nodeId, config, user }: TabProps) {
           )}
         </div>
       </div>
+
+      <div className="border-t border-gray-200 pt-2" />
+      <Fittings nodeId={nodeId} config={config} user={user} />
     </div>
   )
 }

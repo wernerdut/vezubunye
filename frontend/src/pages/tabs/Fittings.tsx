@@ -107,7 +107,7 @@ export default function Fittings({ nodeId, config, user }: TabProps) {
       )}
 
       <div>
-        <SectionTitle>Movements</SectionTitle>
+        <SectionTitle>Fittings movements</SectionTitle>
         <div className="card p-0 overflow-hidden">
           {data.entries.length === 0 ? (
             <Empty text="No fittings movements yet" />
