@@ -55,6 +55,14 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   }, [powder, prod, tankByCode, blackCode])
   const negativeGrades = Object.entries(floorDelta).filter(([, v]) => v < -0.001)
   const tanksThisCapture = prod.reduce((s, l) => s + l.quantity_a + l.quantity_b + l.quantity_reject, 0)
+  const producedSummary = (c: Capture): string => {
+    const byType: Record<string, number> = {}
+    for (const l of c.entries?.production || []) {
+      const n = l.quantity_a + l.quantity_b + l.quantity_reject
+      if (n > 0) byType[l.tank_type] = (byType[l.tank_type] || 0) + n
+    }
+    return Object.entries(byType).map(([code, n]) => `${n}× ${code}`).join(', ')
+  }
 
   const reset = () => {
     setPowder(blankPowder()); setFittings(blankFittings()); setProd(blankProd())
@@ -251,15 +259,15 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             <Empty text="No captures yet" />
           ) : (
             <table className="w-full">
-              <thead><tr><th className="th">Date</th><th className="th">Status</th><th className="th">By</th><th className="th">Production notes</th><th className="th">Photo</th></tr></thead>
+              <thead><tr><th className="th">Date</th><th className="th">Status</th><th className="th">By</th><th className="th">Tanks produced</th><th className="th">Photo</th></tr></thead>
               <tbody>
                 {captures.map((c) => (
                   <tr key={c._id} className="align-top">
                     <td className="td font-semibold whitespace-nowrap">{c.date}</td>
                     <td className="td"><StatusBadge status={c.status} /></td>
                     <td className="td text-gray-500">{c.captured_by}</td>
-                    <td className="td text-gray-600 max-w-xs whitespace-pre-wrap break-words">
-                      {c.entries?.notes ? c.entries.notes : <span className="text-gray-300">—</span>}
+                    <td className="td text-gray-600">
+                      {producedSummary(c) || <span className="text-gray-300">—</span>}
                     </td>
                     <td className="td">
                       {c.photo_url ? (
