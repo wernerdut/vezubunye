@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FileDown } from 'lucide-react'
 import { api, errMsg, openAuthed } from '../../api'
 import { Empty, StatusBadge } from '../../components/ui'
@@ -30,6 +30,8 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const [fittings, setFittings] = useState<FittingMoveLine[]>(blankFittings)
   const [prod, setProd] = useState<ProductionLine[]>(blankProd)
   const [paraffin, setParaffin] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const initRef = useRef(false)
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/captures`).then((r) => setCaptures(r.data))
@@ -69,10 +71,54 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
     setNotes(''); setPhoto(null); setParaffin('')
   }
 
+  // load an existing day's sheet into the form for editing
+  const loadCapture = (cap: Capture) => {
+    setEditingId(cap._id)
+    setMsg(null); setPhoto(null)
+    const e = cap.entries
+    if (!e) { reset(); return }
+    setPowder(config.powder_products.length
+      ? config.powder_products.map((p) => {
+          const s = e.powder?.find((x) => x.powder_type === p.code)
+          return { powder_type: p.code, received_kg: s?.received_kg || 0, issued_kg: s?.issued_kg || 0 }
+        })
+      : (e.powder?.length ? e.powder.map((x) => ({ ...x })) : blankPowder()))
+    setFittings(config.fitting_types.map((f) => {
+      const s = e.fittings?.find((x) => x.fitting_type === f.code)
+      return { fitting_type: f.code, received_qty: s?.received_qty || 0, issued_qty: s?.issued_qty || 0 }
+    }))
+    const saved = e.production || []
+    setProd(config.tank_types.map((t) => {
+      const s = saved.find((l) => l.tank_type === t.code)
+      return s
+        ? { tank_type: t.code, colour: s.colour || colours[0]?.code || '', quantity_a: s.quantity_a, quantity_b: s.quantity_b, quantity_reject: s.quantity_reject }
+        : { tank_type: t.code, colour: colours[0]?.code || '', quantity_a: 0, quantity_b: 0, quantity_reject: 0 }
+    }))
+    setParaffin(e.paraffin_received ? String(e.paraffin_received) : '')
+    setNotes(e.notes || '')
+  }
+
+  // picking a date loads that day's sheet if one exists (edit), otherwise a blank sheet (new)
+  const selectDate = (d: string) => {
+    setDate(d)
+    const cap = captures.find((c) => c.date === d)
+    if (cap) loadCapture(cap)
+    else { setEditingId(null); reset(); setMsg(null) }
+  }
+
+  // on first load, if today's sheet already exists, open it for editing
+  useEffect(() => {
+    if (initRef.current || captures.length === 0) return
+    initRef.current = true
+    const cap = captures.find((c) => c.date === date)
+    if (cap) loadCapture(cap)
+  }, [captures]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy(true); setMsg(null)
     try {
+      const wasEditing = !!editingId
       const cap = (await api.post(`/api/nodes/${nodeId}/captures?date=${date}`)).data
       if (photo) {
         const form = new FormData(); form.append('file', photo)
@@ -84,8 +130,9 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
         paraffin_received: parseFloat(paraffin) || 0,
         notes,
       })
-      setMsg({ kind: 'ok', text: 'Captured. Produced tanks are in stock. Reconciliation happens at stocktake.' })
-      reset(); load()
+      setEditingId(cap._id); setPhoto(null)
+      setMsg({ kind: 'ok', text: wasEditing ? 'Sheet updated.' : 'Captured. Produced tanks are in stock; reconciliation happens at stocktake.' })
+      load()
     } catch (err) {
       setMsg({ kind: 'err', text: errMsg(err) })
     } finally {
@@ -111,7 +158,10 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
           <form onSubmit={submit} className="card space-y-5">
             <div>
               <label className="block text-xs font-semibold text-gray-600 mb-1">Date</label>
-              <input className="input w-48" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+              <input className="input w-48" type="date" value={date} onChange={(e) => selectDate(e.target.value)} required />
+              {editingId && (
+                <p className="text-xs text-brand-blue mt-1">Editing the {date} sheet — saving updates it. Pick a date with no sheet to start a new one.</p>
+              )}
             </div>
 
             {/* Powder — one line per grade received and/or issued */}
@@ -245,7 +295,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             {msg && (
               <p className={`text-sm font-semibold ${msg.kind === 'ok' ? 'text-brand-green' : msg.kind === 'warn' ? 'text-brand-orange' : 'text-brand-red'}`}>{msg.text}</p>
             )}
-            <button className="btn-primary w-full" disabled={busy}>{busy ? 'Saving…' : 'Save capture'}</button>
+            <button className="btn-primary w-full" disabled={busy}>{busy ? 'Saving…' : (editingId ? 'Update capture' : 'Save capture')}</button>
           </form>
         ) : (
           <p className="text-sm text-gray-500 card">Only the operations role keys in daily sheets. You can review captures and the documents they produced.</p>
@@ -263,7 +313,12 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               <tbody>
                 {captures.map((c) => (
                   <tr key={c._id} className="align-top">
-                    <td className="td font-semibold whitespace-nowrap">{c.date}</td>
+                    <td className="td font-semibold whitespace-nowrap">
+                      {canCapture ? (
+                        <button type="button" className="text-brand-light hover:underline" title="Edit this sheet"
+                                onClick={() => { selectDate(c.date); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>{c.date}</button>
+                      ) : c.date}
+                    </td>
                     <td className="td"><StatusBadge status={c.status} /></td>
                     <td className="td text-gray-500">{c.captured_by}</td>
                     <td className="td text-gray-600">
