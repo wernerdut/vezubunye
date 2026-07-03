@@ -627,7 +627,11 @@ async def create_delivery_note(node_id: str, payload: DeliveryNoteIn,
 async def list_delivery_notes(node_id: str, user: dict = Depends(auth.current_user)):
     auth.check_node_access(user, node_id)
     docs = await _all(db.delivery_notes(), {"node_id": node_id}, sort=[("dn_number", -1)])
-    return [{k: v for k, v in d.items() if k != "content_b64"} for d in docs]
+    counts: dict = {}
+    async for dd in db.delivery_documents().find({"node_id": node_id}, {"delivery_id": 1}):
+        counts[dd["delivery_id"]] = counts.get(dd["delivery_id"], 0) + 1
+    return [{**{k: v for k, v in d.items() if k != "content_b64"},
+             "document_count": counts.get(d["_id"], 0)} for d in docs]
 
 
 @app.get("/api/delivery-notes/{dn_id}/pdf")
@@ -638,6 +642,66 @@ async def delivery_note_pdf_endpoint(dn_id: str, user: dict = Depends(auth.curre
     auth.check_node_access(user, dn["node_id"])
     return Response(base64.b64decode(dn["content_b64"]), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{dn["dn_number"]}.pdf"'})
+
+
+# ---------- delivery documents (invoice, payment notification, etc.) ---------- #
+
+async def _get_delivery(dn_id: str, user: dict) -> dict:
+    dn = await db.delivery_notes().find_one({"_id": dn_id})
+    if not dn:
+        raise HTTPException(404, "Delivery not found")
+    auth.check_node_access(user, dn["node_id"])
+    return dn
+
+
+@app.post("/api/delivery-notes/{dn_id}/documents")
+async def upload_delivery_document(dn_id: str, file: UploadFile = File(...),
+                                   user: dict = Depends(auth.require_role("operations", "admin"))):
+    """Attach a supporting document (invoice, proof of payment, etc.) to a delivery."""
+    dn = await _get_delivery(dn_id, user)
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 10 MB)")
+    doc = {"_id": uuid4().hex, "node_id": dn["node_id"], "delivery_id": dn_id,
+           "filename": file.filename or "document",
+           "content_type": file.content_type or "application/octet-stream",
+           "size": len(content), "content_b64": base64.b64encode(content).decode(),
+           "uploaded_by": user["email"], "uploaded_at": _now()}
+    await db.delivery_documents().insert_one(doc)
+    await audit.log(user, dn["node_id"], "create", "delivery_documents", doc["_id"],
+                    after={k: v for k, v in doc.items() if k != "content_b64"})
+    return {k: v for k, v in doc.items() if k != "content_b64"}
+
+
+@app.get("/api/delivery-notes/{dn_id}/documents")
+async def list_delivery_documents(dn_id: str, user: dict = Depends(auth.current_user)):
+    await _get_delivery(dn_id, user)
+    docs = await _all(db.delivery_documents(), {"delivery_id": dn_id}, sort=[("uploaded_at", 1)])
+    return [{k: v for k, v in d.items() if k != "content_b64"} for d in docs]
+
+
+@app.get("/api/delivery-documents/{doc_id}/content")
+async def get_delivery_document(doc_id: str, user: dict = Depends(auth.current_user)):
+    doc = await db.delivery_documents().find_one({"_id": doc_id})
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    auth.check_node_access(user, doc["node_id"])
+    return Response(base64.b64decode(doc["content_b64"]),
+                    media_type=doc.get("content_type", "application/octet-stream"),
+                    headers={"Content-Disposition": f'inline; filename="{doc["filename"]}"'})
+
+
+@app.delete("/api/delivery-documents/{doc_id}")
+async def delete_delivery_document(doc_id: str,
+                                   user: dict = Depends(auth.require_role("operations", "admin"))):
+    doc = await db.delivery_documents().find_one({"_id": doc_id})
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    auth.check_node_access(user, doc["node_id"])
+    await db.delivery_documents().delete_one({"_id": doc_id})
+    await audit.log(user, doc["node_id"], "delete", "delivery_documents", doc_id,
+                    before={k: v for k, v in doc.items() if k != "content_b64"})
+    return {"deleted": True}
 
 
 # ============================== payments ============================== #

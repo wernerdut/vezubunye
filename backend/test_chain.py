@@ -126,6 +126,23 @@ async def test_full_chain(client):
     fg = {(p["tank_type"], p["grade"]): p for p in (await c.get("/api/nodes/gogreen/finished-goods", headers=ops)).json()["positions"]}
     assert fg[("2500L", "A")]["total"] == 0 and fg[("2500L", "B")]["total"] == 0 and fg[("5000L", "A")]["total"] == 2
 
+    # ---- supporting documents attached to the delivery (invoice, proof of payment) ----
+    up = await c.post(f"/api/delivery-notes/{dn['_id']}/documents", headers=ops,
+                      files={"file": ("invoice.pdf", b"%PDF-1.4 test invoice", "application/pdf")})
+    assert up.status_code == 200 and up.json()["filename"] == "invoice.pdf"
+    doc_id = up.json()["_id"]
+    await c.post(f"/api/delivery-notes/{dn['_id']}/documents", headers=ops,
+                 files={"file": ("proof.pdf", b"%PDF-1.4 proof", "application/pdf")})
+    docs = (await c.get(f"/api/delivery-notes/{dn['_id']}/documents", headers=ops)).json()
+    assert len(docs) == 2 and all("content_b64" not in x for x in docs)
+    got = await c.get(f"/api/delivery-documents/{doc_id}/content", headers=audit)
+    assert got.status_code == 200 and got.content == b"%PDF-1.4 test invoice"
+    dl = (await c.get("/api/nodes/gogreen/delivery-notes", headers=ops)).json()
+    assert next(x for x in dl if x["_id"] == dn["_id"])["document_count"] == 2
+    assert (await c.delete(f"/api/delivery-documents/{doc_id}", headers=audit)).status_code == 403   # audit can't delete
+    assert (await c.delete(f"/api/delivery-documents/{doc_id}", headers=ops)).status_code == 200
+    assert len((await c.get(f"/api/delivery-notes/{dn['_id']}/documents", headers=ops)).json()) == 1
+
     # cannot deliver more than is in stock
     assert (await c.post("/api/nodes/gogreen/delivery-notes", headers=ops, json={
         "date": "2026-06-03", "client_name": "X",

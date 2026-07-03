@@ -197,6 +197,16 @@ export interface DeliveryNote {
   partner_balance: number
   status: 'unpaid' | 'part_paid' | 'paid' | 'flagged'
   pdf_url: string
+  document_count?: number
+}
+
+export interface DeliveryDoc {
+  _id: string
+  filename: string
+  content_type: string
+  size: number
+  uploaded_by: string
+  uploaded_at: string
 }
 
 export interface Payment {

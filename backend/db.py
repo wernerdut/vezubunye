@@ -61,6 +61,10 @@ def delivery_notes():
     return db()["delivery_notes"]
 
 
+def delivery_documents():
+    return db()["delivery_documents"]
+
+
 def invoices():
     return db()["invoices"]
 
@@ -109,6 +113,8 @@ async def ensure_indexes():
     ):
         await coll.create_index("node_id")
         await coll.create_index([("node_id", 1), ("date", 1)])
+    await delivery_documents().create_index("delivery_id")
+    await delivery_documents().create_index("node_id")
     await node_config().create_index("node_id", unique=True)
     await nodes().create_index("node_id", unique=True)
     await users().create_index("email", unique=True)

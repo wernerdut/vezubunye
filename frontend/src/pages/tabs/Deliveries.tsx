@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FileDown, Plus, Trash2 } from 'lucide-react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { FileDown, Paperclip, Plus, Trash2 } from 'lucide-react'
 import { api, errMsg, openAuthed } from '../../api'
 import { Empty, SectionTitle, StatusBadge } from '../../components/ui'
-import type { DNLine, DeliveryNote, FGPosition } from '../../types'
+import type { DNLine, DeliveryDoc, DeliveryNote, FGPosition } from '../../types'
 import type { TabProps } from '../NodePage'
 
 const rand = (n: number) => `R ${n.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`
@@ -15,6 +15,9 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
   const [lines, setLines] = useState<DNLine[]>([blankLine(config.tank_types[0]?.code || '')])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [docs, setDocs] = useState<Record<string, DeliveryDoc[]>>({})
+  const [uploading, setUploading] = useState(false)
 
   const canCreate = user.role === 'operations' || user.role === 'admin'
   const names = Object.fromEntries(config.tank_types.map((t) => [t.code, t.name]))
@@ -44,6 +47,39 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
       setError(errMsg(err))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const loadDocs = async (id: string) => {
+    const r = await api.get(`/api/delivery-notes/${id}/documents`)
+    setDocs((d) => ({ ...d, [id]: r.data }))
+  }
+  const toggleDocs = (id: string) => {
+    if (openId === id) { setOpenId(null); return }
+    setOpenId(id)
+    if (!docs[id]) loadDocs(id).catch((err) => setError(errMsg(err)))
+  }
+  const uploadDocs = async (id: string, files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setUploading(true); setError('')
+    try {
+      for (const f of Array.from(files)) {
+        const fd = new FormData(); fd.append('file', f)
+        await api.post(`/api/delivery-notes/${id}/documents`, fd)
+      }
+      await loadDocs(id); load()
+    } catch (err) {
+      setError(errMsg(err))
+    } finally {
+      setUploading(false)
+    }
+  }
+  const removeDoc = async (id: string, docId: string) => {
+    try {
+      await api.delete(`/api/delivery-documents/${docId}`)
+      await loadDocs(id); load()
+    } catch (err) {
+      setError(errMsg(err))
     }
   }
 
@@ -124,21 +160,54 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
                   <th className="th text-right">Total</th>
                   <th className="th text-right">Paid</th>
                   <th className="th">Status</th>
+                  <th className="th">Docs</th>
                   <th className="th"></th>
                 </tr>
               </thead>
               <tbody>
                 {notes.map((n) => (
-                  <tr key={n._id}>
-                    <td className="td font-semibold whitespace-nowrap">{n.dn_number}</td>
-                    <td className="td whitespace-nowrap">{n.date}</td>
-                    <td className="td">{n.client_name}</td>
-                    <td className="td text-gray-500">{n.lines.map((l) => `${l.quantity}× ${names[l.tank_type] || l.tank_type} (${l.grade})`).join(', ')}</td>
-                    <td className="td text-right font-semibold">{rand(n.total ?? 0)}</td>
-                    <td className="td text-right text-gray-500">{rand(n.amount_paid ?? 0)}</td>
-                    <td className="td"><StatusBadge status={n.status || 'unpaid'} /></td>
-                    <td className="td"><button className="text-brand-light" title="Delivery note PDF (no prices)" onClick={() => openAuthed(`/api/delivery-notes/${n._id}/pdf`)}><FileDown size={16} /></button></td>
-                  </tr>
+                  <Fragment key={n._id}>
+                    <tr>
+                      <td className="td font-semibold whitespace-nowrap">{n.dn_number}</td>
+                      <td className="td whitespace-nowrap">{n.date}</td>
+                      <td className="td">{n.client_name}</td>
+                      <td className="td text-gray-500">{n.lines.map((l) => `${l.quantity}× ${names[l.tank_type] || l.tank_type} (${l.grade})`).join(', ')}</td>
+                      <td className="td text-right font-semibold">{rand(n.total ?? 0)}</td>
+                      <td className="td text-right text-gray-500">{rand(n.amount_paid ?? 0)}</td>
+                      <td className="td"><StatusBadge status={n.status || 'unpaid'} /></td>
+                      <td className="td">
+                        <button className={`flex items-center gap-1 font-semibold ${openId === n._id ? 'text-brand-blue' : 'text-brand-light'}`}
+                                title="Attach / view documents" onClick={() => toggleDocs(n._id)}>
+                          <Paperclip size={14} /> {n.document_count ?? 0}
+                        </button>
+                      </td>
+                      <td className="td"><button className="text-brand-light" title="Delivery note PDF (no prices)" onClick={() => openAuthed(`/api/delivery-notes/${n._id}/pdf`)}><FileDown size={16} /></button></td>
+                    </tr>
+                    {openId === n._id && (
+                      <tr>
+                        <td className="td bg-gray-50" colSpan={9}>
+                          <div className="text-xs font-semibold text-gray-600 mb-1">Documents for {n.dn_number} <span className="font-normal text-gray-400">(invoice, proof of payment, etc.)</span></div>
+                          {(docs[n._id] || []).length === 0 && <p className="text-sm text-gray-400 mb-1">No documents yet.</p>}
+                          <ul className="space-y-1 mb-2">
+                            {(docs[n._id] || []).map((d) => (
+                              <li key={d._id} className="flex items-center gap-2 text-sm">
+                                <button className="text-brand-light hover:underline" onClick={() => openAuthed(`/api/delivery-documents/${d._id}/content`)}>{d.filename}</button>
+                                <span className="text-xs text-gray-400">{(d.size / 1024).toFixed(0)} KB · {d.uploaded_by} · {d.uploaded_at?.slice(0, 10)}</span>
+                                {canCreate && <button className="text-xs text-brand-red" onClick={() => removeDoc(n._id, d._id)}>remove</button>}
+                              </li>
+                            ))}
+                          </ul>
+                          {canCreate && (
+                            <label className="btn-secondary inline-flex items-center gap-1 cursor-pointer text-xs">
+                              <Paperclip size={14} /> {uploading ? 'Uploading…' : 'Upload document(s)'}
+                              <input type="file" multiple className="hidden" disabled={uploading}
+                                     onChange={(e) => { uploadDocs(n._id, e.target.files); e.target.value = '' }} />
+                            </label>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
