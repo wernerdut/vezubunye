@@ -78,7 +78,7 @@ export default function Payments({ nodeId, user }: TabProps) {
                 <th className="th">Reference</th>
                 <th className="th">Status</th>
                 <th className="th">Delivery</th>
-                {canMatch && <th className="th text-right">Fenix ex-works</th>}
+                {canMatch && <th className="th text-right">Fenix (incl VAT)</th>}
                 {canMatch && <th className="th text-right">Partner balance</th>}
               </tr>
             </thead>

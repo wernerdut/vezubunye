@@ -739,9 +739,11 @@ async def match_payment(payment_id: str, payload: PaymentMatchIn,
         paid_so_far += other["amount"]
     total_paid = round(paid_so_far + p["amount"], 2)
 
+    # tolerance absorbs cent-level VAT rounding; genuine short/over payments still flag
+    ROUND_TOL = 1.0
     status = "matched"
     flags_raised = []
-    if total_paid + 0.005 < dn["total"]:
+    if total_paid + ROUND_TOL < dn["total"]:
         dn_status = "part_paid"
         status = "flagged"
         flags_raised.append(await recon.raise_flag(
@@ -749,7 +751,7 @@ async def match_payment(payment_id: str, payload: PaymentMatchIn,
             f"Delivery {dn['dn_number']}: paid R{total_paid:.2f} of R{dn['total']:.2f} "
             f"(short R{dn['total'] - total_paid:.2f}).",
             {"delivery_id": dn["_id"], "payment_id": payment_id}, p["date"]))
-    elif total_paid > dn["total"] + 0.005:
+    elif total_paid > dn["total"] + ROUND_TOL:
         dn_status = "flagged"
         status = "flagged"
         flags_raised.append(await recon.raise_flag(

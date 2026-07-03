@@ -119,7 +119,7 @@ async def test_full_chain(client):
     dn = r.json()
     assert dn["dn_number"] == "GG-DN-0001"
     assert dn["subtotal"] == 5900.0 and dn["total"] == 6785.0          # 5900 ex VAT + 15%
-    assert dn["fenix_exworks_value"] == 4860.0                         # 2*1620 (A) + 1*1620 (B at 100%)
+    assert dn["fenix_exworks_value"] == 5589.0                         # (2*1620 A + 1*1620 B) x 1.15 VAT
     assert dn["status"] == "unpaid"
     assert (await c.get(f"/api/delivery-notes/{dn['_id']}/pdf", headers=ops)).content[:4] == b"%PDF"
     # the delivery deducted those tanks from stock (no daily-capture dispatch step)
@@ -156,7 +156,8 @@ async def test_full_chain(client):
     pay = (await c.post("/api/nodes/gogreen/payments", headers=audit,
                         json={"date": "2026-06-05", "amount": 6785, "bank_reference": "GG-DN-0001"})).json()
     m = (await c.post(f"/api/payments/{pay['_id']}/match", headers=audit, json={"delivery_id": dn["_id"]})).json()
-    assert m["split"]["fenix_exworks_value"] == 4860.0
+    assert m["split"]["fenix_exworks_value"] == 5589.0   # ex-works 4860 + 15% VAT
+    assert m["split"]["partner_balance"] == round(6785 - 5589, 2)   # payment less Fenix's VAT-incl draw
     assert m["delivery_status"] == "paid"
 
     # ---- Day 5 & 7: more production, straight to stock, no flags at capture ----

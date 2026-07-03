@@ -352,15 +352,23 @@ async def run_sweeps(node_id: str) -> dict:
 # ---------- Rule 5: payment split (unchanged) ---------- #
 
 def compute_split(invoice: dict, cfg: dict, amount: float) -> dict:
-    """Fenix draws ex-works value: full for A lines, b_grade_exworks_pct for B lines."""
+    """Split a (VAT-inclusive) payment between Fenix and the partner.
+
+    Fenix draws its ex-works value PLUS VAT (Fenix invoices the node ex-works + VAT):
+    full ex-works for A lines, b_grade_exworks_pct for B lines, then grossed up by the
+    VAT rate. The partner keeps the remainder of the payment. Both shares are
+    VAT-inclusive and add back to `amount`.
+    """
     prices = {t["code"]: t["ex_works_price"] for t in cfg["tank_types"]}
     b_pct = cfg.get("b_grade_exworks_pct", 100.0) / 100.0
+    vat_factor = 1.0 + cfg.get("vat_rate", 15.0) / 100.0
     fenix = 0.0
     for line in invoice["lines"]:
         ex = prices.get(line["tank_type"], 0.0)
         factor = 1.0 if line["grade"] == "A" else b_pct
         fenix += line["quantity"] * ex * factor
+    fenix_incl_vat = fenix * vat_factor
     return {
-        "fenix_exworks_value": round(fenix, 2),
-        "partner_balance": round(amount - fenix, 2),
+        "fenix_exworks_value": round(fenix_incl_vat, 2),   # ex-works + VAT (what Fenix draws)
+        "partner_balance": round(amount - fenix_incl_vat, 2),
     }
