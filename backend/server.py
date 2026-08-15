@@ -824,7 +824,7 @@ async def resolve_flag(flag_id: str, payload: FlagResolveIn,
 
 @app.post("/api/nodes/{node_id}/counts")
 async def create_count(node_id: str, payload: PhysicalCountIn,
-                       user: dict = Depends(auth.require_role("audit", "admin"))):
+                       user: dict = Depends(auth.require_role("operations", "audit", "admin"))):
     auth.check_node_access(user, node_id)
     cfg = await _get_cfg(node_id)
     tol = cfg.get("tolerances") or {}
