@@ -66,7 +66,7 @@ Delivery numbers are never reused: a reissue takes the next number and links bot
 |---|---|
 | admin | everything (captures, deliveries, counts, flag reopen, plus the below) |
 | audit | payments (edit, unmatch, void) and powder / fittings / finished-goods adjustments |
-| operations | nothing: re-capturing an already captured day is an admin correction |
+| operations | same-day fixes only: re-capture a sheet (with a reason) on the SAST day it was first captured |
 
 Backend: `backend/corrections.py` (the `ACTIVE` filter every ledger read applies, void,
 transactions). Admin → Audit shows the log with before/after diffs.

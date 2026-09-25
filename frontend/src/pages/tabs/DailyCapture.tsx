@@ -42,9 +42,15 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   }, [nodeId, showVoided])
   useEffect(load, [load])
   const active = captures.filter((c) => !c.void)
-  // re-capturing a captured day is a correction: admin only, with a reason
-  const editingCaptured = active.some((c) => c._id === editingId && c.status === 'captured')
-  const lockedForOps = editingCaptured && !canFix
+  // re-capturing a captured day is a correction with a reason. Operations may fix a sheet on
+  // the same South African day it was first captured; after that it is admin only.
+  const sastDay = (d: Date) => new Date(d.getTime() + 2 * 3600_000).toISOString().slice(0, 10)
+  const editing = active.find((c) => c._id === editingId)
+  const editingCaptured = editing?.status === 'captured'
+  const sameDay = !!editing?.created_at &&
+    sastDay(new Date(editing.created_at.endsWith('Z') ? editing.created_at : `${editing.created_at}Z`)) === sastDay(new Date())
+  const canRecapture = canFix || sameDay
+  const lockedForOps = editingCaptured && !canRecapture
 
   const tankByCode = useMemo(() => Object.fromEntries(config.tank_types.map((t) => [t.code, t])), [config])
   const colourName = (code: string) => config.powder_products.find((p) => p.code === code)?.colour || code
@@ -176,11 +182,11 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               {editingId && !editingCaptured && (
                 <p className="text-xs text-brand-blue mt-1">Editing the {date} sheet — saving updates it. Pick a date with no sheet to start a new one.</p>
               )}
-              {editingCaptured && canFix && (
+              {editingCaptured && canRecapture && (
                 <p className="text-xs text-brand-orange mt-1">The {date} sheet is captured. Saving is a correction: the prior movements are voided (kept on file) and replaced. Recon will re-run.</p>
               )}
               {lockedForOps && (
-                <p className="text-xs text-brand-orange mt-1">The {date} sheet is already captured. Corrections to a captured day are admin-only: ask Werner.</p>
+                <p className="text-xs text-brand-orange mt-1">The {date} sheet was captured on an earlier day. Same-day fixes only: ask Werner to correct it.</p>
               )}
             </div>
 
@@ -312,7 +318,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               <textarea className="input" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
                         placeholder="Breakdowns, delays, quality or material issues, machine downtime, staff — anything worth flagging. Optional." />
             </div>
-            {editingCaptured && canFix && (
+            {editingCaptured && canRecapture && (
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Reason for the correction (required, goes to the audit log)</label>
                 <textarea className="input" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />

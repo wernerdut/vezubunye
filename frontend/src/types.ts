@@ -70,6 +70,7 @@ export interface Capture {
   captured_by: string
   status: 'pending' | 'captured' | 'reconciled'
   entries?: CaptureEntries
+  created_at?: string
   void?: VoidStamp
 }
 

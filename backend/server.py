@@ -12,7 +12,7 @@ import base64
 import hashlib
 import os
 import time
-from datetime import datetime, date as date_cls, timedelta
+from datetime import datetime, date as date_cls, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -75,6 +75,15 @@ async def health():
 
 def _now():
     return datetime.utcnow()
+
+
+SAST = timezone(timedelta(hours=2))  # South Africa has no daylight saving
+
+
+def _same_sa_day(first_captured: datetime) -> bool:
+    """True while it is still the South African calendar day the sheet was first captured."""
+    as_utc = first_captured.replace(tzinfo=timezone.utc)
+    return as_utc.astimezone(SAST).date() == datetime.now(SAST).date()
 
 
 def _today() -> str:
@@ -326,7 +335,8 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
     received, tanks moulded (straight to stock). Tank dispatch is no longer captured here —
     it happens on the Deliveries tab. The app derives every balance from these movements.
 
-    Re-capturing an already captured day is a correction: admin only, reason required.
+    Re-capturing an already captured day is a correction, reason required. Operations may
+    fix a sheet on the same (SAST) day it was first captured; after that it is admin only.
     The prior derived rows are voided (never deleted) and logged in full."""
     cap = await db.daily_captures().find_one({"_id": capture_id})
     if not cap:
@@ -338,8 +348,9 @@ async def capture_entries(capture_id: str, payload: CaptureEntriesIn,
     recapture = cap.get("status") == "captured"
     reason = None
     if recapture:
-        if user["role"] != "admin":
-            raise HTTPException(403, "Re-capturing a captured day is an admin correction")
+        if user["role"] != "admin" and not _same_sa_day(cap["created_at"]):
+            raise HTTPException(403, "Only same-day fixes are open to operations. "
+                                     "Correcting an earlier capture is an admin correction")
         reason = corrections.require_reason(payload.reason)
     cfg = await _get_cfg(node_id)
     tanks = {t["code"]: t for t in cfg["tank_types"]}

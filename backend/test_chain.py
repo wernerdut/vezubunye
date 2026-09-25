@@ -6,6 +6,7 @@ tanks booked to store, tanks dispatched. The app derives every balance and flag.
 Run: .venv/bin/python -m pytest test_chain.py -v
 """
 import os
+from datetime import datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -508,6 +509,11 @@ async def test_corrections(client):
     # ---------- re-capture voids, never deletes ----------
     recap = {**day1, "powder": [{"powder_type": "BLACK", "received_kg": 900, "issued_kg": 200},
                                 {"powder_type": "GREEN", "received_kg": 1000, "issued_kg": 200}]}
+    # operations: same-day fix allowed (reason still required); an earlier capture is admin-only
+    assert (await c.post(f"/api/captures/{cap1}/entries", headers=ops, json=day1)).status_code == 400
+    r = await c.post(f"/api/captures/{cap1}/entries", headers=ops, json={**day1, "reason": "Typo, same day"})
+    assert r.status_code == 200, r.text
+    await db.daily_captures().update_one({"_id": cap1}, {"$set": {"created_at": datetime(2026, 7, 1, 8)}})
     assert (await c.post(f"/api/captures/{cap1}/entries", headers=ops, json={**recap, "reason": "x"})).status_code == 403
     assert (await c.post(f"/api/captures/{cap1}/entries", headers=admin, json=recap)).status_code == 400
     r = await c.post(f"/api/captures/{cap1}/entries", headers=admin, json={**recap, "reason": "Black receipt was 900"})
@@ -516,7 +522,7 @@ async def test_corrections(client):
     assert st["BLACK"]["warehouse"] == 700.0                          # 900 - 200, the 1000 row is void
     all_rows = [e for e in (await _get(c, admin, f"/api/nodes/{N}/powder?include_voided=true"))["entries"]
                 if e.get("source_capture_id") == cap1]
-    assert len(all_rows) == 8 and sum(1 for e in all_rows if e.get("void")) == 4
+    assert len(all_rows) == 12 and sum(1 for e in all_rows if e.get("void")) == 8   # two corrections, both kept
     assert (await fg_pos(c, admin)) == s2["fg"]                       # production unchanged, stock unchanged
     ent = (await _get(c, admin, f"/api/audit?collection=daily_captures&action=edit"))[0]
     assert ent["doc_id"] == cap1 and ent["before"]["reason"] == "Black receipt was 900"
