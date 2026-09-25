@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, errMsg } from '../../api'
 import { Empty, SectionTitle } from '../../components/ui'
+import { RowMenu, ShowVoided, canCorrect, useCorrection, voidRow, voidedQuery } from '../../components/corrections'
 import type { FittingsData } from '../../types'
 import type { TabProps } from '../NodePage'
 
@@ -10,12 +11,15 @@ export default function Fittings({ nodeId, config, user }: TabProps) {
   const [error, setError] = useState('')
 
   const canAdjust = user.role === 'audit' || user.role === 'admin'
+  const canFix = canCorrect(user, 'audit')
+  const [showVoided, setShowVoided] = useState(false)
   const nameOf = (code: string) => config.fitting_types.find((f) => f.code === code)?.name || code
 
   const load = useCallback(() => {
-    api.get(`/api/nodes/${nodeId}/fittings`).then((r) => setData(r.data))
-  }, [nodeId])
+    api.get(`/api/nodes/${nodeId}/fittings${voidedQuery(showVoided)}`).then((r) => setData(r.data))
+  }, [nodeId, showVoided])
   useEffect(load, [load])
+  const { ask, modal } = useCorrection(nodeId, load)
 
   const adjust = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -107,22 +111,37 @@ export default function Fittings({ nodeId, config, user }: TabProps) {
       )}
 
       <div>
-        <SectionTitle>Fittings movements</SectionTitle>
+        <div className="flex items-baseline justify-between">
+          <SectionTitle>Fittings movements</SectionTitle>
+          <ShowVoided value={showVoided} onChange={setShowVoided} />
+        </div>
+        {modal}
         <div className="card p-0 overflow-hidden">
           {data.entries.length === 0 ? (
             <Empty text="No fittings movements yet" />
           ) : (
             <table className="w-full">
-              <thead><tr><th className="th">Date</th><th className="th">Fitting</th><th className="th">Type</th><th className="th text-right">Qty</th></tr></thead>
+              <thead><tr><th className="th">Date</th><th className="th">Fitting</th><th className="th">Type</th><th className="th text-right">Qty</th>{canFix && <th className="th"></th>}</tr></thead>
               <tbody>
                 {[...data.entries].reverse().map((e) => (
-                  <tr key={e._id}>
+                  <tr key={e._id} {...voidRow(e)}>
                     <td className="td">{e.date}</td>
                     <td className="td font-semibold">{nameOf(e.fitting_type)}</td>
                     <td className="td">
                       <span className={`font-semibold ${e.type === 'received' ? 'text-brand-green' : e.type === 'issued' ? 'text-brand-blue' : 'text-brand-orange'}`}>{e.type}</span>
                     </td>
                     <td className="td text-right">{e.type === 'issued' ? '−' : '+'}{Math.abs(e.quantity)}</td>
+                    {canFix && (
+                      <td className="td">
+                        <RowMenu actions={e.type !== 'count_adjustment' || e.void ? [] : [{
+                          label: 'Void', danger: true, onClick: () => ask({
+                            title: 'Void adjustment', date: e.date, confirmLabel: 'Void',
+                            cascade: `Voids the ${e.date} adjustment of ${e.quantity > 0 ? '+' : ''}${e.quantity} × ${nameOf(e.fitting_type)}. Correct it by entering a new adjustment. Recon will re-run.`,
+                            run: (reason) => api.post(`/api/ledger/fittings_ledger/${e._id}/void`, { reason }),
+                          }),
+                        }]} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

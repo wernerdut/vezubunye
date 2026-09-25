@@ -1,5 +1,11 @@
 export type Role = 'admin' | 'audit' | 'operations'
 
+export interface VoidStamp {
+  by: string
+  at: string
+  reason: string
+}
+
 export interface User {
   email: string
   name: string
@@ -64,6 +70,7 @@ export interface Capture {
   captured_by: string
   status: 'pending' | 'captured' | 'reconciled'
   entries?: CaptureEntries
+  void?: VoidStamp
 }
 
 export interface ProductionLine {
@@ -115,8 +122,10 @@ export interface PowderEntry {
   date: string
   powder_type: string
   type: 'received' | 'issued' | 'count_adjustment'
+  scope?: 'warehouse' | 'floor'
   kg: number
   notes: string
+  void?: VoidStamp
 }
 
 export interface PowderData {
@@ -125,7 +134,7 @@ export interface PowderData {
 }
 
 export interface FittingsData {
-  entries: { _id: string; date: string; fitting_type: string; type: string; quantity: number }[]
+  entries: { _id: string; date: string; fitting_type: string; type: string; quantity: number; notes?: string; void?: VoidStamp }[]
   warehouse: { fitting_type: string; name: string; balance: number; issued: number; expected: number; variance: number }[]
 }
 
@@ -154,8 +163,11 @@ export interface FGEntry {
   tank_type: string
   grade: 'A' | 'B'
   type: 'booked' | 'dispatched' | 'count_adjustment'
+  scope?: 'tank_floor' | 'fg_warehouse'
   quantity: number
   dn_number?: string
+  notes?: string
+  void?: VoidStamp
 }
 
 export interface OnHand {
@@ -198,6 +210,9 @@ export interface DeliveryNote {
   status: 'unpaid' | 'part_paid' | 'paid' | 'flagged'
   pdf_url: string
   document_count?: number
+  void?: VoidStamp
+  replaces?: string
+  superseded_by?: string
 }
 
 export interface DeliveryDoc {
@@ -217,6 +232,7 @@ export interface Payment {
   matched_delivery_id: string | null
   split: { fenix_exworks_value: number; partner_balance: number } | null
   status: 'unmatched' | 'matched' | 'flagged'
+  void?: VoidStamp
 }
 
 export interface Flag {
@@ -229,6 +245,7 @@ export interface Flag {
   status: 'open' | 'resolved'
   resolved_by: string | null
   resolution_note: string | null
+  history?: { resolved_by: string | null; resolution_note: string | null; reopened_by: string; reopened_at: string; reopen_note: string }[]
 }
 
 export interface PhysicalCount {
@@ -241,6 +258,20 @@ export interface PhysicalCount {
     fittings: { fitting_type: string; system: number; counted: number; variance: number }[]
   }
   counted_by: string
+  void?: VoidStamp
+}
+
+export interface AuditEntry {
+  _id: string
+  node_id: string
+  at: string
+  by: string
+  role: string
+  action: string
+  collection: string
+  doc_id: string | null
+  before: unknown
+  after: unknown
 }
 
 export interface ReconDay {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, errMsg } from '../../api'
 import { Empty, SectionTitle } from '../../components/ui'
+import { RowMenu, ShowVoided, canCorrect, useCorrection, voidRow, voidedQuery } from '../../components/corrections'
 import type { ParaffinData, PowderData } from '../../types'
 import type { TabProps } from '../NodePage'
 import Fittings from './Fittings'
@@ -12,13 +13,16 @@ export default function Powder({ nodeId, config, user }: TabProps) {
   const [error, setError] = useState('')
 
   const canAdjust = user.role === 'audit' || user.role === 'admin'
+  const canFix = canCorrect(user, 'audit')
+  const [showVoided, setShowVoided] = useState(false)
   const colourOf = (code: string) => config.powder_products.find((p) => p.code === code)?.colour || code
 
   const load = useCallback(() => {
-    api.get(`/api/nodes/${nodeId}/powder`).then((r) => setData(r.data))
+    api.get(`/api/nodes/${nodeId}/powder${voidedQuery(showVoided)}`).then((r) => setData(r.data))
     api.get(`/api/nodes/${nodeId}/paraffin`).then((r) => setParaffin(r.data)).catch(() => {})
-  }, [nodeId])
+  }, [nodeId, showVoided])
   useEffect(load, [load])
+  const { ask, modal } = useCorrection(nodeId, load)
 
   const adjust = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -122,16 +126,20 @@ export default function Powder({ nodeId, config, user }: TabProps) {
       )}
 
       <div>
-        <SectionTitle>Powder movements</SectionTitle>
+        <div className="flex items-baseline justify-between">
+          <SectionTitle>Powder movements</SectionTitle>
+          <ShowVoided value={showVoided} onChange={setShowVoided} />
+        </div>
+        {modal}
         <div className="card p-0 overflow-hidden">
           {data.entries.length === 0 ? (
             <Empty text="No powder movements yet" />
           ) : (
             <table className="w-full">
-              <thead><tr><th className="th">Date</th><th className="th">Powder</th><th className="th">Type</th><th className="th text-right">kg</th><th className="th">Notes</th></tr></thead>
+              <thead><tr><th className="th">Date</th><th className="th">Powder</th><th className="th">Type</th><th className="th text-right">kg</th><th className="th">Notes</th>{canFix && <th className="th"></th>}</tr></thead>
               <tbody>
                 {[...data.entries].reverse().map((e) => (
-                  <tr key={e._id}>
+                  <tr key={e._id} {...voidRow(e)}>
                     <td className="td">{e.date}</td>
                     <td className="td font-semibold">{colourOf(e.powder_type)}</td>
                     <td className="td">
@@ -141,6 +149,17 @@ export default function Powder({ nodeId, config, user }: TabProps) {
                     </td>
                     <td className="td text-right">{e.type === 'issued' ? '−' : '+'}{Math.abs(e.kg).toLocaleString('en-ZA')}</td>
                     <td className="td text-gray-500">{e.notes}</td>
+                    {canFix && (
+                      <td className="td">
+                        <RowMenu actions={e.type !== 'count_adjustment' || e.void ? [] : [{
+                          label: 'Void', danger: true, onClick: () => ask({
+                            title: 'Void adjustment', date: e.date, confirmLabel: 'Void',
+                            cascade: `Voids the ${e.date} adjustment of ${e.kg > 0 ? '+' : ''}${e.kg} kg ${colourOf(e.powder_type)} (${e.scope || 'warehouse'}). Correct it by entering a new adjustment. Recon will re-run.`,
+                            run: (reason) => api.post(`/api/ledger/powder_ledger/${e._id}/void`, { reason }),
+                          }),
+                        }]} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

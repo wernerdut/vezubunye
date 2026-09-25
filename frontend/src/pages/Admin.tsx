@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, errMsg } from '../api'
 import { SectionTitle, StatusBadge } from '../components/ui'
 import type { MonthlyReport, NodeConfig, NodeInfo, TankType, User } from '../types'
+import AuditLog from './AuditLog'
 
 export default function Admin() {
   const [nodes, setNodes] = useState<NodeInfo[]>([])
@@ -14,6 +15,7 @@ export default function Admin() {
   const [newUser, setNewUser] = useState({ email: '', name: '', password: '', role: 'operations' })
   const [pw, setPw] = useState<Record<string, string>>({})
   const [userMsg, setUserMsg] = useState('')
+  const [view, setView] = useState<'setup' | 'audit'>('setup')
 
   const load = useCallback(() => {
     api.get('/api/nodes').then((r) => setNodes(r.data))
@@ -79,9 +81,31 @@ export default function Admin() {
     }
   }
 
+  const viewTabs = (
+    <nav className="flex gap-1 border-b border-gray-200">
+      {(['setup', 'audit'] as const).map((v) => (
+        <button key={v} type="button" onClick={() => setView(v)}
+                className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px ${view === v ? 'border-brand-light text-brand-blue' : 'border-transparent text-gray-500 hover:text-brand-blue'}`}>
+          {v === 'setup' ? 'Setup' : 'Audit'}
+        </button>
+      ))}
+    </nav>
+  )
+
+  if (view === 'audit') {
+    return (
+      <div className="space-y-4">
+        <h1 className="font-headline text-4xl text-brand-blue">Admin</h1>
+        {viewTabs}
+        <AuditLog />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-8">
       <h1 className="font-headline text-4xl text-brand-blue">Admin</h1>
+      {viewTabs}
       {error && <p className="text-sm text-brand-red">{error}</p>}
       {msg && <p className="text-sm text-brand-green font-semibold">{msg}</p>}
 

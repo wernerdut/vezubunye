@@ -53,6 +53,24 @@ cd backend && .venv/bin/python -m pytest test_chain.py -v
 | Pierre | audit | reconciliation, payment matching, flag resolution |
 | Steven | operations | daily captures, delivery notes, invoices |
 
+## Corrections: correct, never erase
+
+No operational record is hard-deleted. Mistakes are fixed in-app from the row's ⋯ menu:
+a **void** keeps the record (and every ledger row derived from it) on file, marked
+`void: {by, at, reason}`, and drops it from every balance, report and dashboard.
+Every correction needs a reason, writes a full before/after audit entry, re-runs the recon
+sweep, and raises `post_count_correction` if it moves stock on or before the latest count.
+Delivery numbers are never reused: a reissue takes the next number and links both ways.
+
+| Role | May correct |
+|---|---|
+| admin | everything (captures, deliveries, counts, flag reopen, plus the below) |
+| audit | payments (edit, unmatch, void) and powder / fittings / finished-goods adjustments |
+| operations | nothing: re-capturing an already captured day is an admin correction |
+
+Backend: `backend/corrections.py` (the `ACTIVE` filter every ledger read applies, void,
+transactions). Admin → Audit shows the log with before/after diffs.
+
 The on-site operator is not a user: paper sheet + one WhatsApp photo per day.
 Stakeholder (not a system user): Charel Kerschbaumer, CTO and build owner.
 

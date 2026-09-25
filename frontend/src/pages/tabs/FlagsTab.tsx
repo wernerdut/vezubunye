@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, errMsg } from '../../api'
 import { Empty, SectionTitle, StatusBadge } from '../../components/ui'
+import { RowMenu, canCorrect, useCorrection } from '../../components/corrections'
 import type { Flag } from '../../types'
 import type { TabProps } from '../NodePage'
 
@@ -10,11 +11,13 @@ export default function FlagsTab({ nodeId, user }: TabProps) {
   const [error, setError] = useState('')
 
   const canResolve = user.role === 'audit' || user.role === 'admin'
+  const canReopen = canCorrect(user, 'admin')
 
   const load = useCallback(() => {
     api.get(`/api/nodes/${nodeId}/flags`).then((r) => setFlags(r.data))
   }, [nodeId])
   useEffect(load, [load])
+  const { ask, modal } = useCorrection(nodeId, load)
 
   const resolve = async (id: string) => {
     setError('')
@@ -35,6 +38,15 @@ export default function FlagsTab({ nodeId, user }: TabProps) {
         <StatusBadge status={f.status} />
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">{f.type.replace(/_/g, ' ')}</span>
         <span className="text-xs text-gray-400 ml-auto">{f.date_raised}</span>
+        {canReopen && f.status === 'resolved' && (
+          <RowMenu actions={[{
+            label: 'Reopen', onClick: () => ask({
+              title: 'Reopen flag', movesStock: false, confirmLabel: 'Reopen',
+              cascade: 'Reopens the flag for audit. The earlier resolution is kept in its history. Flags are never deleted.',
+              run: (reason) => api.post(`/api/flags/${f._id}/reopen`, { reason }),
+            }),
+          }]} />
+        )}
       </div>
       <p className="text-sm mb-2">{f.description}</p>
       {f.status === 'open' && canResolve && (
@@ -55,6 +67,11 @@ export default function FlagsTab({ nodeId, user }: TabProps) {
           Resolved by {f.resolved_by}: {f.resolution_note}
         </p>
       )}
+      {(f.history || []).map((h, i) => (
+        <p key={i} className="text-xs text-gray-400">
+          Earlier resolved by {h.resolved_by}: {h.resolution_note}. Reopened by {h.reopened_by} on {String(h.reopened_at).slice(0, 10)}: {h.reopen_note}
+        </p>
+      ))}
     </div>
   )
 
@@ -63,6 +80,7 @@ export default function FlagsTab({ nodeId, user }: TabProps) {
       <SectionTitle>Flags</SectionTitle>
       <p className="text-sm text-gray-500 mb-3">No flag auto-clears. Every resolution carries a note and an audit trail.</p>
       {error && <p className="text-sm text-brand-red mb-3">{error}</p>}
+      {modal}
       <div className="space-y-3">
         {open.length === 0 ? (
           <div className="card border-brand-green text-brand-green font-semibold text-sm">No open flags. The chain is clean.</div>

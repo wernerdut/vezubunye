@@ -263,3 +263,373 @@ async def test_full_chain(client):
     # audit log is admin-only
     assert len((await c.get("/api/audit", headers=admin)).json()) > 10
     assert (await c.get("/api/audit", headers=audit)).status_code == 403
+
+
+# ============================== corrections layer ============================== #
+
+N = "corr"
+
+
+async def _get(c, h, path):
+    r = await c.get(path, headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def fg_pos(c, h, node=N):
+    return {(p["tank_type"], p["grade"]): p["total"]
+            for p in (await _get(c, h, f"/api/nodes/{node}/finished-goods"))["positions"]}
+
+
+async def snapshot(c, h):
+    """Every derived number a void must restore: stock positions, dashboards, reports, kg feed."""
+    para = await _get(c, h, f"/api/nodes/{N}/paraffin")
+    para.pop("entries")
+    daily_rep = await _get(c, h, f"/api/nodes/{N}/reports/daily?date=2026-07-02")
+    daily_rep.pop("open_flags")
+    net = await _get(c, h, "/api/dashboard/network")
+    recon_view = await _get(c, h, f"/api/nodes/{N}/recon?month=2026-07")
+    return {
+        "powder": (await _get(c, h, f"/api/nodes/{N}/powder"))["stock"],
+        "fittings": (await _get(c, h, f"/api/nodes/{N}/fittings"))["warehouse"],
+        "fg": await fg_pos(c, h),
+        "paraffin": para,
+        "production": len(await _get(c, h, f"/api/nodes/{N}/production")),
+        "scrap": len(await _get(c, h, f"/api/nodes/{N}/scrap")),
+        "monthly": await _get(c, h, f"/api/nodes/{N}/reports/monthly?month=2026-07"),
+        "daily_report": daily_rep,
+        "kg": await _get(c, h, "/api/network/kg"),
+        "dashboard": (await _get(c, h, f"/api/nodes/{N}/dashboard?year=2026"))["all_time"],
+        "daily_dash": (await _get(c, h, f"/api/nodes/{N}/dashboard/daily?month=2026-07"))["month_totals"],
+        "network": next(n for n in net["nodes"] if n["node_id"] == N),
+        "recon_unpaid": sorted(d["_id"] for d in recon_view["unpaid_deliveries"]),
+        "recon_days": [(d["date"], d["capture_id"]) for d in recon_view["days"][:10]],
+    }
+
+
+async def dn(c, h, date, lines, client="Client"):
+    r = await c.post(f"/api/nodes/{N}/delivery-notes", headers=h, json={
+        "date": date, "client_name": client, "lines": lines})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def pay(c, h, date, amount, node=N):
+    r = await c.post(f"/api/nodes/{node}/payments", headers=h,
+                     json={"date": date, "amount": amount, "bank_reference": "ref"})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def why(text="Keyed in error"):
+    return {"reason": text}
+
+
+async def test_corrections(client):
+    c = client
+    admin = await login(c, "werner@fenixrising.co.za", "changeme-werner")
+    audit = await login(c, "pierre@fenixrising.co.za", "changeme-pierre")
+    ops = await login(c, "steven@fenixrising.co.za", "changeme-steven")
+
+    # a fresh node for this test, and one Pierre cannot see
+    for nid in (N, "far"):
+        assert (await c.post("/api/nodes", headers=admin,
+                             json={"node_id": nid, "name": nid, "location": "x"})).status_code == 200
+        assert (await c.put(f"/api/nodes/{nid}/config", headers=admin, json=CONFIG)).status_code == 200
+    assert (await c.put("/api/users/pierre@fenixrising.co.za", headers=admin, json={
+        "email": "pierre@fenixrising.co.za", "name": "Pierre", "role": "audit",
+        "node_access": ["gogreen", N]})).status_code == 200
+    assert (await c.put("/api/users/steven@fenixrising.co.za", headers=admin, json={
+        "email": "steven@fenixrising.co.za", "name": "Steven", "role": "operations",
+        "node_access": ["gogreen", N]})).status_code == 200
+
+    # day 1: 2500L A3 B1 R1, 5000L A2
+    cap1 = (await c.post(f"/api/nodes/{N}/captures?date=2026-07-01", headers=ops)).json()["_id"]
+    day1 = {
+        "powder": [{"powder_type": "BLACK", "received_kg": 1000, "issued_kg": 200},
+                   {"powder_type": "GREEN", "received_kg": 1000, "issued_kg": 200}],
+        "fittings": [{"fitting_type": "OUTLET", "received_qty": 50, "issued_qty": 8}],
+        "paraffin_received": 50,
+        "production": [
+            {"tank_type": "2500L", "colour": "GREEN", "quantity_a": 3, "quantity_b": 1, "quantity_reject": 1},
+            {"tank_type": "5000L", "colour": "GREEN", "quantity_a": 2, "quantity_b": 0, "quantity_reject": 0}],
+    }
+    assert (await c.post(f"/api/captures/{cap1}/entries", headers=ops, json=day1)).status_code == 200
+
+    # ---------- void a delivery note ----------
+    s0 = await snapshot(c, admin)
+    dn1 = await dn(c, ops, "2026-07-02", [{"tank_type": "5000L", "grade": "A", "quantity": 2, "unit_price": 3450}])
+    assert dn1["dn_number"] == "CORR-DN-0001"
+    assert (await fg_pos(c, admin))[("5000L", "A")] == 0
+    p1 = await pay(c, audit, "2026-07-02", dn1["total"])
+    assert (await c.post(f"/api/payments/{p1['_id']}/match", headers=audit,
+                         json={"delivery_id": dn1["_id"]})).status_code == 200
+
+    # blocked while a payment is matched; a matched payment cannot be edited or voided
+    r = await c.post(f"/api/delivery-notes/{dn1['_id']}/void", headers=admin, json=why())
+    assert r.status_code == 400 and "Unmatch" in r.json()["detail"]
+    assert (await c.patch(f"/api/payments/{p1['_id']}", headers=audit,
+                          json={"amount": 1, "reason": "typo"})).status_code == 400
+    assert (await c.post(f"/api/payments/{p1['_id']}/void", headers=audit, json=why())).status_code == 400
+    assert (await c.post(f"/api/payments/{p1['_id']}/match", headers=audit,
+                         json={"delivery_id": dn1["_id"]})).status_code == 400   # no double match
+
+    # audit unmatches and voids the payment; admin voids the delivery
+    r = await c.post(f"/api/payments/{p1['_id']}/unmatch", headers=audit, json=why("Wrong delivery"))
+    assert r.status_code == 200 and r.json()["delivery"] == {"amount_paid": 0.0, "status": "unpaid"}
+    assert (await c.post(f"/api/payments/{p1['_id']}/void", headers=audit, json=why())).status_code == 200
+    r = await c.post(f"/api/delivery-notes/{dn1['_id']}/void", headers=admin, json=why("Client cancelled"))
+    assert r.status_code == 200, r.text
+    assert r.json()["voided_rows"] == {"finished_goods_ledger": 1}
+    assert r.json()["post_count_flag"] is None                      # no count yet
+
+    # stock is back and the note's value is gone from every derivation
+    assert await snapshot(c, admin) == s0
+    assert (await c.post(f"/api/delivery-notes/{dn1['_id']}/void", headers=admin, json=why())).status_code == 400
+    listed = await _get(c, admin, f"/api/nodes/{N}/delivery-notes")
+    assert dn1["_id"] not in [d["_id"] for d in listed]
+    shown = await _get(c, admin, f"/api/nodes/{N}/delivery-notes?include_voided=true")
+    v = next(d for d in shown if d["_id"] == dn1["_id"])
+    assert v["dn_number"] == "CORR-DN-0001" and v["void"]["reason"] == "Client cancelled"
+    assert v["void"]["by"] == "werner@fenixrising.co.za"
+    assert p1["_id"] not in [p["_id"] for p in await _get(c, audit, f"/api/nodes/{N}/payments")]
+    assert (await c.post(f"/api/payments/{p1['_id']}/match", headers=audit,
+                         json={"delivery_id": dn1["_id"]})).status_code == 404   # voided payment
+    p_tmp = await pay(c, audit, "2026-07-02", 10)
+    assert (await c.post(f"/api/payments/{p_tmp['_id']}/match", headers=audit,
+                         json={"delivery_id": dn1["_id"]})).status_code == 400   # voided delivery
+    assert (await c.post(f"/api/payments/{p_tmp['_id']}/void", headers=audit, json=why())).status_code == 200
+
+    # full before/after in the audit log, derived rows included
+    log = await _get(c, admin, f"/api/audit?node_id={N}&collection=delivery_notes&action=void")
+    assert len(log) == 1
+    assert log[0]["before"]["record"]["dn_number"] == "CORR-DN-0001"
+    assert len(log[0]["before"]["derived"]["finished_goods_ledger"]) == 1
+    assert "void" in log[0]["after"]["derived"]["finished_goods_ledger"][0]
+    assert "content_b64" not in log[0]["before"]["record"]
+
+    # ---------- unmatch recomputes amount_paid and status ----------
+    dn2 = await dn(c, ops, "2026-07-03", [{"tank_type": "2500L", "grade": "A", "quantity": 2, "unit_price": 1000}])
+    assert dn2["dn_number"] == "CORR-DN-0002" and dn2["total"] == 2300.0
+    pays = [await pay(c, audit, "2026-07-04", amt) for amt in (1000, 800, 500)]
+    for p in pays:
+        assert (await c.post(f"/api/payments/{p['_id']}/match", headers=audit,
+                             json={"delivery_id": dn2["_id"]})).status_code == 200
+
+    async def dn2_state():
+        d = next(x for x in await _get(c, admin, f"/api/nodes/{N}/delivery-notes") if x["_id"] == dn2["_id"])
+        return d["amount_paid"], d["status"]
+
+    assert await dn2_state() == (2300.0, "paid")
+    await c.post(f"/api/payments/{pays[2]['_id']}/unmatch", headers=audit, json=why())
+    assert await dn2_state() == (1800.0, "part_paid")                 # two remaining
+    await c.post(f"/api/payments/{pays[1]['_id']}/unmatch", headers=audit, json=why())
+    assert await dn2_state() == (1000.0, "part_paid")                 # one remaining
+    r = await c.post(f"/api/payments/{pays[0]['_id']}/unmatch", headers=audit, json=why())
+    assert r.status_code == 200
+    assert await dn2_state() == (0.0, "unpaid")                       # none remaining
+    assert (await c.post(f"/api/payments/{pays[0]['_id']}/unmatch", headers=audit, json=why())).status_code == 400
+    pl = {p["_id"]: p for p in await _get(c, audit, f"/api/nodes/{N}/payments")}
+    assert pl[pays[0]["_id"]]["status"] == "unmatched" and pl[pays[0]["_id"]]["split"] is None
+    # an unmatched payment can be matched again
+    assert (await c.post(f"/api/payments/{pays[0]['_id']}/match", headers=audit,
+                         json={"delivery_id": dn2["_id"]})).json()["delivery_status"] == "part_paid"
+
+    # payment edit only while unmatched, and only by audit/admin
+    r = await c.patch(f"/api/payments/{pays[1]['_id']}", headers=audit,
+                      json={"amount": 850, "bank_reference": "EFT 123", "reason": "Bank statement says 850"})
+    assert r.status_code == 200 and r.json()["amount"] == 850
+    assert (await c.patch(f"/api/payments/{pays[0]['_id']}", headers=audit,
+                          json={"amount": 1, "reason": "x"})).status_code == 400   # matched
+    assert (await c.patch(f"/api/payments/{pays[1]['_id']}", headers=ops,
+                          json={"amount": 1, "reason": "x"})).status_code == 403
+
+    # ---------- reissue ----------
+    dn3 = await dn(c, ops, "2026-07-04", [{"tank_type": "5000L", "grade": "A", "quantity": 2, "unit_price": 3000}])
+    assert dn3["dn_number"] == "CORR-DN-0003"
+    assert (await fg_pos(c, admin))[("5000L", "A")] == 0             # nothing left: only freed stock can cover a reissue
+    reissue = {"date": "2026-07-04", "client_name": "Right Client", "reason": "Wrong price and client",
+               "lines": [{"tank_type": "5000L", "grade": "A", "quantity": 2, "unit_price": 3450}]}
+    assert (await c.post(f"/api/delivery-notes/{dn3['_id']}/reissue", headers=ops, json=reissue)).status_code == 403
+    assert (await c.post(f"/api/delivery-notes/{dn3['_id']}/reissue", headers=audit, json=reissue)).status_code == 403
+    r = await c.post(f"/api/delivery-notes/{dn3['_id']}/reissue", headers=admin, json=reissue)
+    assert r.status_code == 200, r.text
+    new = r.json()
+    assert new["dn_number"] == "CORR-DN-0004" and new["replaces"] == "CORR-DN-0003"
+    assert new["total"] == 7935.0 and new["client_name"] == "Right Client"
+    shown = {d["dn_number"]: d for d in await _get(c, admin, f"/api/nodes/{N}/delivery-notes?include_voided=true")}
+    assert shown["CORR-DN-0003"]["superseded_by"] == "CORR-DN-0004" and shown["CORR-DN-0003"]["void"]
+    assert (await fg_pos(c, admin))[("5000L", "A")] == 0             # old returned 2, new took 2
+    assert (await c.get(f"/api/delivery-notes/{new['_id']}/pdf", headers=ops)).content[:4] == b"%PDF"
+    over = {**reissue, "lines": [{"tank_type": "5000L", "grade": "A", "quantity": 3, "unit_price": 1}]}
+    assert (await c.post(f"/api/delivery-notes/{new['_id']}/reissue", headers=admin, json=over)).status_code == 400
+    assert (await c.post(f"/api/delivery-notes/{dn3['_id']}/reissue", headers=admin, json=reissue)).status_code == 400
+
+    # header edit: client only, PDF regenerated, audit-logged
+    r = await c.patch(f"/api/delivery-notes/{new['_id']}", headers=admin,
+                      json={"client_details": "14 Main Rd", "reason": "Address missing"})
+    assert r.status_code == 200 and r.json()["client_details"] == "14 Main Rd"
+    assert (await c.patch(f"/api/delivery-notes/{new['_id']}", headers=audit,
+                          json={"client_name": "X", "reason": "x"})).status_code == 403
+    edits = await _get(c, admin, f"/api/audit?collection=delivery_notes&action=edit")
+    assert edits[0]["before"]["reason"] == "Address missing"
+
+    # ---------- void a capture ----------
+    s1 = await snapshot(c, admin)
+    cap5 = (await c.post(f"/api/nodes/{N}/captures?date=2026-07-05", headers=ops)).json()["_id"]
+    assert (await c.post(f"/api/captures/{cap5}/entries", headers=ops, json={
+        "powder": [{"powder_type": "BLACK", "received_kg": 500, "issued_kg": 40},
+                   {"powder_type": "GREEN", "received_kg": 300, "issued_kg": 30}],
+        "fittings": [{"fitting_type": "OUTLET", "received_qty": 10, "issued_qty": 2}],
+        "paraffin_received": 20,
+        "production": [{"tank_type": "2500L", "colour": "GREEN", "quantity_a": 1, "quantity_b": 1, "quantity_reject": 1}],
+    })).status_code == 200
+    assert await snapshot(c, admin) != s1
+    assert (await c.post(f"/api/captures/{cap5}/void", headers=ops, json=why())).status_code == 403
+    assert (await c.post(f"/api/captures/{cap5}/void", headers=audit, json=why())).status_code == 403
+    assert (await c.post(f"/api/captures/{cap5}/void", headers=admin, json=why("  "))).status_code == 400
+    r = await c.post(f"/api/captures/{cap5}/void", headers=admin, json=why("Sheet belonged to another day"))
+    assert r.status_code == 200, r.text
+    assert r.json()["voided_rows"] == {"powder_ledger": 4, "fittings_ledger": 2, "paraffin_ledger": 1,
+                                       "production_runs": 1, "scrap_log": 1, "finished_goods_ledger": 2}
+    s2 = await snapshot(c, admin)
+    assert s2 == s1                                                  # every derivation is back
+    caps = await _get(c, admin, f"/api/nodes/{N}/captures")
+    assert cap5 not in [x["_id"] for x in caps]
+    assert (await c.post(f"/api/captures/{cap5}/entries", headers=admin, json=day1)).status_code == 400
+    # a voided day can be captured afresh
+    fresh = (await c.post(f"/api/nodes/{N}/captures?date=2026-07-05", headers=ops)).json()
+    assert fresh["_id"] != cap5 and fresh["status"] == "pending"
+    # capture-derived rows cannot be voided one by one
+    row = next(e for e in (await _get(c, admin, f"/api/nodes/{N}/powder"))["entries"])
+    r = await c.post(f"/api/ledger/powder_ledger/{row['_id']}/void", headers=admin, json=why())
+    assert r.status_code == 400
+
+    # ---------- re-capture voids, never deletes ----------
+    recap = {**day1, "powder": [{"powder_type": "BLACK", "received_kg": 900, "issued_kg": 200},
+                                {"powder_type": "GREEN", "received_kg": 1000, "issued_kg": 200}]}
+    assert (await c.post(f"/api/captures/{cap1}/entries", headers=ops, json={**recap, "reason": "x"})).status_code == 403
+    assert (await c.post(f"/api/captures/{cap1}/entries", headers=admin, json=recap)).status_code == 400
+    r = await c.post(f"/api/captures/{cap1}/entries", headers=admin, json={**recap, "reason": "Black receipt was 900"})
+    assert r.status_code == 200, r.text
+    st = {x["powder_type"]: x for x in (await _get(c, admin, f"/api/nodes/{N}/powder"))["stock"]}
+    assert st["BLACK"]["warehouse"] == 700.0                          # 900 - 200, the 1000 row is void
+    all_rows = [e for e in (await _get(c, admin, f"/api/nodes/{N}/powder?include_voided=true"))["entries"]
+                if e.get("source_capture_id") == cap1]
+    assert len(all_rows) == 8 and sum(1 for e in all_rows if e.get("void")) == 4
+    assert (await fg_pos(c, admin)) == s2["fg"]                       # production unchanged, stock unchanged
+    ent = (await _get(c, admin, f"/api/audit?collection=daily_captures&action=edit"))[0]
+    assert ent["doc_id"] == cap1 and ent["before"]["reason"] == "Black receipt was 900"
+    assert {k: len(v) for k, v in ent["before"]["derived"].items()} == {
+        "powder_ledger": 4, "fittings_ledger": 2, "paraffin_ledger": 1,
+        "production_runs": 2, "scrap_log": 1, "finished_goods_ledger": 3}
+    assert ent["before"]["derived"]["powder_ledger"][0]["kg"] in (1000, 200)
+
+    # ---------- adjustments, counts, post-count protection ----------
+    adj_early = (await c.post(f"/api/nodes/{N}/finished-goods/adjustment", headers=audit, json={
+        "date": "2026-07-01", "tank_type": "2500L", "grade": "A", "quantity": 1, "notes": "found one"})).json()
+    count = (await c.post(f"/api/nodes/{N}/counts", headers=audit, json={
+        "date": "2026-07-06", "powder_counted": [], "fg_warehouse_counted": [],
+        "tank_floor_counted": [], "fittings_counted": []})).json()
+    adj_late = (await c.post(f"/api/nodes/{N}/powder/adjustment", headers=audit, json={
+        "date": "2026-07-10", "kg": -5, "powder_type": "BLACK", "notes": "spill"})).json()
+    fit_adj = (await c.post(f"/api/nodes/{N}/fittings/adjustment", headers=admin, json={
+        "date": "2026-07-10", "quantity": 2, "fitting_type": "OUTLET"})).json()
+
+    before = (await fg_pos(c, admin))[("2500L", "A")]
+    r = await c.post(f"/api/ledger/finished_goods_ledger/{adj_early['_id']}/void", headers=audit, json=why("Double counted"))
+    assert r.status_code == 200 and r.json()["post_count_flag"]
+    assert (await fg_pos(c, admin))[("2500L", "A")] == before - 1
+    pcf = next(f for f in await _get(c, audit, f"/api/nodes/{N}/flags?status=open")
+               if f["type"] == "post_count_correction")
+    assert pcf["references"]["count_id"] == count["_id"] and pcf["references"]["doc_id"] == adj_early["_id"]
+    r = await c.post(f"/api/ledger/powder_ledger/{adj_late['_id']}/void", headers=audit, json=why())
+    assert r.status_code == 200 and r.json()["post_count_flag"] is None   # after the count
+    assert (await c.post(f"/api/ledger/fittings_ledger/{fit_adj['_id']}/void", headers=ops, json=why())).status_code == 403
+    assert (await c.post(f"/api/ledger/fittings_ledger/{fit_adj['_id']}/void", headers=audit, json={"reason": ""})).status_code == 400
+    assert (await c.post(f"/api/ledger/fittings_ledger/{fit_adj['_id']}/void", headers=audit, json=why())).status_code == 200
+
+    # a capture correction dated before the count raises the flag too
+    cap2 = (await c.post(f"/api/nodes/{N}/captures?date=2026-07-02", headers=ops)).json()["_id"]
+    await c.post(f"/api/captures/{cap2}/entries", headers=ops, json={
+        "production": [{"tank_type": "2500L", "colour": "GREEN", "quantity_a": 1}]})
+    r = await c.post(f"/api/captures/{cap2}/void", headers=admin, json=why())
+    assert r.json()["post_count_flag"]
+
+    # count void: admin only; its flags stay
+    assert (await c.post(f"/api/counts/{count['_id']}/void", headers=audit, json=why())).status_code == 403
+    assert (await c.post(f"/api/counts/{count['_id']}/void", headers=ops, json=why())).status_code == 403
+    r = await c.post(f"/api/counts/{count['_id']}/void", headers=admin, json=why("Counted the wrong store"))
+    assert r.status_code == 200 and r.json()["post_count_flag"] is None
+    assert count["_id"] not in [x["_id"] for x in await _get(c, admin, f"/api/nodes/{N}/counts")]
+    assert any(f["_id"] == pcf["_id"] for f in await _get(c, audit, f"/api/nodes/{N}/flags?status=open"))
+
+    # ---------- flags: reopen, never delete ----------
+    assert (await c.post(f"/api/flags/{pcf['_id']}/reopen", headers=admin, json=why())).status_code == 400  # still open
+    assert (await c.post(f"/api/flags/{pcf['_id']}/resolve", headers=audit,
+                         json={"resolution_note": "Adjustment was a double count"})).status_code == 200
+    assert (await c.post(f"/api/flags/{pcf['_id']}/reopen", headers=audit, json=why())).status_code == 403
+    assert (await c.post(f"/api/flags/{pcf['_id']}/reopen", headers=ops, json=why())).status_code == 403
+    assert (await c.post(f"/api/flags/{pcf['_id']}/reopen", headers=admin, json=why(" "))).status_code == 400
+    r = await c.post(f"/api/flags/{pcf['_id']}/reopen", headers=admin, json=why("Resolution does not hold"))
+    assert r.status_code == 200 and r.json()["status"] == "open"
+    f = next(x for x in await _get(c, admin, f"/api/nodes/{N}/flags") if x["_id"] == pcf["_id"])
+    assert f["history"][0]["resolution_note"] == "Adjustment was a double count"
+    assert f["history"][0]["reopen_note"] == "Resolution does not hold"
+
+    # ---------- operations: 403 on every correction endpoint ----------
+    live = await dn(c, ops, "2026-07-11", [{"tank_type": "2500L", "grade": "A", "quantity": 1, "unit_price": 1}])
+    p_open = await pay(c, audit, "2026-07-11", 5)
+    for method, path, body in [
+        ("post", f"/api/captures/{cap1}/void", why()),
+        ("post", f"/api/captures/{cap1}/entries", {**day1, "reason": "x"}),
+        ("patch", f"/api/delivery-notes/{live['_id']}", {"client_name": "Y", "reason": "x"}),
+        ("post", f"/api/delivery-notes/{live['_id']}/void", why()),
+        ("post", f"/api/delivery-notes/{live['_id']}/reissue", reissue),
+        ("patch", f"/api/payments/{p_open['_id']}", {"amount": 1, "reason": "x"}),
+        ("post", f"/api/payments/{p_open['_id']}/void", why()),
+        ("post", f"/api/payments/{pays[0]['_id']}/unmatch", why()),
+        ("post", f"/api/ledger/fittings_ledger/{fit_adj['_id']}/void", why()),
+        ("post", f"/api/counts/{count['_id']}/void", why()),
+        ("post", f"/api/flags/{pcf['_id']}/reopen", why()),
+    ]:
+        r = await getattr(c, method)(path, headers=ops, json=body)
+        assert r.status_code == 403, (path, r.status_code)
+    # audit: 403 on capture, DN and count corrections (flag reopen covered above)
+    for method, path, body in [
+        ("post", f"/api/captures/{cap1}/void", why()),
+        ("post", f"/api/captures/{cap1}/entries", {**day1, "reason": "x"}),
+        ("patch", f"/api/delivery-notes/{live['_id']}", {"client_name": "Y", "reason": "x"}),
+        ("post", f"/api/delivery-notes/{live['_id']}/void", why()),
+        ("post", f"/api/delivery-notes/{live['_id']}/reissue", reissue),
+        ("post", f"/api/counts/{count['_id']}/void", why()),
+    ]:
+        r = await getattr(c, method)(path, headers=audit, json=body)
+        assert r.status_code == 403, (path, r.status_code)
+
+    # audit: 403 outside its node access
+    far_pay = await pay(c, admin, "2026-07-01", 100, node="far")
+    far_adj = (await c.post("/api/nodes/far/powder/adjustment", headers=admin, json={
+        "date": "2026-07-01", "kg": 1, "powder_type": "BLACK"})).json()
+    assert (await c.patch(f"/api/payments/{far_pay['_id']}", headers=audit,
+                          json={"amount": 1, "reason": "x"})).status_code == 403
+    assert (await c.post(f"/api/payments/{far_pay['_id']}/void", headers=audit, json=why())).status_code == 403
+    assert (await c.post(f"/api/ledger/powder_ledger/{far_adj['_id']}/void", headers=audit, json=why())).status_code == 403
+    assert (await c.post(f"/api/payments/{far_pay['_id']}/void", headers=admin, json=why())).status_code == 200
+
+    # blank reasons are rejected everywhere
+    assert (await c.post(f"/api/payments/{p_open['_id']}/void", headers=audit, json=why(""))).status_code == 400
+    assert (await c.patch(f"/api/payments/{p_open['_id']}", headers=audit,
+                          json={"amount": 1, "reason": "   "})).status_code == 400
+    assert (await c.post(f"/api/delivery-notes/{live['_id']}/void", headers=admin, json=why(""))).status_code == 400
+    assert (await c.post(f"/api/payments/{pays[0]['_id']}/unmatch", headers=audit, json=why(""))).status_code == 400
+
+    # nothing operational was ever deleted: every voided DN and payment is still on file
+    assert len(await _get(c, admin, f"/api/nodes/{N}/delivery-notes?include_voided=true")) == 5
+    assert len(await _get(c, admin, "/api/nodes/far/payments?include_voided=true")) == 1
+
+    # audit tab filters
+    by_user = await _get(c, admin, f"/api/audit?node_id={N}&by=pierre@fenixrising.co.za&action=unmatch")
+    assert len(by_user) == 4 and all(e["collection"] == "payments" for e in by_user)
+    assert await _get(c, admin, f"/api/audit?node_id={N}&date_to=2000-01-01") == []
+    assert (await c.get("/api/audit?date_from=nope", headers=admin)).status_code == 400

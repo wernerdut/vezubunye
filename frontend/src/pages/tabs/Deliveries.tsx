@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { FileDown, Paperclip, Plus, Trash2 } from 'lucide-react'
 import { api, errMsg, openAuthed } from '../../api'
 import { Empty, SectionTitle, StatusBadge } from '../../components/ui'
+import { RowMenu, ShowVoided, canCorrect, useCorrection, voidRow, voidedQuery } from '../../components/corrections'
+import type { RowAction } from '../../components/corrections'
 import type { DNLine, DeliveryDoc, DeliveryNote, FGPosition } from '../../types'
 import type { TabProps } from '../NodePage'
 
@@ -18,18 +20,72 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
   const [openId, setOpenId] = useState<string | null>(null)
   const [docs, setDocs] = useState<Record<string, DeliveryDoc[]>>({})
   const [uploading, setUploading] = useState(false)
+  const [showVoided, setShowVoided] = useState(false)
+  const [reissuing, setReissuing] = useState<DeliveryNote | null>(null)
+  const [reissueReason, setReissueReason] = useState('')
 
   const canCreate = user.role === 'operations' || user.role === 'admin'
+  const canFix = canCorrect(user, 'admin')
   const names = Object.fromEntries(config.tank_types.map((t) => [t.code, t.name]))
   const vatRate = config.vat_rate ?? 15
 
   const load = useCallback(() => {
-    api.get(`/api/nodes/${nodeId}/delivery-notes`).then((r) => setNotes(r.data))
+    api.get(`/api/nodes/${nodeId}/delivery-notes${voidedQuery(showVoided)}`).then((r) => setNotes(r.data))
     api.get(`/api/nodes/${nodeId}/finished-goods`).then((r) => setStock(r.data.positions))
-  }, [nodeId])
+  }, [nodeId, showVoided])
   useEffect(load, [load])
+  const { ask, modal } = useCorrection(nodeId, load)
 
-  const onHand = (tt: string, gr: string) => stock.find((s) => s.tank_type === tt && s.grade === gr)?.total ?? 0
+  // a reissue frees the old note's tanks, so they count as available for the new one
+  const freed = (tt: string, gr: string) =>
+    (reissuing?.lines || []).filter((l) => l.tank_type === tt && l.grade === gr).reduce((s, l) => s + l.quantity, 0)
+  const onHand = (tt: string, gr: string) =>
+    (stock.find((s) => s.tank_type === tt && s.grade === gr)?.total ?? 0) + freed(tt, gr)
+  const tankList = (ls: DNLine[]) => ls.map((l) => `${l.quantity} × ${names[l.tank_type] || l.tank_type} ${l.grade}-grade`).join(', ')
+
+  const clearForm = () => {
+    setForm({ ...form, client_name: '', client_details: '' })
+    setLines([blankLine(config.tank_types[0]?.code || '')])
+    setReissuing(null); setReissueReason('')
+  }
+
+  const startReissue = (n: DeliveryNote) => {
+    setReissuing(n); setReissueReason(''); setError('')
+    setForm({ date: n.date, client_name: n.client_name, client_details: n.client_details || '' })
+    setLines(n.lines.map((l) => ({ ...l })))
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const editClient = (n: DeliveryNote) => {
+    const draft = { client_name: n.client_name, client_details: n.client_details || '' }
+    ask({
+      title: `Edit ${n.dn_number}`, movesStock: false, confirmLabel: 'Save',
+      cascade: 'Changes the client on the note and regenerates its PDF. Lines, quantities, prices, grade or date need a reissue.',
+      fields: (
+        <div className="space-y-2">
+          <input className="input" defaultValue={draft.client_name} placeholder="Client" onChange={(e) => { draft.client_name = e.target.value }} />
+          <textarea className="input" rows={2} defaultValue={draft.client_details} placeholder="Client details" onChange={(e) => { draft.client_details = e.target.value }} />
+        </div>
+      ),
+      run: (reason) => api.patch(`/api/delivery-notes/${n._id}`, { ...draft, reason }),
+    })
+  }
+
+  const actions = (n: DeliveryNote): RowAction[] => {
+    if (!canFix || n.void) return []
+    const paid = (n.amount_paid ?? 0) > 0 ? ' It has matched payments: unmatch them on the Payments tab first.' : ''
+    return [
+      { label: 'Edit client', onClick: () => editClient(n) },
+      { label: 'Reissue', onClick: () => startReissue(n) },
+      {
+        label: 'Void', danger: true, onClick: () => ask({
+          title: `Void ${n.dn_number}`, date: n.date, confirmLabel: 'Void',
+          cascade: `Voids ${n.dn_number} and returns ${tankList(n.lines)} to stock. The number is kept, never reused. Recon will re-run.${paid}`,
+          run: (reason) => api.post(`/api/delivery-notes/${n._id}/void`, { reason }),
+        }),
+      },
+    ]
+  }
   const subtotal = useMemo(() => lines.reduce((s, l) => s + l.quantity * l.unit_price, 0), [lines])
   const vat = subtotal * vatRate / 100
   const total = subtotal + vat
@@ -37,11 +93,15 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (reissuing && !reissueReason.trim()) { setError('A reason is required to reissue.'); return }
     setBusy(true); setError('')
     try {
-      await api.post(`/api/nodes/${nodeId}/delivery-notes`, { ...form, lines })
-      setForm({ ...form, client_name: '', client_details: '' })
-      setLines([blankLine(config.tank_types[0]?.code || '')])
+      if (reissuing) {
+        await api.post(`/api/delivery-notes/${reissuing._id}/reissue`, { ...form, lines, reason: reissueReason.trim() })
+      } else {
+        await api.post(`/api/nodes/${nodeId}/delivery-notes`, { ...form, lines })
+      }
+      clearForm()
       load()
     } catch (err) {
       setError(errMsg(err))
@@ -87,9 +147,19 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
     <div className="grid lg:grid-cols-2 gap-6">
       {canCreate && (
         <div>
-          <SectionTitle>New Delivery</SectionTitle>
+          <SectionTitle>{reissuing ? `Reissue ${reissuing.dn_number}` : 'New Delivery'}</SectionTitle>
           <p className="text-sm text-gray-500 mb-3">A delivery takes the tanks out of stock and records the price. The printed note shows no prices; the value here is what you reconcile against the bank.</p>
           <form onSubmit={submit} className="card space-y-3">
+            {reissuing && (
+              <div className="rounded border border-brand-orange bg-orange-50 p-3 space-y-2">
+                <p className="text-sm text-gray-700">
+                  Voids {reissuing.dn_number} (its tanks return to stock) and issues this note under the next number, linked both ways. Recon will re-run.
+                </p>
+                <textarea className="input" rows={2} placeholder="Reason (required, goes to the audit log)"
+                          value={reissueReason} onChange={(e) => setReissueReason(e.target.value)} />
+                <button type="button" className="text-xs font-semibold text-brand-blue" onClick={clearForm}>Cancel reissue</button>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Date</label>
@@ -140,12 +210,16 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
               <div className="flex justify-between font-bold text-brand-blue"><span>Expected in bank</span><span>{rand(total)}</span></div>
             </div>
             {error && <p className="text-sm text-brand-red">{error}</p>}
-            <button className="btn-primary w-full" disabled={busy}>{busy ? 'Creating…' : 'Create delivery'}</button>
+            <button className="btn-primary w-full" disabled={busy}>{busy ? 'Creating…' : reissuing ? `Reissue ${reissuing.dn_number}` : 'Create delivery'}</button>
           </form>
         </div>
       )}
       <div className={canCreate ? '' : 'lg:col-span-2'}>
-        <SectionTitle>Deliveries</SectionTitle>
+        <div className="flex items-baseline justify-between">
+          <SectionTitle>Deliveries</SectionTitle>
+          <ShowVoided value={showVoided} onChange={setShowVoided} />
+        </div>
+        {modal}
         <div className="card p-0 overflow-x-auto">
           {notes.length === 0 ? (
             <Empty text="No deliveries yet" />
@@ -162,13 +236,18 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
                   <th className="th">Status</th>
                   <th className="th">Docs</th>
                   <th className="th"></th>
+                  {canFix && <th className="th"></th>}
                 </tr>
               </thead>
               <tbody>
                 {notes.map((n) => (
                   <Fragment key={n._id}>
-                    <tr>
-                      <td className="td font-semibold whitespace-nowrap">{n.dn_number}</td>
+                    <tr {...voidRow(n)}>
+                      <td className="td font-semibold whitespace-nowrap">
+                        {n.dn_number}
+                        {n.replaces && <div className="text-xs font-normal text-gray-400">replaces {n.replaces}</div>}
+                        {n.superseded_by && <div className="text-xs font-normal text-gray-400">superseded by {n.superseded_by}</div>}
+                      </td>
                       <td className="td whitespace-nowrap">{n.date}</td>
                       <td className="td">{n.client_name}</td>
                       <td className="td text-gray-500">{n.lines.map((l) => `${l.quantity}× ${names[l.tank_type] || l.tank_type} (${l.grade})`).join(', ')}</td>
@@ -182,10 +261,11 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
                         </button>
                       </td>
                       <td className="td"><button className="text-brand-light" title="Delivery note PDF (no prices)" onClick={() => openAuthed(`/api/delivery-notes/${n._id}/pdf`)}><FileDown size={16} /></button></td>
+                      {canFix && <td className="td"><RowMenu actions={actions(n)} /></td>}
                     </tr>
                     {openId === n._id && (
                       <tr>
-                        <td className="td bg-gray-50" colSpan={9}>
+                        <td className="td bg-gray-50" colSpan={canFix ? 10 : 9}>
                           <div className="text-xs font-semibold text-gray-600 mb-1">Documents for {n.dn_number} <span className="font-normal text-gray-400">(invoice, proof of payment, etc.)</span></div>
                           {(docs[n._id] || []).length === 0 && <p className="text-sm text-gray-400 mb-1">No documents yet.</p>}
                           <ul className="space-y-1 mb-2">

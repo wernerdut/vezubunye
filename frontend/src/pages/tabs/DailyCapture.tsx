@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FileDown } from 'lucide-react'
 import { api, errMsg, openAuthed } from '../../api'
 import { Empty, StatusBadge } from '../../components/ui'
+import { RowMenu, ShowVoided, canCorrect, useCorrection, voidRow, voidedQuery } from '../../components/corrections'
 import type { Capture, FittingMoveLine, PowderMoveLine, ProductionLine } from '../../types'
 import type { TabProps } from '../NodePage'
 
@@ -14,6 +15,9 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const [busy, setBusy] = useState(false)
 
   const canCapture = user.role === 'operations' || user.role === 'admin'
+  const canFix = canCorrect(user, 'admin')
+  const [showVoided, setShowVoided] = useState(false)
+  const [reason, setReason] = useState('')
 
   const blankPowder = (): PowderMoveLine[] =>
     config.powder_products.length
@@ -34,9 +38,13 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const initRef = useRef(false)
 
   const load = useCallback(() => {
-    api.get(`/api/nodes/${nodeId}/captures`).then((r) => setCaptures(r.data))
-  }, [nodeId])
+    api.get(`/api/nodes/${nodeId}/captures${voidedQuery(showVoided)}`).then((r) => setCaptures(r.data))
+  }, [nodeId, showVoided])
   useEffect(load, [load])
+  const active = captures.filter((c) => !c.void)
+  // re-capturing a captured day is a correction: admin only, with a reason
+  const editingCaptured = active.some((c) => c._id === editingId && c.status === 'captured')
+  const lockedForOps = editingCaptured && !canFix
 
   const tankByCode = useMemo(() => Object.fromEntries(config.tank_types.map((t) => [t.code, t])), [config])
   const colourName = (code: string) => config.powder_products.find((p) => p.code === code)?.colour || code
@@ -74,7 +82,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   // load an existing day's sheet into the form for editing
   const loadCapture = (cap: Capture) => {
     setEditingId(cap._id)
-    setMsg(null); setPhoto(null)
+    setMsg(null); setPhoto(null); setReason('')
     const e = cap.entries
     if (!e) { reset(); return }
     setPowder(config.powder_products.length
@@ -101,7 +109,7 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   // picking a date loads that day's sheet if one exists (edit), otherwise a blank sheet (new)
   const selectDate = (d: string) => {
     setDate(d)
-    const cap = captures.find((c) => c.date === d)
+    const cap = active.find((c) => c.date === d)
     if (cap) loadCapture(cap)
     else { setEditingId(null); reset(); setMsg(null) }
   }
@@ -110,12 +118,13 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   useEffect(() => {
     if (initRef.current || captures.length === 0) return
     initRef.current = true
-    const cap = captures.find((c) => c.date === date)
+    const cap = active.find((c) => c.date === date)
     if (cap) loadCapture(cap)
   }, [captures]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (editingCaptured && !reason.trim()) { setMsg({ kind: 'err', text: 'A reason is required to correct a captured day.' }); return }
     setBusy(true); setMsg(null)
     try {
       const wasEditing = !!editingId
@@ -129,8 +138,9 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
         fittings, production: prod,
         paraffin_received: parseFloat(paraffin) || 0,
         notes,
+        ...(editingCaptured ? { reason: reason.trim() } : {}),
       })
-      setEditingId(cap._id); setPhoto(null)
+      setEditingId(cap._id); setPhoto(null); setReason('')
       setMsg({ kind: 'ok', text: wasEditing ? 'Sheet updated.' : 'Captured. Produced tanks are in stock; reconciliation happens at stocktake.' })
       load()
     } catch (err) {
@@ -139,6 +149,10 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
       setBusy(false)
     }
   }
+
+  const { ask, modal } = useCorrection(nodeId, () => {
+    setEditingId(null); reset(); setMsg(null); load()
+  })
 
   const numCell = (val: number, on: (n: number) => void, step = '1') => (
     <input className="input w-20" type="number" min="0" step={step}
@@ -159,8 +173,14 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
             <div>
               <label className="block text-xs font-semibold text-gray-600 mb-1">Date</label>
               <input className="input w-48" type="date" value={date} onChange={(e) => selectDate(e.target.value)} required />
-              {editingId && (
+              {editingId && !editingCaptured && (
                 <p className="text-xs text-brand-blue mt-1">Editing the {date} sheet — saving updates it. Pick a date with no sheet to start a new one.</p>
+              )}
+              {editingCaptured && canFix && (
+                <p className="text-xs text-brand-orange mt-1">The {date} sheet is captured. Saving is a correction: the prior movements are voided (kept on file) and replaced. Recon will re-run.</p>
+              )}
+              {lockedForOps && (
+                <p className="text-xs text-brand-orange mt-1">The {date} sheet is already captured. Corrections to a captured day are admin-only: ask Werner.</p>
               )}
             </div>
 
@@ -292,10 +312,16 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
               <textarea className="input" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
                         placeholder="Breakdowns, delays, quality or material issues, machine downtime, staff — anything worth flagging. Optional." />
             </div>
+            {editingCaptured && canFix && (
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Reason for the correction (required, goes to the audit log)</label>
+                <textarea className="input" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+              </div>
+            )}
             {msg && (
               <p className={`text-sm font-semibold ${msg.kind === 'ok' ? 'text-brand-green' : msg.kind === 'warn' ? 'text-brand-orange' : 'text-brand-red'}`}>{msg.text}</p>
             )}
-            <button className="btn-primary w-full" disabled={busy}>{busy ? 'Saving…' : (editingId ? 'Update capture' : 'Save capture')}</button>
+            <button className="btn-primary w-full" disabled={busy || lockedForOps}>{busy ? 'Saving…' : (editingCaptured ? 'Correct capture' : editingId ? 'Update capture' : 'Save capture')}</button>
           </form>
         ) : (
           <p className="text-sm text-gray-500 card">Only the operations role keys in daily sheets. You can review captures and the documents they produced.</p>
@@ -303,18 +329,22 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
       </div>
 
       <div>
-        <h2 className="font-headline text-3xl text-brand-blue mb-3">Recent Captures</h2>
+        <div className="flex items-baseline justify-between mb-3">
+          <h2 className="font-headline text-3xl text-brand-blue">Recent Captures</h2>
+          <ShowVoided value={showVoided} onChange={setShowVoided} />
+        </div>
+        {modal}
         <div className="card p-0 overflow-hidden">
           {captures.length === 0 ? (
             <Empty text="No captures yet" />
           ) : (
             <table className="w-full">
-              <thead><tr><th className="th">Date</th><th className="th">Status</th><th className="th">By</th><th className="th">Tanks produced</th><th className="th">Photo</th></tr></thead>
+              <thead><tr><th className="th">Date</th><th className="th">Status</th><th className="th">By</th><th className="th">Tanks produced</th><th className="th">Photo</th>{canFix && <th className="th"></th>}</tr></thead>
               <tbody>
                 {captures.map((c) => (
-                  <tr key={c._id} className="align-top">
+                  <tr key={c._id} className={`align-top ${voidRow(c).className || ''}`} title={voidRow(c).title}>
                     <td className="td font-semibold whitespace-nowrap">
-                      {canCapture ? (
+                      {canCapture && !c.void ? (
                         <button type="button" className="text-brand-light hover:underline" title="Edit this sheet"
                                 onClick={() => { selectDate(c.date); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>{c.date}</button>
                       ) : c.date}
@@ -332,6 +362,17 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
                         </button>
                       ) : <span className="text-gray-300">none</span>}
                     </td>
+                    {canFix && (
+                      <td className="td">
+                        <RowMenu actions={c.void ? [] : [{
+                          label: 'Void', danger: true, onClick: () => ask({
+                            title: `Void the ${c.date} capture`, date: c.date, confirmLabel: 'Void',
+                            cascade: `Voids the ${c.date} capture and every movement it wrote: powder, fittings, paraffin, production, scrap and finished goods. The photo is kept. Recon will re-run.`,
+                            run: (why) => api.post(`/api/captures/${c._id}/void`, { reason: why }),
+                          }),
+                        }]} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

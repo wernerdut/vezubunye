@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, errMsg } from '../../api'
 import { Empty, SectionTitle } from '../../components/ui'
+import { RowMenu, ShowVoided, canCorrect, useCorrection, voidRow, voidedQuery } from '../../components/corrections'
 import type { PhysicalCount } from '../../types'
 import type { TabProps } from '../NodePage'
 
@@ -19,10 +20,14 @@ export default function Counts({ nodeId, config, user }: TabProps) {
   const powderName = (code: string) => config.powder_products.find((p) => p.code === code)?.colour || code
   const cells = config.tank_types.flatMap((t) => (['A', 'B'] as const).map((g) => ({ code: t.code, grade: g })))
 
+  const canFix = canCorrect(user, 'admin')
+  const [showVoided, setShowVoided] = useState(false)
+
   const load = useCallback(() => {
-    api.get(`/api/nodes/${nodeId}/counts`).then((r) => setCounts(r.data))
-  }, [nodeId])
+    api.get(`/api/nodes/${nodeId}/counts${voidedQuery(showVoided)}`).then((r) => setCounts(r.data))
+  }, [nodeId, showVoided])
   useEffect(load, [load])
+  const { ask, modal } = useCorrection(nodeId, load)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -118,7 +123,11 @@ export default function Counts({ nodeId, config, user }: TabProps) {
       )}
 
       <div className={canCount ? '' : 'xl:col-span-2'}>
-        <SectionTitle>Count History</SectionTitle>
+        <div className="flex items-baseline justify-between">
+          <SectionTitle>Count History</SectionTitle>
+          <ShowVoided value={showVoided} onChange={setShowVoided} />
+        </div>
+        {modal}
         <div className="space-y-3">
           {counts.length === 0 && <div className="card"><Empty text="No stocktakes yet" /></div>}
           {counts.map((c) => {
@@ -130,10 +139,21 @@ export default function Counts({ nodeId, config, user }: TabProps) {
               ...v.fittings.filter((x) => x.variance !== 0).map((x) => `Fitting ${x.fitting_type} ${x.variance > 0 ? '+' : ''}${x.variance}`),
             ]
             return (
-              <div key={c._id} className="card">
+              <div key={c._id} className={`card ${voidRow(c).className || ''}`} title={voidRow(c).title}>
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-semibold">{c.date}</span>
-                  <span className="text-xs text-gray-500">{c.counted_by}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">{c.counted_by}</span>
+                    {canFix && (
+                      <RowMenu actions={c.void ? [] : [{
+                        label: 'Void', danger: true, onClick: () => ask({
+                          title: `Void the ${c.date} count`, date: c.date, confirmLabel: 'Void',
+                          cascade: `Voids the ${c.date} stocktake. The flags it raised stay open; audit resolves them against the void. Recon will re-run.`,
+                          run: (reason) => api.post(`/api/counts/${c._id}/void`, { reason }),
+                        }),
+                      }]} />
+                    )}
+                  </span>
                 </div>
                 {probs.length === 0 ? (
                   <p className="text-sm text-brand-green font-semibold">Everything reconciles (store + floor = system).</p>

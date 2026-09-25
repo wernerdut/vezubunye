@@ -11,6 +11,7 @@ from datetime import date as _date
 
 import db
 import recon
+from corrections import ACTIVE
 
 WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -53,7 +54,7 @@ async def node_totals(node_id: str, cfg: dict) -> dict:
     by_type: dict = {}
     total_tanks = 0
     total_kg = 0.0
-    async for r in db.production_runs().find({"node_id": node_id}):
+    async for r in db.production_runs().find({"node_id": node_id, **ACTIVE}):
         n = r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]
         by_type[r["tank_type"]] = by_type.get(r["tank_type"], 0) + n
         total_tanks += n
@@ -103,8 +104,8 @@ async def node_dashboard(node_id: str, cfg: dict, year: str, include_cost: bool)
     names = {t["code"]: t["name"] for t in cfg["tank_types"]}
     colour_name = {p["code"]: (p.get("colour") or p["code"]) for p in cfg.get("powder_products", [])}
 
-    runs = [r async for r in db.production_runs().find({"node_id": node_id})]
-    disp = [e async for e in db.finished_goods().find({"node_id": node_id, "type": "dispatched"})]
+    runs = [r async for r in db.production_runs().find({"node_id": node_id, **ACTIVE})]
+    disp = [e async for e in db.finished_goods().find({"node_id": node_id, "type": "dispatched", **ACTIVE})]
 
     years = sorted({r["date"][:4] for r in runs} | {e["date"][:4] for e in disp}, reverse=True)
 
@@ -167,10 +168,10 @@ async def node_daily(node_id: str, cfg: dict, month: str, include_cost: bool) ->
     names = {t["code"]: t["name"] for t in cfg["tank_types"]}
 
     day_acc: dict = {}
-    async for r in db.production_runs().find({"node_id": node_id, "date": {"$regex": f"^{month}"}}):
+    async for r in db.production_runs().find({"node_id": node_id, "date": {"$regex": f"^{month}"}, **ACTIVE}):
         _add_run(day_acc.setdefault(r["date"], _empty()), r, tmap, black_code)
     async for e in db.finished_goods().find(
-            {"node_id": node_id, "type": "dispatched", "date": {"$regex": f"^{month}"}}):
+            {"node_id": node_id, "type": "dispatched", "date": {"$regex": f"^{month}"}, **ACTIVE}):
         day_acc.setdefault(e["date"], _empty())["sold"] += e["quantity"]
 
     def serialize(acc: dict, **extra) -> dict:

@@ -93,13 +93,14 @@ def counters():
     return db()["counters"]
 
 
-async def next_number(node_id: str, kind: str) -> int:
-    """Atomic per-node sequential counter (kind: 'dn' | 'inv')."""
+async def next_number(node_id: str, kind: str, session=None) -> int:
+    """Atomic per-node sequential counter (kind: 'dn' | 'inv'). Numbers are never reused."""
     doc = await counters().find_one_and_update(
         {"_id": f"{node_id}:{kind}"},
         {"$inc": {"seq": 1}},
         upsert=True,
         return_document=True,
+        session=session,
     )
     return doc["seq"]
 

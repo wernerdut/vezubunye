@@ -14,12 +14,15 @@ Rules:
   R3  every delivery note must link to an invoice.
   R4  every invoice must match a payment; unpaid past terms / short / over flagged.
   R7  physical counts reconcile store + floor to system; variance flags.
+
+Every derivation reads only ACTIVE rows: a voided record never counts.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from uuid import uuid4
 
+import corrections
 import db
 
 EPS = 0.001  # float comparison guard
@@ -71,7 +74,7 @@ def black_codes(cfg: dict) -> set[str]:
 
 async def total_moulded(node_id: str, up_to_date: str | None = None) -> dict:
     """code -> {a, b, reject, total} moulded (all grades, all colours)."""
-    filt: dict = {"node_id": node_id}
+    filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     out: dict = {}
@@ -86,7 +89,7 @@ async def total_moulded(node_id: str, up_to_date: str | None = None) -> dict:
 
 async def powder_warehouse(node_id: str, up_to_date: str | None = None) -> dict:
     """powder_type -> warehouse kg (received - issued +/- warehouse adjustments)."""
-    filt: dict = {"node_id": node_id}
+    filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     bal: dict = {}
@@ -108,7 +111,7 @@ async def powder_consumed(node_id: str, cfg: dict, up_to_date: str | None = None
     blacks = black_codes(cfg)
     black_code = next(iter(blacks), None)
     consumed: dict = {}
-    filt: dict = {"node_id": node_id}
+    filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     async for r in db.production_runs().find(filt):
@@ -129,7 +132,7 @@ async def powder_floor(node_id: str, cfg: dict, up_to_date: str | None = None) -
     because each colour is a distinct material that is issued and drawn separately."""
     issued: dict = {}
     adj: dict = {}
-    filt: dict = {"node_id": node_id}
+    filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     async for e in db.powder_ledger().find(filt):
@@ -168,7 +171,7 @@ async def paraffin_balance(node_id: str, cfg: dict, up_to_date: str | None = Non
     """Single paraffin stock: received (+ adjustments) less consumed by moulding.
     Each tank moulded (A, B or reject) draws `paraffin_litres_per_tank` litres."""
     rate = float(cfg.get("paraffin_litres_per_tank", 0.0) or 0.0)
-    filt: dict = {"node_id": node_id}
+    filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     received = 0.0
@@ -187,7 +190,7 @@ async def paraffin_balance(node_id: str, cfg: dict, up_to_date: str | None = Non
 # ---------- fittings ---------- #
 
 async def fittings_warehouse(node_id: str, up_to_date: str | None = None) -> dict:
-    filt: dict = {"node_id": node_id}
+    filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     bal: dict = {}
@@ -203,7 +206,7 @@ async def fittings_warehouse(node_id: str, up_to_date: str | None = None) -> dic
 
 
 async def fittings_issued(node_id: str, up_to_date: str | None = None) -> dict:
-    filt: dict = {"node_id": node_id, "type": "issued"}
+    filt: dict = {"node_id": node_id, "type": "issued", **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     out: dict = {}
@@ -246,7 +249,7 @@ async def check_fittings(node_id: str, date: str, capture_id: str) -> list[str]:
 # ---------- tank floor & finished-goods warehouse ---------- #
 
 async def _fg_ledger_sum(node_id: str, move_type: str, up_to_date: str | None = None) -> dict:
-    filt: dict = {"node_id": node_id, "type": move_type}
+    filt: dict = {"node_id": node_id, "type": move_type, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     out: dict = {}
@@ -286,7 +289,8 @@ async def fg_warehouse(node_id: str, up_to_date: str | None = None) -> dict:
 
 
 async def _fg_adjustments(node_id: str, scope: str, up_to_date: str | None = None) -> dict:
-    filt: dict = {"node_id": node_id, "type": "count_adjustment", "scope": scope}
+    filt: dict = {"node_id": node_id, "type": "count_adjustment", "scope": scope,
+                  **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     out: dict = {}
@@ -318,7 +322,7 @@ async def sweep_unpaid_deliveries(node_id: str) -> list[str]:
     terms = cfg.get("payment_terms_days", 30)
     cutoff = (datetime.utcnow() - timedelta(days=terms)).strftime("%Y-%m-%d")
     raised = []
-    async for dn in db.delivery_notes().find({"node_id": node_id,
+    async for dn in db.delivery_notes().find({"node_id": node_id, **corrections.ACTIVE,
                                               "status": {"$in": ["unpaid", "part_paid"]},
                                               "date": {"$lt": cutoff}}):
         fid = await raise_flag(
@@ -332,7 +336,8 @@ async def sweep_unpaid_deliveries(node_id: str) -> list[str]:
 
 async def sweep_unmatched_payments(node_id: str) -> list[str]:
     raised = []
-    async for p in db.payments().find({"node_id": node_id, "status": "unmatched"}):
+    async for p in db.payments().find({"node_id": node_id, "status": "unmatched",
+                                         **corrections.ACTIVE}):
         fid = await raise_flag(
             node_id, "payment_unmatched",
             f"Payment of R{p['amount']:.2f} on {p['date']} (ref '{p['bank_reference']}') "

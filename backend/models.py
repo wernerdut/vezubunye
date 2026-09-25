@@ -106,6 +106,7 @@ class CaptureEntriesIn(BaseModel):
     booked: List[BookedLine] = []
     paraffin_received: float = 0.0   # litres of paraffin received into stock that day
     notes: Optional[str] = None
+    reason: Optional[str] = None     # required when re-capturing an already captured day
     # Tank dispatch (stock-out) is no longer captured here — it happens on the Deliveries tab.
 
 
@@ -125,6 +126,17 @@ class DeliveryNoteIn(BaseModel):
     lines: List[DNLine]
 
 
+class DeliveryNoteEditIn(BaseModel):
+    """Header-only edit. Lines, quantities, prices, grade or date change = reissue."""
+    client_name: Optional[str] = None
+    client_details: Optional[str] = None
+    reason: str
+
+
+class DeliveryNoteReissueIn(DeliveryNoteIn):
+    reason: str
+
+
 # ---------- payments ---------- #
 
 class PaymentIn(BaseModel):
@@ -137,12 +149,26 @@ class PaymentMatchIn(BaseModel):
     delivery_id: str
 
 
+class PaymentEditIn(BaseModel):
+    date: Optional[str] = None
+    amount: Optional[float] = None
+    bank_reference: Optional[str] = None
+    reason: str
+
+
+# ---------- corrections ---------- #
+
+class CorrectionIn(BaseModel):
+    """Void, unmatch, reopen: the reason is mandatory and lands in the audit log."""
+    reason: str
+
+
 # ---------- flags ---------- #
 
 FlagType = Literal[
     "powder_variance", "fittings_variance", "finished_goods_mismatch",
     "delivery_unpaid", "payment_unmatched",
-    "short_paid", "over_paid", "count_mismatch",
+    "short_paid", "over_paid", "count_mismatch", "post_count_correction",
 ]
 
 
