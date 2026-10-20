@@ -196,9 +196,9 @@ MAKULU_PRICES = {
     "trade": {"W1000": {"A": 1250}, "W2300": {"A": 1850}, "W5000": {"A": 3550}, "S2000": {"A": 5550}},
 }
 
-ASSET_FILES = {"logo_light": "logo_light.svg", "logo_dark": "logo_dark.svg", "favicon": "favicon.svg",
-               "icon": "icon.svg", "app_icon": "app_icon.png", "logo_light_png": "logo_light.png",
-               "logo_dark_png": "logo_dark.png", "icon_png": "icon.png"}
+ASSET_FILES = {"logo_light": "logo_light.png", "logo_dark": "logo_dark.svg", "favicon": "favicon.png",
+               "icon": "icon.png", "app_icon": "app_icon.png", "logo_light_png": "logo_light.png",
+               "logo_dark_png": "logo_dark.png", "icon_png": "icon.png", "gradient": "gradient.jpg"}
 
 
 async def load_brand_assets(node_id: str, slug: str) -> list[str]:
@@ -211,7 +211,7 @@ async def load_brand_assets(node_id: str, slug: str) -> list[str]:
         path = os.path.join(folder, fname)
         if not os.path.exists(path) or await db.brand_assets().find_one({"node_id": node_id, "kind": kind}):
             continue
-        ctype = "image/svg+xml" if fname.endswith(".svg") else "image/png"
+        ctype = {"svg": "image/svg+xml", "jpg": "image/jpeg"}.get(fname.rsplit(".", 1)[1], "image/png")
         await db.brand_assets().insert_one({"_id": uuid4().hex, "node_id": node_id, "kind": kind,
                                             "content_type": ctype, "filename": fname,
                                             "content_b64": base64.b64encode(open(path, "rb").read()).decode(),

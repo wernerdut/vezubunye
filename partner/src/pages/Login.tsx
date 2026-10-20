@@ -22,7 +22,8 @@ export default function Login({ brand, onLogin }: { brand: Branding; onLogin: (u
   }
   const pattern = brand.assets.pattern
   return (
-    <div className="gradient relative flex min-h-screen items-center justify-center p-4">
+    <div className="gradient relative flex min-h-screen items-center justify-center bg-cover bg-center p-4"
+      style={brand.assets.gradient ? { backgroundImage: `url(${brand.assets.gradient})` } : undefined}>
       {pattern && <div className="absolute inset-0 opacity-10" style={{ backgroundImage: `url(${pattern})`, backgroundSize: '480px' }} />}
       <form onSubmit={submit} className="relative w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl sm:p-8">
         <div className="mb-6 flex justify-center">

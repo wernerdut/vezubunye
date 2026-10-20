@@ -50,11 +50,12 @@ Still open (needs Werner):
 - Burnt Orange and Bronze Olive have no RIPS powder product. They are listed as on request and
   cannot be captured until Fenix adds a product (or they are dropped).
 - First users, Yoco secret key, terms customers.
-- Brand files: the logos in `backend/assets/brands/makx/` are SVG traces of the supplied logo
-  images (the supplied files could not be attached to the repo). `logo_dark.svg` (gradient
-  icon, white wordmark) stands in for the white-on-dark variant still to come; replace both
-  when the SVGs arrive (Settings, Branding in the app, or the files plus a redeploy for new
-  nodes). No Adobe Fonts kit is configured, so text falls back to the system sans.
+- Brand files: the colour logo, the square elephant icon (favicon and app icon are cut from it)
+  and the green gradient (login background) are Werner's supplied files, in
+  `backend/assets/brands/makx/`. The white-on-dark logo for the sidebar (`logo_dark.svg`:
+  gradient icon, white wordmark) is a stand-in traced from the logo until the real variant
+  arrives; upload it in Settings, Branding. No Adobe Fonts kit is configured, so text falls
+  back to the system sans.
 - Black grades seeded: 5840, 6840 and 2840 Black UV RotoPowder (in RIPS stock). Add others in
   Admin if Makulu draws a different grade.
 
