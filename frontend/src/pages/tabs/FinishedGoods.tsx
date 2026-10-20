@@ -48,15 +48,16 @@ export default function FinishedGoods({ nodeId, config, user }: TabProps) {
           <table className="w-full">
             <thead>
               <tr>
-                <th className="th">Tank</th><th className="th">Grade</th>
+                <th className="th">Tank</th>{config.track_colour_stock && <th className="th">Colour</th>}<th className="th">Grade</th>
                 <th className="th text-right">In stock</th>
               </tr>
             </thead>
             <tbody>
               {positions.length === 0 && <tr><td className="td" colSpan={3}><Empty text="Nothing in stock yet" /></td></tr>}
               {positions.map((p) => (
-                <tr key={`${p.tank_type}-${p.grade}`}>
+                <tr key={`${p.tank_type}-${p.colour || ''}-${p.grade}`}>
                   <td className="td font-semibold">{names[p.tank_type] || p.tank_type}</td>
+                  {config.track_colour_stock && <td className="td">{config.colours?.find((c) => c.code === p.colour)?.name || p.colour || 'unspecified'}</td>}
                   <td className={`td font-semibold ${p.grade === 'A' ? 'text-brand-green' : 'text-brand-orange'}`}>{p.grade}</td>
                   <td className={`td text-right font-bold ${p.total < 0 ? 'text-brand-red' : 'text-brand-blue'}`}>{p.total}</td>
                 </tr>

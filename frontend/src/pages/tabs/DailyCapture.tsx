@@ -6,7 +6,7 @@ import { RowMenu, ShowVoided, canCorrect, useCorrection, voidRow, voidedQuery } 
 import type { Capture, FittingMoveLine, PowderMoveLine, ProductionLine } from '../../types'
 import type { TabProps } from '../NodePage'
 
-export default function DailyCapture({ nodeId, config, user }: TabProps) {
+export default function DailyCapture({ nodeId, config, user, node }: TabProps) {
   const [captures, setCaptures] = useState<Capture[]>([])
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [photo, setPhoto] = useState<File | null>(null)
@@ -14,7 +14,8 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const canCapture = user.role === 'operations' || user.role === 'admin'
+  // when the node's partner app is live, capture happens there; admin corrections still work here
+  const canCapture = (user.role === 'operations' && !node.partner_app_live) || user.role === 'admin'
   const canFix = canCorrect(user, 'admin')
   const [showVoided, setShowVoided] = useState(false)
   const [reason, setReason] = useState('')
@@ -289,7 +290,15 @@ export default function DailyCapture({ nodeId, config, user }: TabProps) {
                         </select>
                       </td>
                       <td className="td">
-                        {colours.length ? (
+                        {config.colours?.length ? (
+                          <select className="input w-36" value={l.tank_colour || ''} onChange={(e) => {
+                            const c = config.colours!.find((x) => x.code === e.target.value)
+                            setProd((ls) => ls.map((x, j) => j === i ? { ...x, tank_colour: e.target.value, colour: c?.powder_product || '' } : x))
+                          }}>
+                            <option value="">Colour…</option>
+                            {config.colours.filter((c) => c.powder_product).map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                          </select>
+                        ) : colours.length ? (
                           <select className="input w-32" value={l.colour} onChange={(e) => setProd((ls) => ls.map((x, j) => j === i ? { ...x, colour: e.target.value } : x))}>
                             <option value="">select…</option>
                             {colours.map((p) => <option key={p.code} value={p.code}>{p.colour}</option>)}

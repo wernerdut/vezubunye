@@ -10,7 +10,7 @@ import type { TabProps } from '../NodePage'
 const rand = (n: number) => `R ${n.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`
 const blankLine = (code: string): DNLine => ({ tank_type: code, grade: 'A', quantity: 1, unit_price: 0 })
 
-export default function Deliveries({ nodeId, config, user }: TabProps) {
+export default function Deliveries({ nodeId, config, user, node }: TabProps) {
   const [notes, setNotes] = useState<DeliveryNote[]>([])
   const [stock, setStock] = useState<FGPosition[]>([])
   const [form, setForm] = useState({ date: new Date().toISOString().slice(0, 10), client_name: '', client_details: '' })
@@ -24,7 +24,7 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
   const [reissuing, setReissuing] = useState<DeliveryNote | null>(null)
   const [reissueReason, setReissueReason] = useState('')
 
-  const canCreate = user.role === 'operations' || user.role === 'admin'
+  const canCreate = (user.role === 'operations' || user.role === 'admin') && !node.partner_app_live
   const canFix = canCorrect(user, 'admin')
   const names = Object.fromEntries(config.tank_types.map((t) => [t.code, t.name]))
   const vatRate = config.vat_rate ?? 15
@@ -234,6 +234,7 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
                   <th className="th text-right">Total</th>
                   <th className="th text-right">Paid</th>
                   <th className="th">Status</th>
+                  <th className="th">Delivery</th>
                   <th className="th">Docs</th>
                   <th className="th"></th>
                   {canFix && <th className="th"></th>}
@@ -254,6 +255,11 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
                       <td className="td text-right font-semibold">{rand(n.total ?? 0)}</td>
                       <td className="td text-right text-gray-500">{rand(n.amount_paid ?? 0)}</td>
                       <td className="td"><StatusBadge status={n.status || 'unpaid'} /></td>
+                      <td className="td text-xs text-gray-600">
+                        {n.order_number && <div>Order {n.order_number}</div>}
+                        {n.origin !== 'internal' && n.delivery_status && <div>{n.delivery_status.replace(/_/g, ' ')}{n.driver?.name ? ` · ${n.driver.name}` : ''}{n.pod ? ' · POD' : ''}</div>}
+                        {n.collect_amount != null && <div>COD {rand(n.collect_amount)}{n.collection ? (n.collection.method === 'not_collected' ? ' · not collected' : ` · collected ${rand(n.collection.amount || 0)}`) : ''}</div>}
+                      </td>
                       <td className="td">
                         <button className={`flex items-center gap-1 font-semibold ${openId === n._id ? 'text-brand-blue' : 'text-brand-light'}`}
                                 title="Attach / view documents" onClick={() => toggleDocs(n._id)}>
@@ -265,7 +271,7 @@ export default function Deliveries({ nodeId, config, user }: TabProps) {
                     </tr>
                     {openId === n._id && (
                       <tr>
-                        <td className="td bg-gray-50" colSpan={canFix ? 10 : 9}>
+                        <td className="td bg-gray-50" colSpan={canFix ? 11 : 10}>
                           <div className="text-xs font-semibold text-gray-600 mb-1">Documents for {n.dn_number} <span className="font-normal text-gray-400">(invoice, proof of payment, etc.)</span></div>
                           {(docs[n._id] || []).length === 0 && <p className="text-sm text-gray-400 mb-1">No documents yet.</p>}
                           <ul className="space-y-1 mb-2">

@@ -78,7 +78,8 @@ async def order_rows(node_id: str) -> list[dict]:
                          "delivery_status": d.get("delivery_status"), "void": bool(d.get("void")),
                          "driver": (d.get("driver") or {}).get("name"), "pod": bool(d.get("pod")),
                          "collect_amount": d.get("collect_amount"),
-                         "collected": (d.get("collection") or {}).get("amount")} for d in dns],
+                         "collected": (d.get("collection") or {}).get("amount"),
+                         "invoiced": bool(d.get("invoice_id")) or o["payment_basis"] != "terms"} for d in dns],
                 "invoices": [{"_id": i["_id"], "number": i["display_number"], "date": i["date"],
                               "total": i["total"], "paid": i.get("amount_paid", 0), "status": i["status"]}
                              for i in invs],

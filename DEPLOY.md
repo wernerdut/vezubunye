@@ -65,3 +65,10 @@ works in place of the www A record.)
 3. Download the blank Daily Capture Sheet PDF.
 4. Key a test capture with an intentional 1 kg powder gap → confirm the flag raises, then resolve it with a note.
 5. Delete the test data from Atlas or keep it as the audit trail of go-live testing.
+
+## 6. Partner apps (Brief 2)
+
+See [guides/PARTNER_APP_SETUP.md](guides/PARTNER_APP_SETUP.md): the `vezubunye-partner`
+Vercel project (root `partner/`, Vite preset, no `VITE_API_URL` needed: `/api` is rewritten to
+the API), new Railway variables (`PARTNER_JWT_SECRET`, `SECRETS_ENC_KEY`, `PUBLIC_API_URL`,
+Xero, Anthropic), and one CNAME per node at clusterdns (`makx -> cname.vercel-dns.com`).

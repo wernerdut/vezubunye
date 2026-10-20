@@ -1433,6 +1433,23 @@ async def node_commercial_board(node_id: str, kind: str, filters: str = "{}", so
     return {"rows": board.public(rows), "totals": board.totals(kind, rows)}
 
 
+@app.get("/api/nodes/{node_id}/customers/{customer_id}/statement.pdf")
+async def internal_statement(node_id: str, customer_id: str, start: Optional[str] = None, end: Optional[str] = None,
+                             user: dict = Depends(auth.current_user)):
+    """The same partner-branded statement the node's app prints."""
+    import partner_pdf
+    import xero_mt
+    auth.check_node_access(user, node_id)
+    node = await _get_node(node_id)
+    cfg = await _get_cfg(node_id)
+    c = await commerce.get_customer(node_id, customer_id)
+    end = end or commerce.today()
+    st = await board.statement(node_id, customer_id, start or commerce.add_days(end, -90), end)
+    pdf = partner_pdf.statement({**node, "_logo_png": await xero_mt.logo_png(node_id)}, cfg, c, st)
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="Statement {c["name"]}.pdf"'})
+
+
 @app.get("/api/nodes/{node_id}/commercial/{collection}")
 async def node_commercial_records(node_id: str, collection: str, user: dict = Depends(auth.current_user)):
     """Quotes, orders, customers, cash, bills and debtors of a node, read-only."""

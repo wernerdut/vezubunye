@@ -6,7 +6,7 @@ import type { ParaffinData, PowderData } from '../../types'
 import type { TabProps } from '../NodePage'
 import Fittings from './Fittings'
 
-export default function Powder({ nodeId, config, user }: TabProps) {
+export default function Powder({ nodeId, config, user, node }: TabProps) {
   const [data, setData] = useState<PowderData | null>(null)
   const [paraffin, setParaffin] = useState<ParaffinData | null>(null)
   const [adj, setAdj] = useState({ date: new Date().toISOString().slice(0, 10), powder_type: '', scope: 'warehouse', kg: '', notes: '' })
@@ -169,7 +169,7 @@ export default function Powder({ nodeId, config, user }: TabProps) {
       </div>
 
       <div className="border-t border-gray-200 pt-2" />
-      <Fittings nodeId={nodeId} config={config} user={user} />
+      <Fittings nodeId={nodeId} config={config} user={user} node={node} />
     </div>
   )
 }

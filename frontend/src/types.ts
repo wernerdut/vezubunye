@@ -20,6 +20,10 @@ export interface NodeInfo {
   location: string
   prefix?: string
   status: 'active' | 'inactive'
+  slug?: string
+  partner_app_live?: boolean
+  branding?: { display_name?: string; colors?: Record<string, string> }
+  company?: Record<string, any>
 }
 
 export interface TankType {
@@ -48,8 +52,19 @@ export interface Tolerances {
   fittings_qty: number
 }
 
+export interface NodeColour {
+  code: string
+  name: string
+  swatch_hex: string
+  availability: string
+  powder_product: string
+}
+
 export interface NodeConfig {
   node_id: string
+  colours?: NodeColour[]
+  track_colour_stock?: boolean
+  commercial_model?: 'fenix_owns_tanks' | 'powder_sale'
   tank_types: TankType[]
   material_cost_per_kg?: number
   b_grade_exworks_pct: number
@@ -77,6 +92,7 @@ export interface Capture {
 export interface ProductionLine {
   tank_type: string
   colour: string
+  tank_colour?: string
   quantity_a: number
   quantity_b: number
   quantity_reject: number
@@ -141,6 +157,7 @@ export interface FittingsData {
 
 export interface FGPosition {
   tank_type: string
+  colour?: string
   grade: 'A' | 'B'
   floor: number
   store: number
@@ -214,6 +231,14 @@ export interface DeliveryNote {
   void?: VoidStamp
   replaces?: string
   superseded_by?: string
+  order_id?: string
+  order_number?: string | null
+  delivery_status?: string
+  driver?: { name: string; phone: string } | null
+  pod?: { receiver_name: string; at: string } | null
+  collect_amount?: number | null
+  collection?: { method: string; amount?: number; reason?: string } | null
+  origin?: string
 }
 
 export interface DeliveryDoc {

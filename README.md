@@ -20,8 +20,21 @@ Hard rules (zero tolerance, no flag auto-clears):
 ## Stack
 
 - `backend/` — FastAPI + MongoDB Atlas (motor), ReportLab PDFs, JWT auth. Deployed on Railway.
-- `frontend/` — React + TypeScript + Vite + Tailwind. Deployed on Vercel.
-- `guides/` — specs and design docs.
+  One service, three API surfaces: `/api/*` (internal), `/api/p/*` (partner apps), `/api/d/*` (driver links).
+- `frontend/` — the internal app (vezubunye.com). React + TypeScript + Vite + Tailwind. Vercel.
+- `partner/` — the partner app, one per node at `<slug>.vezubunye.com`, branded as the
+  partner's own business. Vercel project `vezubunye-partner`.
+- `guides/` — specs and design docs. Partner app setup: [guides/PARTNER_APP_SETUP.md](guides/PARTNER_APP_SETUP.md).
+
+## Partner apps (Brief 2)
+
+Each node runs its commercial side in its own app: customers and delivery sites, quotes,
+orders delivered in parts, invoices, payments (Yoco link or card machine, cash, EFT, terms,
+pay on delivery), driver dispatch over WhatsApp, cash control, debtors and statements, bills,
+production capture, and the management dashboard. The partner app is the system of record for
+commercial work; Vezubunye reconciles the same records (one database, shared services in
+`commerce.py`, `board.py`, `capture.py`). Partners see only their node, never Fenix cost or margin.
+Makulu Tanks (`makx`) is the first node.
 
 ## Local dev
 
@@ -41,8 +54,13 @@ cd frontend
 npm install
 npm run dev                          # http://localhost:5173 (proxies /api to :8000)
 
+# partner app (dev: ?slug=makx picks the node)
+cd partner
+npm install
+npm run dev                          # http://localhost:5174/?slug=makx
+
 # tests
-cd backend && .venv/bin/python -m pytest test_chain.py -v
+cd backend && .venv/bin/python -m pytest test_chain.py test_partner.py -v
 ```
 
 ## Roles at launch

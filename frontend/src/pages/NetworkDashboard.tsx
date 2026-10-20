@@ -10,10 +10,12 @@ const rand = (n: number) => `R ${n.toLocaleString('en-ZA', { minimumFractionDigi
 export default function NetworkDashboard({ user }: { user: User }) {
   const [data, setData] = useState<NetworkDashboardData | null>(null)
   const [error, setError] = useState('')
+  const [commercial, setCommercial] = useState<any[] | null>(null)
 
   useEffect(() => {
     api.get('/api/dashboard/network').then((r) => setData(r.data)).catch((e) => setError(errMsg(e)))
-  }, [])
+    if (user.role !== 'operations') api.get('/api/network/commercial').then((r) => setCommercial(r.data)).catch(() => undefined)
+  }, [user.role])
 
   if (error) return <p className="text-brand-red">{error}</p>
   if (!data) return <p className="text-gray-400">Loading…</p>
@@ -78,6 +80,24 @@ export default function NetworkDashboard({ user }: { user: User }) {
         ))}
         {data.nodes.length === 0 && <p className="text-sm text-gray-400">No active nodes.</p>}
       </div>
+
+      {commercial && commercial.length > 0 && (
+        <div className="mt-8">
+          <h2 className="font-headline text-2xl text-brand-blue mb-2">Sales across the network</h2>
+          <div className="card overflow-x-auto p-0">
+            <table className="w-full text-sm">
+              <thead><tr>{['Node', 'Invoiced', 'Collected', 'Outstanding', 'COD not collected', 'Cash not banked', 'Refund due', 'Fenix draw due', 'Open controls'].map((h) => <th key={h} className="th">{h}</th>)}</tr></thead>
+              <tbody>{commercial.map((n) => (
+                <tr key={n.node_id}>
+                  <td className="td font-semibold"><Link to={`/node/${n.node_id}/commercial`} className="text-brand-blue">{n.name}</Link>{n.partner_app_live ? '' : <span className="ml-1 text-xs text-gray-400">(app not live)</span>}</td>
+                  {['invoiced', 'collected', 'outstanding', 'cod_not_collected', 'cash_not_banked', 'refund_due', 'fenix_draw_due'].map((k) => <td key={k} className="td text-right">{rand(n[k])}</td>)}
+                  <td className="td text-xs">{Object.entries(n.open_flags).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ') || 'none'}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

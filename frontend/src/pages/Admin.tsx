@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import PartnerApps from '../components/PartnerApps'
 import { api, errMsg } from '../api'
 import { SectionTitle, StatusBadge } from '../components/ui'
 import type { MonthlyReport, NodeConfig, NodeInfo, TankType, User } from '../types'
@@ -127,6 +128,8 @@ export default function Admin() {
           </table>
         </div>
       </div>
+
+      {nodes.length > 0 && <PartnerApps nodes={nodes} onChange={() => api.get('/api/nodes').then((r) => setNodes(r.data))} />}
 
       {config && (
         <div>
