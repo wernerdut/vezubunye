@@ -78,4 +78,7 @@ On startup the backend runs `migrate_brief2.run()` (idempotent):
   distinct client names become customers on terms; matched payments become allocations;
 - Makulu is seeded if absent.
 The existing invoice index is rebuilt with a partial filter (legacy invoices carry no number).
-Take an Atlas snapshot before the first deploy of this branch.
+Atlas free tier has no snapshots, so before the first migration the backend copies
+delivery_notes, payments, invoices, nodes, node_config and counters into
+`backup_brief2_<name>` in the same database (once; the migration does not run if a copy is
+incomplete). To roll back: restore those collections from the copies.

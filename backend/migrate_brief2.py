@@ -236,6 +236,34 @@ async def seed_makulu() -> list[str]:
     return done
 
 
+# Collections the migration edits in place (new fields on existing documents) plus the config
+# around them. Atlas free tier has no snapshots, so the first run copies them, untouched, into
+# backup_brief2_<name> in the same database. Restoring is a rename back.
+BACKUP_COLLECTIONS = ("delivery_notes", "payments", "invoices", "nodes", "node_config", "counters")
+BACKUP_MARKER = "backup:brief2"
+
+
+async def backup_once() -> dict:
+    """Copy the collections before the first migration. Runs once (marker in counters); if the
+    copy does not match the source count, the migration does not run."""
+    if await db.counters().find_one({"_id": BACKUP_MARKER}):
+        return {"skipped": "already backed up"}
+    counts = {}
+    for name in BACKUP_COLLECTIONS:
+        src, dst = db.db()[name], db.db()[f"backup_brief2_{name}"]
+        await dst.delete_many({})
+        docs = [d async for d in src.find({})]
+        if docs:
+            await dst.insert_many(docs)
+        n_src, n_dst = await src.count_documents({}), await dst.count_documents({})
+        if n_src != n_dst:
+            raise RuntimeError(f"backup of {name} incomplete ({n_dst} of {n_src}); migration not run")
+        counts[name] = n_dst
+    await db.counters().insert_one({"_id": BACKUP_MARKER, "at": datetime.utcnow(), "counts": counts})
+    return counts
+
+
 async def run() -> dict:
-    out = {"delivery_notes": await migrate_delivery_notes(), "makulu": await seed_makulu()}
+    backup = await backup_once()
+    out = {"backup": backup, "delivery_notes": await migrate_delivery_notes(), "makulu": await seed_makulu()}
     return out

@@ -734,6 +734,10 @@ async def test_legacy_migration_and_cutover(client):
                                     "created_at": datetime.utcnow()})
     out = await migrate_brief2.migrate_delivery_notes()
     assert out["orders"] >= 1 and out["allocations"] >= 1
+    # the module fixture's first run copied the pre-migration collections once
+    marker = await db.counters().find_one({"_id": migrate_brief2.BACKUP_MARKER})
+    assert marker and "delivery_notes" in marker["counts"]
+    assert (await migrate_brief2.backup_once()) == {"skipped": "already backed up"}
     dn = await db.delivery_notes().find_one({"_id": dn_id})
     inv = await db.invoices().find_one({"dn_id": dn_id})
     order = await db.orders().find_one({"_id": dn["order_id"]})
