@@ -423,6 +423,8 @@ async def post_invoice(invoice_id: str) -> dict:
     import partner_pdf
     cfg = await commerce.get_cfg(node_id)
     settings = c.get("settings") or default_settings()
+    if inv.get("void") and not (inv.get("xero") or {}).get("invoice_id"):
+        return {"skipped": "void, never posted"}
     try:
         if not (inv.get("xero") or {}).get("invoice_id"):
             cust = await db.customers().find_one({"_id": inv["customer_id"]})
@@ -440,7 +442,7 @@ async def post_invoice(invoice_id: str) -> dict:
             pdf = partner_pdf.invoice(node, cfg, inv, cust)
             await request(node_id, "PUT", f"Invoices/{x['InvoiceID']}/Attachments/{inv['invoice_number']}.pdf",
                           content=pdf, headers={"Content-Type": "application/pdf"})
-        if (inv.get("xero") or {}).get("void_pending") or inv.get("void"):
+        if ((inv.get("xero") or {}).get("void_pending") or inv.get("void")) and not (inv.get("xero") or {}).get("void_sent"):
             xid = (await db.invoices().find_one({"_id": invoice_id}))["xero"]["invoice_id"]
             await request(node_id, "POST", f"Invoices/{xid}", json_body={"Invoices": [{"InvoiceID": xid, "Status": "VOIDED"}]})
             await db.invoices().update_one({"_id": invoice_id}, {"$set": {"xero.void_pending": False, "xero.void_sent": True}})
@@ -570,7 +572,9 @@ async def process_queue(node_id: str) -> dict:
         return out
     async for inv in db.invoices().find({"node_id": node_id, "legacy": {"$ne": True},
                                          "$or": [{"xero.status": {"$in": ["not_posted", "waiting"]}, **ACTIVE},
-                                                 {"xero.void_pending": True}]}):
+                                                 {"xero.void_pending": True},
+                                                 {"void": {"$exists": True}, "xero.invoice_id": {"$exists": True},
+                                                  "xero.void_sent": {"$ne": True}}]}):
         if (await post_invoice(inv["_id"])).get("posted"):
             out["invoices"] += 1
     async for p in db.payments().find({"node_id": node_id, "xero_status": {"$in": ["queued", "waiting"]}, **ACTIVE}):

@@ -506,7 +506,20 @@ async def create_order(payload: dict, user: dict = Depends(current_partner)):
     cust = await commerce.get_customer(node["node_id"], payload.get("customer_id", ""))
     async with corrections.txn() as s:
         o = await commerce.create_order(node, cfg, cust, payload, user, session=s)
+    await _after_new_invoices(node, o, user)
     return wall(await commerce.order_view(node["node_id"], o), cfg, user["role"])
+
+
+async def _after_new_invoices(node: dict, order: dict, user: dict):
+    """A pay-first order's invoice gets its pay link at once (sent later from the order), and
+    every new invoice goes to Xero when the node is connected."""
+    async for inv in db.invoices().find({"order_id": order["_id"], **ACTIVE, "xero.status": "not_posted"}):
+        if order["payment_basis"] == "upfront" and not order.get("pay_on_delivery") and inv["dn_id"] is None:
+            try:
+                await yoco.pay_link(node, inv, user)
+            except HTTPException:
+                pass    # no Yoco on this node: cash, card machine and EFT still work
+        await _xero_invoice(inv["_id"])
 
 
 @router.get("/orders/{order_id}")
@@ -523,6 +536,9 @@ async def edit_order(order_id: str, payload: dict, user: dict = Depends(current_
     if o.get("status") != "open":
         raise HTTPException(400, "Only an open order is edited")
     await commerce.edit_order_lines(node, o, payload.get("lines") or [], user, require_reason(payload))
+    async for inv in db.invoices().find({"order_id": order_id}):
+        if inv.get("void") or (inv.get("xero") or {}).get("status") == "not_posted":
+            await _xero_invoice(inv["_id"])
     return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], order_id)), cfg, user["role"])
 
 
@@ -551,6 +567,8 @@ async def schedule_delivery(order_id: str, payload: dict, user: dict = Depends(c
         await audit.log(user, node["node_id"], "create", "delivery_notes", dn["_id"], after=dn, session=s)
     await commerce.store_dn_pdf(await node_for_pdf(node), cfg, dn)
     await commerce.refresh_order_status(o["_id"])
+    if inv:
+        await _xero_invoice(inv["_id"])
     out = wall(await commerce.dn_or_404(node["node_id"], dn["_id"]), cfg, user["role"])
     return {**out, "invoice": wall(inv, cfg, user["role"]) if inv else None}
 
@@ -592,6 +610,7 @@ async def quick_sale(payload: dict, user: dict = Depends(current_partner)):
                 "release_reason": payload.get("release_reason")}, user, session=s,
                 extra={"delivery_status": "delivered", "collected_at_factory": True})
         await commerce.store_dn_pdf(await node_for_pdf(node), cfg, dn)
+    await _xero_invoice(inv["_id"])
     if p:
         await _xero_payment(node["node_id"], p["_id"])
     await commerce.refresh_order_status(o["_id"])

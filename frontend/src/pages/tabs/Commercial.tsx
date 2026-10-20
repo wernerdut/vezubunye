@@ -100,7 +100,8 @@ export default function Commercial({ nodeId }: TabProps) {
         <div className="card overflow-x-auto p-0">
           {view === 'quotes' && <Table heads={['Quote', 'Date', 'Customer', 'Total', 'Valid until', 'Status']} rows={rows.map((q: any) => [q.quote_number + (q.rev > 1 ? ` rev ${q.rev}` : ''), q.date, q.customer_name, rand(q.total), q.valid_until, q.status])} />}
           {view === 'customers' && <Table heads={['Customer', 'Phone', 'Basis', 'Tier', 'Sites']} rows={rows.map((c: any) => [c.name, c.phone, c.payment_basis, c.price_tier, (c.sites || []).map((s: any) => s.label).join(', ')])} />}
-          {view === 'bills' && <Table heads={['Bill', 'Supplier', 'Invoice', 'Date', 'Total', 'Status', 'Captured by']} rows={rows.map((b: any) => [b.bill_number, b.supplier_name, b.invoice_number, b.invoice_date, rand(b.total_incl), b.status, `${b.captured_by}${b.captured_by_employer === 'fenix' ? ' (Fenix)' : ''}`])} />}
+          {view === 'bills' && <Table heads={['Bill', 'Supplier', 'Invoice', 'Date', 'Total', 'Status', 'Captured by', 'Documents']} rows={rows.map((b: any) => [b.bill_number, b.supplier_name, b.invoice_number, b.invoice_date, rand(b.total_incl), b.status, `${b.captured_by}${b.captured_by_employer === 'fenix' ? ' (Fenix)' : ''}`,
+            <span key="d" className="flex gap-2">{(b.documents || []).map((d: string, i: number) => <button key={d} className="text-brand-light underline" onClick={() => openAuthed(`/api/bill-documents/${d}`)}>{i + 1}</button>)}</span>])} />}
           {view === 'cash' && <>
             <SectionTitle>Not banked</SectionTitle>
             <Table heads={['Holder', 'Receipts', 'Since', 'Amount']} rows={rows.on_hand.map((h: any) => [`${h.holder.name} (${h.holder.type})`, h.receipts, h.oldest, rand(h.amount)])} />

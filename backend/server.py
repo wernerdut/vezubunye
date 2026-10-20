@@ -1466,6 +1466,18 @@ async def node_commercial_records(node_id: str, collection: str, user: dict = De
     return await _all(colls[collection], {"node_id": node_id}, sort=[("date", -1)])
 
 
+@app.get("/api/bill-documents/{doc_id}")
+async def bill_document(doc_id: str, user: dict = Depends(auth.require_role("admin", "audit"))):
+    """Fenix sees every node's bills, documents included, read-only."""
+    import bills
+    d = await db.bill_documents().find_one({"_id": doc_id}, {"node_id": 1})
+    if not d:
+        raise HTTPException(404, "Document not found")
+    auth.check_node_access(user, d["node_id"])
+    content, name, mime = await bills.load_document(doc_id)
+    return Response(content, media_type=mime, headers={"Content-Disposition": f'inline; filename="{name}"'})
+
+
 @app.get("/api/network/commercial")
 async def network_commercial(user: dict = Depends(auth.require_role("admin", "audit"))):
     """Across nodes: invoiced, collected, outstanding, COD not collected, cash not banked,
