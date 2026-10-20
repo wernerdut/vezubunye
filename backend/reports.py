@@ -33,7 +33,7 @@ def _merge(into: dict, src: dict) -> None:
     into["kg"] += src["kg"]
 
 
-def _add_run(acc: dict, r: dict, tmap: dict, black_code: str | None) -> None:
+def _add_run(acc: dict, r: dict, tmap: dict, black_code: str | None, cfg: dict | None = None) -> None:
     t = tmap.get(r["tank_type"])
     n = r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]
     bt = acc["by_type"].setdefault(r["tank_type"], {"a": 0, "b": 0, "reject": 0, "total": 0})
@@ -43,7 +43,7 @@ def _add_run(acc: dict, r: dict, tmap: dict, black_code: str | None) -> None:
         acc["kg"] += n * (t["weight"] + t["lid"])
         if black_code:
             acc["by_colour"][black_code] = acc["by_colour"].get(black_code, 0.0) + n * (t["weight"] / 2 + t["lid"])
-        col = r.get("colour") or ""
+        col = recon.floor_key(cfg, r.get("colour") or "") if cfg else (r.get("colour") or "")
         if col:
             acc["by_colour"][col] = acc["by_colour"].get(col, 0.0) + n * (t["weight"] / 2)
 
@@ -99,10 +99,11 @@ async def network_dashboard(node_access, include_cost: bool) -> dict:
 async def node_dashboard(node_id: str, cfg: dict, year: str, include_cost: bool) -> dict:
     """Month-by-month for `year`, plus year totals and all-time totals."""
     tmap = recon.tank_map(cfg)
-    black_code = next(iter(recon.black_codes(cfg)), None)
+    black_code = recon.black_pool_key(cfg)
     mcost = cfg.get("material_cost_per_kg", 0.0)
     names = {t["code"]: t["name"] for t in cfg["tank_types"]}
     colour_name = {p["code"]: (p.get("colour") or p["code"]) for p in cfg.get("powder_products", [])}
+    colour_name[recon.BLACK_POOL] = "Black"
 
     runs = [r async for r in db.production_runs().find({"node_id": node_id, **ACTIVE})]
     disp = [e async for e in db.finished_goods().find({"node_id": node_id, "type": "dispatched", **ACTIVE})]
@@ -113,10 +114,10 @@ async def node_dashboard(node_id: str, cfg: dict, year: str, include_cost: bool)
     year_acc = _empty()
     all_acc = _empty()
     for r in runs:
-        _add_run(all_acc, r, tmap, black_code)
+        _add_run(all_acc, r, tmap, black_code, cfg)
         if r["date"][:4] == year:
-            _add_run(year_acc, r, tmap, black_code)
-            _add_run(months.setdefault(r["date"][:7], _empty()), r, tmap, black_code)
+            _add_run(year_acc, r, tmap, black_code, cfg)
+            _add_run(months.setdefault(r["date"][:7], _empty()), r, tmap, black_code, cfg)
     for e in disp:
         all_acc["sold"] += e["quantity"]
         if e["date"][:4] == year:
@@ -163,13 +164,13 @@ async def node_daily(node_id: str, cfg: dict, month: str, include_cost: bool) ->
     can show production for each day. Each week carries a subtotal; the month total caps it.
     """
     tmap = recon.tank_map(cfg)
-    black_code = next(iter(recon.black_codes(cfg)), None)
+    black_code = recon.black_pool_key(cfg)
     mcost = cfg.get("material_cost_per_kg", 0.0)
     names = {t["code"]: t["name"] for t in cfg["tank_types"]}
 
     day_acc: dict = {}
     async for r in db.production_runs().find({"node_id": node_id, "date": {"$regex": f"^{month}"}, **ACTIVE}):
-        _add_run(day_acc.setdefault(r["date"], _empty()), r, tmap, black_code)
+        _add_run(day_acc.setdefault(r["date"], _empty()), r, tmap, black_code, cfg)
     async for e in db.finished_goods().find(
             {"node_id": node_id, "type": "dispatched", "date": {"$regex": f"^{month}"}, **ACTIVE}):
         day_acc.setdefault(e["date"], _empty())["sold"] += e["quantity"]

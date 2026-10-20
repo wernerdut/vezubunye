@@ -11,8 +11,8 @@ Rules:
   R1  powder floor pools (black, colour) must never go negative -> powder_variance.
   R1b tank floor (booked <= moulded) and FG store (dispatched <= booked) -> finished_goods_mismatch.
   Rf  fittings issued vs tanks produced x fittings_per_tank -> fittings_variance.
-  R3  every delivery note must link to an invoice.
-  R4  every invoice must match a payment; unpaid past terms / short / over flagged.
+  R3  per order line, delivered must not exceed invoiced by the end of the next SAST day.
+  R4  every invoice is paid by its due date; unpaid past due / short / over flagged.
   R7  physical counts reconcile store + floor to system; variance flags.
 
 Every derivation reads only ACTIVE rows: a voided record never counts.
@@ -72,6 +72,52 @@ def black_codes(cfg: dict) -> set[str]:
     return {p["code"] for p in cfg.get("powder_products", []) if p.get("is_black")}
 
 
+BLACK_POOL = "BLACK_POOL"
+
+
+def black_pool_key(cfg: dict) -> str | None:
+    """Black is a pool, not one product. Every is_black product feeds one floor balance for R1.
+    A node with a single black product keeps that product's code as the key, so its numbers
+    and flags read exactly as before; several black grades pool under BLACK_POOL."""
+    blacks = sorted(black_codes(cfg))
+    if not blacks:
+        return None
+    return blacks[0] if len(blacks) == 1 else BLACK_POOL
+
+
+def floor_key(cfg: dict, powder_type: str) -> str:
+    """Floor balance key for a powder grade: black grades map to the pool."""
+    if powder_type in black_codes(cfg):
+        return black_pool_key(cfg) or powder_type
+    return powder_type
+
+
+# ---------- colour as a stock dimension ---------- #
+
+def track_colour(cfg: dict) -> bool:
+    return bool(cfg.get("track_colour_stock"))
+
+
+def run_colour(cfg: dict, run: dict) -> str:
+    """The tank colour a production run made. New captures store it; older runs carry only the
+    outer powder code, mapped back through the node's colours."""
+    if run.get("tank_colour"):
+        return run["tank_colour"]
+    pc = run.get("colour") or ""
+    for c in cfg.get("colours", []) or []:
+        if c.get("powder_product") and c["powder_product"] == pc:
+            return c["code"]
+    return ""
+
+
+def fg_key(cfg: dict, tank_type: str, grade: str, colour: str | None = "") -> tuple:
+    """(type, grade) as Brief 1, or (type, colour, grade) when the node counts stock by colour.
+    Rows written before colour existed sit in the unspecified-colour bucket ""."""
+    if track_colour(cfg):
+        return (tank_type, colour or "", grade)
+    return (tank_type, grade)
+
+
 async def total_moulded(node_id: str, up_to_date: str | None = None) -> dict:
     """code -> {a, b, reject, total} moulded (all grades, all colours)."""
     filt: dict = {"node_id": node_id, **corrections.ACTIVE}
@@ -108,8 +154,7 @@ async def powder_consumed(node_id: str, cfg: dict, up_to_date: str | None = None
     """powder_type -> kg consumed by moulding. Each tank (body W, lid L) of colour C draws
     W/2 of C plus W/2 + L of black. Black is drawn by every tank regardless of colour."""
     tmap = tank_map(cfg)
-    blacks = black_codes(cfg)
-    black_code = next(iter(blacks), None)
+    black_code = black_pool_key(cfg)
     consumed: dict = {}
     filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
@@ -121,22 +166,24 @@ async def powder_consumed(node_id: str, cfg: dict, up_to_date: str | None = None
         n = r["quantity_a"] + r["quantity_b"] + r["quantity_reject"]
         if black_code:
             consumed[black_code] = consumed.get(black_code, 0.0) + n * (t["weight"] / 2 + t["lid"])
-        colour = r.get("colour") or ""
+        colour = floor_key(cfg, r.get("colour") or "")
         if colour:
             consumed[colour] = consumed.get(colour, 0.0) + n * (t["weight"] / 2)
     return consumed
 
 
 async def powder_floor(node_id: str, cfg: dict, up_to_date: str | None = None) -> dict:
-    """powder_type -> floor kg = issued - consumed +/- floor adjustments. One balance per grade,
-    because each colour is a distinct material that is issued and drawn separately."""
+    """powder_type -> floor kg = issued - consumed +/- floor adjustments. One balance per colour
+    grade, because each colour is a distinct material that is issued and drawn separately.
+    Black grades share one pool (black_pool_key): any black grade issued is drawn down by the
+    inner layers, lids and black outer layers of every tank moulded."""
     issued: dict = {}
     adj: dict = {}
     filt: dict = {"node_id": node_id, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     async for e in db.powder_ledger().find(filt):
-        pt = e.get("powder_type", "?")
+        pt = floor_key(cfg, e.get("powder_type", "?"))
         if e["type"] == "issued":
             issued[pt] = issued.get(pt, 0.0) + e["kg"]
         elif e["type"] == "count_adjustment" and e.get("scope") == "floor":
@@ -154,6 +201,7 @@ async def check_powder_floor(node_id: str, date: str, capture_id: str) -> list[s
     cfg = await get_config(node_id)
     floor = await powder_floor(node_id, cfg, date)
     names = {p["code"]: (p.get("colour") or p["code"]) for p in cfg.get("powder_products", [])}
+    names[BLACK_POOL] = "Black (all black grades)"
     raised = []
     for pt, kg in floor.items():
         if kg < -EPS:
@@ -248,26 +296,40 @@ async def check_fittings(node_id: str, date: str, capture_id: str) -> list[str]:
 
 # ---------- tank floor & finished-goods warehouse ---------- #
 
-async def _fg_ledger_sum(node_id: str, move_type: str, up_to_date: str | None = None) -> dict:
+async def _cfg_or_empty(node_id: str, cfg: dict | None) -> dict:
+    if cfg is not None:
+        return cfg
+    return await db.node_config().find_one({"node_id": node_id}) or {}
+
+
+async def _fg_ledger_sum(node_id: str, move_type: str, up_to_date: str | None = None,
+                         cfg: dict | None = None) -> dict:
+    cfg = await _cfg_or_empty(node_id, cfg)
     filt: dict = {"node_id": node_id, "type": move_type, **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     out: dict = {}
     async for e in db.finished_goods().find(filt):
-        key = (e["tank_type"], e["grade"])
+        key = fg_key(cfg, e["tank_type"], e["grade"], e.get("colour"))
         out[key] = out.get(key, 0) + e["quantity"]
     return out
 
 
-async def tank_floor(node_id: str, up_to_date: str | None = None) -> dict:
-    """(type, grade) -> moulded - booked (tanks on the floor not yet in the store)."""
-    moulded = await total_moulded(node_id, up_to_date)
-    booked = await _fg_ledger_sum(node_id, "booked", up_to_date)
-    adj = {k: v for k, v in (await _fg_adjustments(node_id, "tank_floor", up_to_date)).items()}
+async def tank_floor(node_id: str, up_to_date: str | None = None, cfg: dict | None = None) -> dict:
+    """(type, grade) -> moulded - booked (tanks on the floor not yet in the store).
+    Keyed (type, colour, grade) when the node tracks colour stock."""
+    cfg = await _cfg_or_empty(node_id, cfg)
+    booked = await _fg_ledger_sum(node_id, "booked", up_to_date, cfg)
+    adj = await _fg_adjustments(node_id, "tank_floor", up_to_date, cfg)
     out: dict = {}
-    for code, agg in moulded.items():
-        out[(code, "A")] = out.get((code, "A"), 0) + agg["a"]
-        out[(code, "B")] = out.get((code, "B"), 0) + agg["b"]
+    filt: dict = {"node_id": node_id, **corrections.ACTIVE}
+    if up_to_date:
+        filt["date"] = {"$lte": up_to_date}
+    async for r in db.production_runs().find(filt):
+        col = run_colour(cfg, r)
+        for grade, q in (("A", r["quantity_a"]), ("B", r["quantity_b"])):
+            k = fg_key(cfg, r["tank_type"], grade, col)
+            out[k] = out.get(k, 0) + q
     for key, q in booked.items():
         out[key] = out.get(key, 0) - q
     for key, q in adj.items():
@@ -275,11 +337,13 @@ async def tank_floor(node_id: str, up_to_date: str | None = None) -> dict:
     return out
 
 
-async def fg_warehouse(node_id: str, up_to_date: str | None = None) -> dict:
-    """(type, grade) -> booked - dispatched (the finished-goods store)."""
-    booked = await _fg_ledger_sum(node_id, "booked", up_to_date)
-    dispatched = await _fg_ledger_sum(node_id, "dispatched", up_to_date)
-    adj = await _fg_adjustments(node_id, "fg_warehouse", up_to_date)
+async def fg_warehouse(node_id: str, up_to_date: str | None = None, cfg: dict | None = None) -> dict:
+    """(type, grade) -> booked - dispatched (the finished-goods store).
+    Keyed (type, colour, grade) when the node tracks colour stock."""
+    cfg = await _cfg_or_empty(node_id, cfg)
+    booked = await _fg_ledger_sum(node_id, "booked", up_to_date, cfg)
+    dispatched = await _fg_ledger_sum(node_id, "dispatched", up_to_date, cfg)
+    adj = await _fg_adjustments(node_id, "fg_warehouse", up_to_date, cfg)
     out: dict = dict(booked)
     for key, q in dispatched.items():
         out[key] = out.get(key, 0) - q
@@ -288,14 +352,16 @@ async def fg_warehouse(node_id: str, up_to_date: str | None = None) -> dict:
     return {k: v for k, v in out.items()}
 
 
-async def _fg_adjustments(node_id: str, scope: str, up_to_date: str | None = None) -> dict:
+async def _fg_adjustments(node_id: str, scope: str, up_to_date: str | None = None,
+                          cfg: dict | None = None) -> dict:
+    cfg = await _cfg_or_empty(node_id, cfg)
     filt: dict = {"node_id": node_id, "type": "count_adjustment", "scope": scope,
                   **corrections.ACTIVE}
     if up_to_date:
         filt["date"] = {"$lte": up_to_date}
     out: dict = {}
     async for e in db.finished_goods().find(filt):
-        key = (e["tank_type"], e["grade"])
+        key = fg_key(cfg, e["tank_type"], e["grade"], e.get("colour"))
         out[key] = out.get(key, 0) + e["quantity"]
     return out
 
@@ -305,52 +371,34 @@ async def check_finished_goods(node_id: str, date: str, reference: dict | None =
     raised = []
     for label, pos in (("on the floor", await tank_floor(node_id, date)),
                        ("in the store", await fg_warehouse(node_id, date))):
-        for (tank_type, grade), qty in pos.items():
+        for key, qty in pos.items():
+            tank_type, grade = key[0], key[-1]
+            colour = key[1] if len(key) == 3 else None
             if qty < 0:
+                what = f"{tank_type} {colour + ' ' if colour else ''}grade {grade}"
+                ref = {**(reference or {}), "tank_type": tank_type, "grade": grade, "where": label}
+                if colour is not None:
+                    ref["colour"] = colour
                 raised.append(await raise_flag(
                     node_id, "finished_goods_mismatch",
-                    f"{date}: {tank_type} grade {grade} {label} is {qty} — "
-                    f"more moved out than in. Per-type per-grade ledger broken.",
-                    {**(reference or {}), "tank_type": tank_type, "grade": grade, "where": label}, date))
+                    f"{date}: {what} {label} is {qty} — "
+                    f"more moved out than in. Per-type per-grade ledger broken.", ref, date))
     return raised
 
 
-# ---------- payment sweeps ---------- #
-
-async def sweep_unpaid_deliveries(node_id: str) -> list[str]:
-    cfg = await get_config(node_id)
-    terms = cfg.get("payment_terms_days", 30)
-    cutoff = (datetime.utcnow() - timedelta(days=terms)).strftime("%Y-%m-%d")
-    raised = []
-    async for dn in db.delivery_notes().find({"node_id": node_id, **corrections.ACTIVE,
-                                              "status": {"$in": ["unpaid", "part_paid"]},
-                                              "date": {"$lt": cutoff}}):
-        fid = await raise_flag(
-            node_id, "delivery_unpaid",
-            f"Delivery {dn['dn_number']} ({dn['date']}, {dn['client_name']}, "
-            f"R{dn.get('total', 0):.2f}) is {dn['status']} past {terms}-day terms.",
-            {"delivery_id": dn["_id"]}, dn["date"])
-        raised.append(fid)
-    return raised
-
-
-async def sweep_unmatched_payments(node_id: str) -> list[str]:
-    raised = []
-    async for p in db.payments().find({"node_id": node_id, "status": "unmatched",
-                                         **corrections.ACTIVE}):
-        fid = await raise_flag(
-            node_id, "payment_unmatched",
-            f"Payment of R{p['amount']:.2f} on {p['date']} (ref '{p['bank_reference']}') "
-            "is not matched to a delivery.",
-            {"payment_id": p["_id"]}, p["date"])
-        raised.append(fid)
-    return raised
-
+# ---------- sweeps (R3, R4 and the Brief 2 controls) ---------- #
 
 async def run_sweeps(node_id: str) -> dict:
+    """R3 (delivered not invoiced), R4 (invoices unpaid past due), unallocated payments, cash
+    not banked, quote expiry. The commercial records live in commerce; imported here lazily
+    because commerce builds on this module."""
+    import commerce
     return {
-        "delivery_unpaid": await sweep_unpaid_deliveries(node_id),
-        "payment_unmatched": await sweep_unmatched_payments(node_id),
+        "invoice_unpaid": await commerce.sweep_invoices_unpaid(node_id),
+        "dn_not_invoiced": await commerce.sweep_dn_not_invoiced(node_id),
+        "payment_unallocated": await commerce.sweep_unallocated(node_id),
+        "cash_not_banked": await commerce.sweep_cash(node_id),
+        "quotes_expired": await commerce.sweep_quotes(node_id),
     }
 
 
@@ -369,9 +417,11 @@ def compute_split(invoice: dict, cfg: dict, amount: float) -> dict:
     vat_factor = 1.0 + cfg.get("vat_rate", 15.0) / 100.0
     fenix = 0.0
     for line in invoice["lines"]:
+        if line.get("kind") == "charge":     # charge lines (delivery etc.) never draw to Fenix
+            continue
         ex = prices.get(line["tank_type"], 0.0)
-        factor = 1.0 if line["grade"] == "A" else b_pct
-        fenix += line["quantity"] * ex * factor
+        factor = 1.0 if line.get("grade", "A") == "A" else b_pct
+        fenix += line.get("quantity", line.get("qty", 0)) * ex * factor
     fenix_incl_vat = fenix * vat_factor
     return {
         "fenix_exworks_value": round(fenix_incl_vat, 2),   # ex-works + VAT (what Fenix draws)

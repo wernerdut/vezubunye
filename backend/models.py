@@ -23,6 +23,12 @@ class NodeIn(BaseModel):
     name: str
     location: str
     status: Literal["active", "inactive"] = "active"
+    # Brief 2: the node's partner app
+    slug: Optional[str] = None            # <slug>.vezubunye.com, unique, lowercase
+    prefix: Optional[str] = None          # document numbers: <PREFIX>-INV-0001
+    partner_app_live: Optional[bool] = None
+    branding: Optional[dict] = None
+    company: Optional[dict] = None
 
 
 class TankType(BaseModel):
@@ -31,13 +37,27 @@ class TankType(BaseModel):
     ex_works_price: float  # ex VAT, Rand
     weight_kg: float       # body weight; 50% colour + 50% black
     lid_weight_kg: float = 1.0  # black lid, same black stock, configurable per tank type
+    kind: Literal["water", "septic"] = "water"
+    capacity_l: Optional[float] = None
+    diameter_mm: Optional[float] = None
+    height_mm: Optional[float] = None
+    allowed_colours: List[str] = []     # empty = all colours
+    active: bool = True
+
+
+class Colour(BaseModel):
+    code: str
+    name: str
+    swatch_hex: str = "#999999"
+    availability: Literal["standard", "on_request"] = "standard"
+    powder_product: str = ""            # outer-layer powder it is moulded from
 
 
 class PowderProduct(BaseModel):
     code: str
     colour: str = ""
     description: str = ""
-    is_black: bool = False  # exactly one product is the black stock; rest are colour
+    is_black: bool = False  # every black product feeds one black pool for R1
 
 
 class FittingType(BaseModel):
@@ -62,6 +82,15 @@ class NodeConfigIn(BaseModel):
     fittings_per_tank: dict = {}        # { tank_code: { fitting_code: qty } }
     paraffin_litres_per_tank: float = 11.0  # release agent drawn per tank moulded
     tolerances: Tolerances = Tolerances()
+    # Brief 2 (left out of a PUT means unchanged)
+    colours: Optional[List[Colour]] = None
+    track_colour_stock: Optional[bool] = None
+    commercial_model: Optional[Literal["fenix_owns_tanks", "powder_sale"]] = None
+    price_tiers: Optional[List[dict]] = None
+    charges: Optional[List[dict]] = None
+    quote_validity_days: Optional[int] = None
+    cash_banking_days: Optional[int] = None
+    drivers: Optional[List[dict]] = None
 
 
 # ---------- daily capture ---------- #
@@ -80,7 +109,8 @@ class FittingMoveLine(BaseModel):
 
 class ProductionLine(BaseModel):
     tank_type: str
-    colour: str = ""          # powder grade moulded (a non-black powder product code)
+    colour: str = ""          # powder grade moulded (outer layer powder product code)
+    tank_colour: str = ""     # the node's colour code; derived from `colour` when blank
     quantity_a: int = 0
     quantity_b: int = 0
     quantity_reject: int = 0
@@ -114,6 +144,7 @@ class CaptureEntriesIn(BaseModel):
 
 class DNLine(BaseModel):
     tank_type: str
+    colour: str = ""
     grade: Literal["A", "B"] = "A"
     quantity: int
     unit_price: float = 0.0   # ex-VAT sale price; tracked in-app to reconcile, never on the PDF
@@ -169,6 +200,9 @@ FlagType = Literal[
     "powder_variance", "fittings_variance", "finished_goods_mismatch",
     "delivery_unpaid", "payment_unmatched",
     "short_paid", "over_paid", "count_mismatch", "post_count_correction",
+    # Brief 2
+    "invoice_unpaid", "dn_not_invoiced", "released_unpaid", "cod_not_collected", "refund_due",
+    "payment_unallocated", "cash_not_banked", "cash_deposit_mismatch",
 ]
 
 
@@ -180,6 +214,7 @@ class FlagResolveIn(BaseModel):
 
 class FGCountLine(BaseModel):
     tank_type: str
+    colour: str = ""
     grade: Literal["A", "B"] = "A"
     quantity: int = 0
 
@@ -210,6 +245,15 @@ class LoginIn(BaseModel):
     password: str
 
 
+class PartnerUserIn(BaseModel):
+    email: str
+    password: Optional[str] = None
+    name: str = ""
+    role: Literal["partner_admin", "partner_staff"] = "partner_staff"
+    employer: Literal["partner", "fenix"] = "partner"
+    active: bool = True
+
+
 class UserIn(BaseModel):
     email: str
     password: Optional[str] = None
@@ -225,6 +269,7 @@ class LedgerAdjustIn(BaseModel):
     scope: Literal["warehouse", "floor"] = "warehouse"  # powder position adjusted
     tank_type: Optional[str] = None   # finished goods / tank-floor adjustment
     grade: Optional[Literal["A", "B"]] = None
+    colour: str = ""
     quantity: Optional[int] = None
     fitting_type: Optional[str] = None  # fittings adjustment
     notes: str = ""

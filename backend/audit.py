@@ -16,6 +16,7 @@ async def log(user: dict, node_id: str, action: str, collection: str,
         "at": datetime.utcnow(),
         "by": user["email"],
         "role": user["role"],
+        "employer": user.get("employer", "fenix" if user["role"] in ("admin", "audit", "operations") else None),
         "action": action,           # create | update | delete | resolve | match | void | edit | unmatch | reissue | reopen
         "collection": collection,
         "doc_id": doc_id,
