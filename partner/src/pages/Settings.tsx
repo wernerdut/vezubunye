@@ -322,8 +322,7 @@ function Xero() {
         {st && <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Post invoices and bills as"><select className="input" value={st.post_status} onChange={(e) => setSt({ ...st, post_status: e.target.value })}><option value="DRAFT">Draft</option><option value="AUTHORISED">Authorised</option></select></Field>
           <Field label="Sales tax type"><select className="input" value={st.tax_type} onChange={(e) => setSt({ ...st, tax_type: e.target.value })}>{taxes.map((t: any) => <option key={t.tax_type} value={t.tax_type}>{t.name}</option>)}</select></Field>
-          {acct('Sales account: water tanks', st.sales_accounts?.water, (v) => setSt({ ...st, sales_accounts: { ...st.sales_accounts, water: v } }))}
-          {acct('Sales account: septic tanks', st.sales_accounts?.septic, (v) => setSt({ ...st, sales_accounts: { ...st.sales_accounts, septic: v } }))}
+          {acct('Sales account', st.sales_accounts?.water, (v) => setSt({ ...st, sales_accounts: { ...st.sales_accounts, water: v, septic: v } }))}
           <Field label="Yoco payments in Xero" hint={(st.yoco_in_xero || 'match') === 'match' ? 'You match each Yoco deposit to its invoice in Xero; the app links it to the Yoco payment.' : 'The app posts each Yoco payment to the clearing account; you reconcile the deposit against it.'}>
             <select className="input" value={st.yoco_in_xero || 'match'} onChange={(e) => setSt({ ...st, yoco_in_xero: e.target.value })}>
               <option value="match">Match deposits to invoices in Xero</option>
