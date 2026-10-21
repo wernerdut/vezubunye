@@ -674,6 +674,50 @@ async def test_xero_pull_skips_our_payments(client):
     await db.xero_connections().delete_one({"node_id": "makulu"})
 
 
+
+async def test_xero_match_mode_links_yoco_not_new_eft(client):
+    """Option B (default): Yoco payments are not posted; the deposit the bookkeeper matches to the
+    invoice in Xero is linked to the Yoco payment instead of becoming EFT, and unlinked if undone."""
+    import xero_mt
+    import crypto
+    await db.xero_connections().insert_one({
+        "node_id": "makulu", "tenant_id": "t-mx", "org_name": "Makulu Tanks", "status": "connected",
+        "access_token": crypto.encrypt("at"), "refresh_token": crypto.encrypt("rt"),
+        "expires_at": datetime.utcnow() + timedelta(hours=1), "settings": xero_mt.default_settings(),
+        "last_refreshed_at": datetime.utcnow(), "refresh_lock_until": None})
+    calls = []
+
+    def handler(req):
+        calls.append((req.method, req.url.path))
+        if req.url.path.endswith("/Invoices") and req.method == "GET":
+            return httpx.Response(200, json={"Invoices": [{"InvoiceID": "XI-Y", "Status": "PAID", "Payments": xero_pays}]})
+        return httpx.Response(404)
+    xero_mt.transport = httpx.MockTransport(handler)
+    o = await ok(await client.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    inv = o["invoices"][0]
+    await db.invoices().update_one({"_id": inv["_id"]}, {"$set": {"xero": {"status": "posted", "invoice_id": "XI-Y"}}})
+    import yoco
+    r = await yoco.record_yoco_payment("makulu", "pay_match", inv["total"], {"invoice_id": inv["_id"]})
+    pid = r["_id"] if "_id" in r else (await db.payments().find_one({"external_id": "pay_match"}))["_id"]
+    p = await db.payments().find_one({"_id": pid})
+    assert p["xero_status"] == "match_in_xero" and not any(m == "PUT" for m, _ in calls)
+    xero_pays = [{"PaymentID": "XP-DEP", "Amount": inv["total"], "Date": "2026-10-21"}]
+    out = await xero_mt.pull_invoice_payments("makulu")
+    assert out["new"] == 0 and out["yoco_matched"] == 1
+    p = await db.payments().find_one({"_id": pid})
+    assert p["xero_status"] == "matched" and p["xero_payment_ids"][inv["_id"]] == "XP-DEP"
+    assert not await db.payments().find_one({"xero_payment_id": "XP-DEP"})
+    assert (await xero_mt.pull_invoice_payments("makulu")) == {"new": 0, "removed": 0}
+    xero_pays = []                                       # match undone in Xero
+    out = await xero_mt.pull_invoice_payments("makulu")
+    assert out["yoco_unmatched"] == 1
+    p = await db.payments().find_one({"_id": pid})
+    assert p["xero_status"] == "match_in_xero" and not p.get("void")
+    assert (await db.invoices().find_one({"_id": inv["_id"]}))["status"] == "paid"
+    await db.xero_connections().delete_one({"node_id": "makulu"})
+
+
 # ---------------------------------------------------------------- dashboard
 
 async def test_dashboard_board(client):

@@ -324,7 +324,13 @@ function Xero() {
           <Field label="Sales tax type"><select className="input" value={st.tax_type} onChange={(e) => setSt({ ...st, tax_type: e.target.value })}>{taxes.map((t: any) => <option key={t.tax_type} value={t.tax_type}>{t.name}</option>)}</select></Field>
           {acct('Sales account: water tanks', st.sales_accounts?.water, (v) => setSt({ ...st, sales_accounts: { ...st.sales_accounts, water: v } }))}
           {acct('Sales account: septic tanks', st.sales_accounts?.septic, (v) => setSt({ ...st, sales_accounts: { ...st.sales_accounts, septic: v } }))}
-          {acct('Yoco clearing account', st.yoco_clearing_account, (v) => setSt({ ...st, yoco_clearing_account: v }), true)}
+          <Field label="Yoco payments in Xero" hint={(st.yoco_in_xero || 'match') === 'match' ? 'You match each Yoco deposit to its invoice in Xero; the app links it to the Yoco payment.' : 'The app posts each Yoco payment to the clearing account; you reconcile the deposit against it.'}>
+            <select className="input" value={st.yoco_in_xero || 'match'} onChange={(e) => setSt({ ...st, yoco_in_xero: e.target.value })}>
+              <option value="match">Match deposits to invoices in Xero</option>
+              <option value="clearing">Post to a Yoco clearing account</option>
+            </select>
+          </Field>
+          {st.yoco_in_xero === 'clearing' && acct('Yoco clearing account', st.yoco_clearing_account, (v) => setSt({ ...st, yoco_clearing_account: v }), true)}
           {acct('Cash on hand account', st.cash_account, (v) => setSt({ ...st, cash_account: v }), true)}
           <Field label="Tracking category (optional)"><select className="input" value={st.tracking_category_id || ''} onChange={(e) => setSt({ ...st, tracking_category_id: e.target.value || null, tracking_option_id: null })}><option value="">None</option>{tracking.map((t: any) => <option key={t.tracking_category_id} value={t.tracking_category_id}>{t.name}</option>)}</select></Field>
           {st.tracking_category_id && <Field label="Tracking option"><select className="input" value={st.tracking_option_id || ''} onChange={(e) => setSt({ ...st, tracking_option_id: e.target.value })}><option value="">Choose…</option>{(tracking.find((t: any) => t.tracking_category_id === st.tracking_category_id)?.options || []).map((o: any) => <option key={o.tracking_option_id} value={o.tracking_option_id}>{o.name}</option>)}</select></Field>}
