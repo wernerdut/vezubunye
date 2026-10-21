@@ -1203,6 +1203,8 @@ async def xero_settings(payload: dict, user: dict = Depends(partner_admin)):
                                                                  if k in xero_mt.default_settings()}}
     if s["post_status"] not in ("DRAFT", "AUTHORISED"):
         raise HTTPException(400, "Post status is DRAFT or AUTHORISED")
+    if s.get("yoco_in_xero", "match") not in ("match", "clearing"):
+        raise HTTPException(400, "Yoco in Xero is match or clearing")
     await xero_mt.conns().update_one({"node_id": user["node_id"]}, {"$set": {"settings": s}})
     await audit.log(user, user["node_id"], "update", "xero_settings", None, before=c.get("settings"), after=s)
     return s
