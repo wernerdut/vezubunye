@@ -36,7 +36,7 @@ def same_sa_day(first_captured: datetime) -> bool:
 async def open_capture(node_id: str, date: str, user: dict) -> dict:
     existing = await db.daily_captures().find_one({"node_id": node_id, "date": date, **ACTIVE})
     if existing:
-        return {k: v for k, v in existing.items() if k != "photo_b64"}
+        return {k: v for k, v in existing.items() if k not in ("photo_b64", "photo")}
     doc = {"_id": uuid4().hex, "node_id": node_id, "date": date, "photo_url": None,
            "captured_by": user["email"], "status": "pending", "created_at": _now()}
     await db.daily_captures().insert_one(doc)

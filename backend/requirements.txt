@@ -10,3 +10,5 @@ reportlab>=4.2
 PyJWT>=2.8
 cryptography>=41.0
 anthropic>=1.7,<2
+Pillow>=10.0
+vercel-blob>=0.5.0

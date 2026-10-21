@@ -29,6 +29,7 @@ import capture
 import commerce
 import corrections
 import db
+import files
 import maps
 import partner_auth
 import partner_pdf
@@ -717,7 +718,7 @@ async def pod_photo(dn_id: str, user: dict = Depends(current_partner)):
     f = await db.pod_files().find_one({"_id": fid}) if fid else None
     if not f:
         raise HTTPException(404, "No photo")
-    return Response(base64.b64decode(f["content_b64"]), media_type=f["content_type"])
+    return Response(await files.load(f), media_type=f["content_type"])
 
 
 @router.post("/deliveries/{dn_id}/collection")
@@ -913,10 +914,13 @@ async def bank_cash(payload: dict, user: dict = Depends(current_partner)):
 @router.post("/cash/deposits/slip")
 async def deposit_slip(file: UploadFile = File(...), user: dict = Depends(current_partner)):
     content = await file.read()
+    if len(content) > 12 * 1024 * 1024:
+        raise HTTPException(400, "Photo too large (max 12 MB)")
     fid = uuid4().hex
+    f = await files.store(f"deposits/{user['node_id']}", content, file.filename or "slip.jpg",
+                          file.content_type or "image/jpeg")
     await db.pod_files().insert_one({"_id": fid, "node_id": user["node_id"], "kind": "deposit_slip",
-                                     "content_type": file.content_type or "image/jpeg",
-                                     "content_b64": base64.b64encode(content).decode(), "created_at": datetime.utcnow()})
+                                     **f, "created_at": datetime.utcnow()})
     return {"slip_file_id": fid}
 
 
@@ -1000,7 +1004,7 @@ async def captures(month: Optional[str] = None, user: dict = Depends(current_par
     filt: dict = {"node_id": user["node_id"], **ACTIVE}
     if month:
         filt["date"] = {"$regex": f"^{month}"}
-    return [{k: v for k, v in c.items() if k != "photo_b64"}
+    return [{k: v for k, v in c.items() if k not in ("photo_b64", "photo")}
             async for c in db.daily_captures().find(filt).sort("date", -1)]
 
 
@@ -1027,9 +1031,10 @@ async def capture_photo(capture_id: str, file: UploadFile = File(...), user: dic
     content = await file.read()
     if len(content) > 12 * 1024 * 1024:
         raise HTTPException(400, "Photo too large (max 12 MB)")
+    f = await files.store(f"captures/{user['node_id']}", content, f"{cap['date']}.jpg",
+                          file.content_type or "image/jpeg")
     await db.daily_captures().update_one({"_id": capture_id}, {"$set": {
-        "photo_b64": base64.b64encode(content).decode(), "photo_content_type": file.content_type or "image/jpeg",
-        "photo_url": f"/api/captures/{capture_id}/photo"}})
+        "photo": f, "photo_content_type": f["content_type"], "photo_url": f"/api/captures/{capture_id}/photo"}})
     await audit.log(user, user["node_id"], "update", "daily_captures", capture_id, after={"photo_uploaded": True})
     return {"ok": True}
 

@@ -31,6 +31,7 @@ import capture
 import commerce
 import corrections
 import db
+import files
 import partner_auth
 import pdf_gen
 import pricing
@@ -339,11 +340,15 @@ async def upload_capture_photo(capture_id: str, file: UploadFile = File(...),
     content = await file.read()
     if len(content) > 12 * 1024 * 1024:
         raise HTTPException(400, "Photo too large (max 12 MB)")
-    photo_url = await _upload_cloudinary(content, f"vezubunye/{cap['node_id']}/{cap['date']}")
+    # private Blob store when configured (photos shrunk); else Cloudinary; else inline
+    photo_url = None if files.blob_enabled() else await _upload_cloudinary(
+        content, f"vezubunye/{cap['node_id']}/{cap['date']}")
     update = {"photo_url": photo_url or f"/api/captures/{capture_id}/photo",
               "photo_content_type": file.content_type or "image/jpeg"}
     if not photo_url:
-        update["photo_b64"] = base64.b64encode(content).decode()
+        f = await files.store(f"captures/{cap['node_id']}", content, f"{cap['date']}.jpg",
+                              file.content_type or "image/jpeg")
+        update.update(photo=f, photo_content_type=f["content_type"])
     await db.daily_captures().update_one({"_id": capture_id}, {"$set": update})
     await audit.log(user, cap["node_id"], "update", "daily_captures", capture_id,
                     after={"photo_uploaded": True})
@@ -353,11 +358,11 @@ async def upload_capture_photo(capture_id: str, file: UploadFile = File(...),
 @app.get("/api/captures/{capture_id}/photo")
 async def get_capture_photo(capture_id: str, user: dict = Depends(auth.current_user)):
     cap = await db.daily_captures().find_one({"_id": capture_id})
-    if not cap or not cap.get("photo_b64"):
+    if not cap or not (cap.get("photo") or cap.get("photo_b64")):
         raise HTTPException(404, "Photo not found")
     auth.check_node_access(user, cap["node_id"])
-    return Response(base64.b64decode(cap["photo_b64"]),
-                    media_type=cap.get("photo_content_type", "image/jpeg"))
+    content = await files.load(cap["photo"]) if cap.get("photo") else base64.b64decode(cap["photo_b64"])
+    return Response(content, media_type=cap.get("photo_content_type", "image/jpeg"))
 
 
 @app.post("/api/captures/{capture_id}/entries")
@@ -382,7 +387,7 @@ async def list_captures(node_id: str, month: Optional[str] = None, include_voide
     if month:
         filt["date"] = {"$regex": f"^{month}"}
     docs = await _all(db.daily_captures(), _shown(filt, include_voided), sort=[("date", -1)])
-    return [{k: v for k, v in d.items() if k != "photo_b64"} for d in docs]
+    return [{k: v for k, v in d.items() if k not in ("photo_b64", "photo")} for d in docs]
 
 
 @app.post("/api/captures/{capture_id}/void")
@@ -800,10 +805,9 @@ async def upload_delivery_document(dn_id: str, file: UploadFile = File(...),
     content = await file.read()
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(400, "File too large (max 10 MB)")
-    doc = {"_id": uuid4().hex, "node_id": dn["node_id"], "delivery_id": dn_id,
-           "filename": file.filename or "document",
-           "content_type": file.content_type or "application/octet-stream",
-           "size": len(content), "content_b64": base64.b64encode(content).decode(),
+    f = await files.store(f"delivery-docs/{dn['node_id']}", content, file.filename or "document",
+                          file.content_type or "application/octet-stream")
+    doc = {"_id": uuid4().hex, "node_id": dn["node_id"], "delivery_id": dn_id, **f,
            "uploaded_by": user["email"], "uploaded_at": _now()}
     await db.delivery_documents().insert_one(doc)
     await audit.log(user, dn["node_id"], "create", "delivery_documents", doc["_id"],
@@ -824,7 +828,7 @@ async def get_delivery_document(doc_id: str, user: dict = Depends(auth.current_u
     if not doc:
         raise HTTPException(404, "Document not found")
     auth.check_node_access(user, doc["node_id"])
-    return Response(base64.b64decode(doc["content_b64"]),
+    return Response(await files.load(doc),
                     media_type=doc.get("content_type", "application/octet-stream"),
                     headers={"Content-Disposition": f'inline; filename="{doc["filename"]}"'})
 

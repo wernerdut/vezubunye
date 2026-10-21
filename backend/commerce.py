@@ -1214,11 +1214,11 @@ async def capture_pod(dn: dict, raw: dict, actor: dict, photo: bytes | None = No
         raise HTTPException(400, "Proof of delivery already captured")
     file_id = None
     if photo:
+        import files
         file_id = uuid4().hex
+        f = await files.store(f"pod/{dn['node_id']}", photo, f"{dn['dn_number']}.jpg", content_type)
         await db.pod_files().insert_one({"_id": file_id, "node_id": dn["node_id"], "dn_id": dn["_id"],
-                                         "content_type": content_type,
-                                         "content_b64": base64.b64encode(photo).decode(),
-                                         "created_at": now()})
+                                         "kind": "pod", **f, "created_at": now()})
     pod = {"receiver_name": raw.get("receiver_name", ""), "at": now(), "by": actor["email"],
            "lat": raw.get("lat"), "lng": raw.get("lng"), "photo_file_id": file_id,
            "after_the_fact": bool(raw.get("after_the_fact"))}

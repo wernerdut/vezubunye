@@ -8,8 +8,8 @@ duplicate guard (xero_invoice_id, then supplier + number in Xero).
 
 Changed: every bill, supplier and document carries node_id. Capturers are the node's partner
 staff and admins; the approver is a partner admin. No business-unit picker: the node-level
-tracking option is applied when set. No GRN link. Documents live in GridFS in the Vezubunye
-database (a base64 collection where GridFS is unavailable, e.g. the test mock). Fenix sees
+tracking option is applied when set. No GRN link. Documents live in the private Blob store
+(files.py; photos shrunk on upload); bills captured before that read from GridFS. Fenix sees
 every node's bills read-only.
 """
 from __future__ import annotations
@@ -72,15 +72,10 @@ async def store_document(node_id: str, content: bytes, filename: str, mime: str 
     mime = _sniff(content, mime, filename)
     if mime not in ("application/pdf", "image/jpeg", "image/png", "image/webp"):
         raise HTTPException(400, "Upload a PDF or a photo (JPEG, PNG)")
-    sha = hashlib.sha256(content).hexdigest()
-    doc = {"_id": uuid4().hex, "node_id": node_id, "filename": filename or "document", "mime": mime,
-           "size": len(content), "sha256": sha, "uploaded_by": user["email"], "uploaded_at": _now()}
-    bucket = _gridfs()
-    if bucket is not None:
-        doc["gridfs_id"] = await bucket.upload_from_stream(doc["filename"], content,
-                                                           metadata={"node_id": node_id, "mime": mime})
-    else:
-        doc["content_b64"] = base64.b64encode(content).decode()
+    import files
+    f = await files.store(f"bills/{node_id}", content, filename or "document", mime)
+    doc = {"_id": uuid4().hex, "node_id": node_id, **f, "mime": f["content_type"],
+           "uploaded_by": user["email"], "uploaded_at": _now()}
     await db.bill_documents().insert_one(doc)
     return {k: v for k, v in doc.items() if k not in ("content_b64", "gridfs_id")}
 
@@ -90,10 +85,11 @@ async def load_document(doc_id: str, node_id: str | None = None) -> tuple[bytes,
     d = await db.bill_documents().find_one(filt)
     if not d:
         raise HTTPException(404, "Document not found")
-    if d.get("gridfs_id") is not None:
+    if d.get("gridfs_id") is not None:     # captured before the Blob store
         stream = await _gridfs().open_download_stream(d["gridfs_id"])
         return await stream.read(), d["filename"], d["mime"]
-    return base64.b64decode(d["content_b64"]), d["filename"], d["mime"]
+    import files
+    return await files.load(d), d["filename"], d["mime"]
 
 
 # ============================== extraction ============================== #
