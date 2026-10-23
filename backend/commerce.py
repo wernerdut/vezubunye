@@ -177,9 +177,19 @@ async def make_site(raw: dict) -> dict:
             "town": raw.get("town", ""), "contact_name": raw.get("contact_name", ""),
             "contact_phone": raw.get("contact_phone", ""), "directions": raw.get("directions", ""),
             "maps_link": raw.get("maps_link") or "", "lat": raw.get("lat"), "lng": raw.get("lng")}
+    for k in ("lat", "lng"):
+        if site[k] in ("", None):
+            site[k] = None
+        else:
+            try:
+                site[k] = float(site[k])
+            except (TypeError, ValueError):
+                raise HTTPException(400, "Coordinates must be numbers")
     if site["maps_link"] and (site["lat"] is None or site["lng"] is None):
         loc = await maps.locate(site["maps_link"])
         site.update(lat=loc["lat"], lng=loc["lng"], resolved_link=loc["resolved_link"])
+    if site["lat"] is not None and site["lng"] is not None and not maps.in_sa(site["lat"], site["lng"]):
+        raise HTTPException(400, "That pin is outside South Africa: check the coordinates or drop the pin on the map")
     site["pinned"] = site["lat"] is not None and site["lng"] is not None
     return site
 

@@ -43,6 +43,13 @@ def _in(d: str | None, rng: tuple[str, str]) -> bool:
 
 # ---------- rows ---------- #
 
+def _pinned(site: dict | None) -> bool | None:
+    """True/False for a delivery site, None when there is no site (collected at the factory)."""
+    if not site:
+        return None
+    return site.get("lat") is not None and site.get("lng") is not None
+
+
 async def order_rows(node_id: str) -> list[dict]:
     cfg = await commerce.get_cfg(node_id)
     b = await commerce.load_order_bundle(node_id)
@@ -58,6 +65,7 @@ async def order_rows(node_id: str) -> list[dict]:
             "_id": o["_id"], "order_number": o.get("order_number") or o.get("display_number") or "",
             "legacy": o.get("legacy", False), "date": o["date"], "customer_id": o.get("customer_id"),
             "customer": o["customer_name"], "site": site.get("label", ""), "town": site.get("town", ""),
+            "address": site.get("address", ""), "pinned": _pinned(site),
             "requested_date": o.get("requested_date"), "value": s["value"], "invoiced": s["invoiced"],
             "paid": s["paid"], "balance": s["balance"], "payment_status": s["payment_status"],
             "overdue": s["overdue"], "cod_outstanding": s["cod_outstanding"],
@@ -102,6 +110,7 @@ async def delivery_rows(node_id: str) -> list[dict]:
             "_id": d["_id"], "dn_number": d["dn_number"], "order_id": d.get("order_id"),
             "order_number": d.get("order_number") or "", "customer_id": d.get("customer_id"),
             "customer": d["client_name"], "site": site.get("label", ""), "town": site.get("town", ""),
+            "address": site.get("address", ""), "pinned": _pinned(site),
             "date": d["date"], "planned_date": d.get("planned_date") or d["date"],
             "driver": (d.get("driver") or {}).get("name", ""),
             "delivery_status": "void" if d.get("void") else d.get("delivery_status", "delivered"),
@@ -113,7 +122,7 @@ async def delivery_rows(node_id: str) -> list[dict]:
             "colours": sorted({l.get("colour", "") for l in d["lines"] if l.get("colour")}),
             "void": bool(d.get("void")),
             "_search": " ".join(filter(None, [d["dn_number"], d.get("order_number"), d["client_name"],
-                                              site.get("label"), site.get("town")])).lower(),
+                                              site.get("label"), site.get("town"), site.get("address")])).lower(),
         })
     return rows
 
@@ -189,6 +198,8 @@ def apply(kind: str, rows: list[dict], f: dict, sort: dict | None = None) -> lis
             if f.get("today") and r["planned_date"] != today:
                 continue
             if f.get("to_collect") and not (r["to_collect"] and r["collected"] is None and not r["void"]):
+                continue
+            if f.get("unpinned") and not (r["pinned"] is False and r["delivery_status"] in ("scheduled", "out_for_delivery")):
                 continue
             if "void" not in (f.get("delivery_status") or []) and r["void"] and not f.get("include_void"):
                 continue
@@ -357,7 +368,7 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
                   "shortfall": shortfall}
 
     # deliveries
-    sched_today = out_now = delivered = failed = 0
+    sched_today = out_now = delivered = failed = unpinned = 0
     async for d in db.delivery_notes().find({"node_id": node_id, "legacy": {"$ne": True}, **ACTIVE},
                                             {"content_b64": 0}):
         st = d.get("delivery_status")
@@ -365,11 +376,14 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
             sched_today += 1
         if st == "out_for_delivery":
             out_now += 1
+        if st in ("scheduled", "out_for_delivery") and _pinned(d.get("site")) is False:
+            unpinned += 1
         if st == "delivered" and d.get("delivered_at") and _in(d["delivered_at"].isoformat(), rng):
             delivered += 1
         if st == "failed" and d.get("failed_at") and _in(d["failed_at"].isoformat(), rng):
             failed += 1
-    deliveries = {"scheduled_today": sched_today, "out_now": out_now, "delivered": delivered, "failed": failed}
+    deliveries = {"scheduled_today": sched_today, "out_now": out_now, "delivered": delivered, "failed": failed,
+                  "unpinned": unpinned}
 
     # invoices + aging
     inv_period = outstanding = overdue = 0.0

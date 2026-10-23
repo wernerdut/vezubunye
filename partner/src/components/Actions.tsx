@@ -2,7 +2,7 @@ import { Copy, Mail, MessageCircle, Share2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api, errMsg } from '../api'
 import { lineLabel, useApp } from '../lib/ctx'
-import { money, today } from '../lib/format'
+import { money, siteLine, today } from '../lib/format'
 import { ErrorBox, Field, Modal, useAction } from './ui'
 
 /** WhatsApp, the device share sheet, and copy: the three ways a link leaves the app. */
@@ -102,8 +102,8 @@ export function ScheduleDelivery({ orderId, onClose, onDone }: { orderId: string
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Delivery site">
             <select className="input" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-              <option value="">{order.site?.label || 'Order default'}</option>
-              {(customer?.sites || []).map((s: any) => <option key={s.site_id} value={s.site_id}>{s.label}{s.town ? `, ${s.town}` : ''}</option>)}
+              <option value="">{siteLine(order.site) || 'Order default'}</option>
+              {(customer?.sites || []).map((s: any) => <option key={s.site_id} value={s.site_id}>{siteLine(s)}{s.lat == null ? ' (not pinned)' : ''}</option>)}
             </select>
           </Field>
           <Field label="Planned date"><input type="date" className="input" value={planned} onChange={(e) => setPlanned(e.target.value)} /></Field>

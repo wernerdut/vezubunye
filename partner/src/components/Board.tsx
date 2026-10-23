@@ -5,7 +5,7 @@ import { api, downloadCsv, errMsg } from '../api'
 import { lineLabel, useApp } from '../lib/ctx'
 import { date, label, money, money0, today } from '../lib/format'
 import { PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from './Actions'
-import { Chip, Empty, ErrorBox, Spinner, Status } from './ui'
+import { Chip, Empty, ErrorBox, SiteText, Spinner, Status } from './ui'
 
 export type Kind = 'orders' | 'deliveries' | 'invoices'
 export interface Sort { key?: string; dir?: 'asc' | 'desc' }
@@ -17,7 +17,7 @@ const ORDER_COLS: Col[] = [
   { key: 'order_number', label: 'Order', render: (r) => <span className="font-semibold text-brand-dark">{r.order_number}</span>, always: true },
   { key: 'date', label: 'Date', render: (r) => date(r.date) },
   { key: 'customer', label: 'Customer', render: (r) => <span className="font-medium">{r.customer}</span>, always: true },
-  { key: 'site', label: 'Site', render: (r) => <span className="text-gray-600">{[r.site, r.town].filter(Boolean).join(', ')}</span> },
+  { key: 'site', label: 'Site', render: (r) => <span className="text-gray-600"><SiteText label={r.site} address={r.address} town={r.town} pinned={r.pinned} /></span> },
   { key: 'requested_date', label: 'Requested', render: (r) => date(r.requested_date) },
   { key: 'value', label: 'Value', render: (r) => money(r.value), align: 'right' },
   { key: 'invoiced', label: 'Invoiced', render: (r) => money(r.invoiced), align: 'right' },
@@ -35,7 +35,7 @@ const DN_COLS: Col[] = [
   { key: 'dn_number', label: 'DN', render: (r) => <span className="font-semibold text-brand-dark">{r.dn_number}</span>, always: true },
   { key: 'order_number', label: 'Order', render: (r) => r.order_number },
   { key: 'customer', label: 'Customer', render: (r) => r.customer, always: true },
-  { key: 'site', label: 'Site', render: (r) => [r.site, r.town].filter(Boolean).join(', ') },
+  { key: 'site', label: 'Site', render: (r) => <SiteText label={r.site} address={r.address} town={r.town} pinned={r.pinned} /> },
   { key: 'planned_date', label: 'Planned', render: (r) => date(r.planned_date) },
   { key: 'driver', label: 'Driver', render: (r) => r.driver },
   { key: 'delivery_status', label: 'Status', render: (r) => <Status s={r.delivery_status} />, always: true },
@@ -341,7 +341,7 @@ export default function Board({ kind, filters, setFilters, sort, setSort, onKind
                   <>
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0"><div className="font-semibold text-brand-dark">{r.order_number} · {r.customer}</div>
-                        <div className="truncate text-xs text-gray-500">{[r.site, r.town].filter(Boolean).join(', ')} · {date(r.date)} · {r.age_days}d</div></div>
+                        <div className="text-xs text-gray-500"><SiteText address={r.address} town={r.town} label={r.address || r.town ? undefined : r.site} pinned={r.pinned} /> · {date(r.date)} · {r.age_days}d</div></div>
                       <div className="text-right"><div className="font-bold tabular-nums">{money0(r.value)}</div>
                         {r.balance > 1 && <div className="text-xs text-gray-500">due {money0(r.balance)}</div>}</div>
                     </div>
@@ -355,6 +355,7 @@ export default function Board({ kind, filters, setFilters, sort, setSort, onKind
                 ) : kind === 'deliveries' ? (
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0"><div className="font-semibold">{r.dn_number} · {r.customer}</div>
+                      <div className="text-xs text-gray-500"><SiteText address={r.address} town={r.town} label={r.address || r.town ? undefined : r.site} pinned={r.pinned} /></div>
                       <div className="text-xs text-gray-500">{date(r.planned_date)}{r.driver ? ` · ${r.driver}` : ''}{r.to_collect ? ` · collect ${money0(r.to_collect)}` : ''}</div></div>
                     <Status s={r.delivery_status} />
                   </div>

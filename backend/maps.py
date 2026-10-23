@@ -2,8 +2,9 @@
 
 A pasted Maps link is always stored as given. Short links (maps.app.goo.gl, goo.gl/maps) are
 resolved by following the redirect server-side; coordinates are parsed from the final URL
-(`@lat,lng`, `q=lat,lng`, `!3d..!4d..`). When parsing fails the link is kept and the site
-shows "location not pinned", so a location is never silently wrong.
+(`!3d..!4d..` first, then `q=`/`ll=`/`query=`, then `@lat,lng`) and must fall inside South
+Africa. When that fails the link is kept and the site shows "location not pinned", so a
+location is never silently wrong.
 """
 from __future__ import annotations
 
@@ -50,6 +51,16 @@ def parse_coords(url: str) -> tuple[float, float] | None:
     return None
 
 
+# South Africa (with a margin): a pin outside it is a wrong link, not a delivery site
+SA_LAT = (-35.5, -21.5)
+SA_LNG = (16.0, 33.5)
+NOT_READ = "Couldn't read a location from that link, drop the pin on the map instead."
+
+
+def in_sa(lat: float, lng: float) -> bool:
+    return SA_LAT[0] <= lat <= SA_LAT[1] and SA_LNG[0] <= lng <= SA_LNG[1]
+
+
 def is_short(url: str) -> bool:
     host = urlparse(url.strip()).netloc.lower()
     path = urlparse(url.strip()).path
@@ -75,9 +86,11 @@ async def locate(url: str, client: httpx.AsyncClient | None = None) -> dict:
     url = (url or "").strip()
     final = await resolve(url, client) if is_short(url) else url
     coords = parse_coords(final) or parse_coords(url)
+    if coords and not in_sa(*coords):
+        coords = None
     return {"maps_link": url, "resolved_link": final if final != url else None,
             "lat": coords[0] if coords else None, "lng": coords[1] if coords else None,
-            "pinned": bool(coords)}
+            "pinned": bool(coords), "message": None if coords else NOT_READ}
 
 
 def nav_link(site: dict | None) -> str:

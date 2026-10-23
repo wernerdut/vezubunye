@@ -33,3 +33,10 @@ export function label(s?: string | null): string {
   }
   return map[s] || s.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
 }
+
+/** "Delivery 2 · 32 Montreal Dr, Cape Town"; the address alone when there is no label. */
+export function siteLine(site?: { label?: string; address?: string; town?: string } | null): string {
+  if (!site) return ''
+  const addr = [site.address, site.town].filter(Boolean).join(', ')
+  return [site.label, addr].filter(Boolean).join(' · ')
+}

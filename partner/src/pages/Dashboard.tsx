@@ -89,10 +89,11 @@ export default function Dashboard({ readOnlyNode }: { readOnlyNode?: string }) {
             <Stat label="Scheduled today" value={t.deliveries.scheduled_today} onClick={() => go('deliveries', { delivery_status: ['scheduled'], today: true })} active={is('deliveries', 'today')} />
             <Stat label="Out now" value={t.deliveries.out_now} onClick={() => go('deliveries', { delivery_status: ['out_for_delivery'] })} active={is('deliveries', 'delivery_status', ['out_for_delivery'])} />
             <Stat label="Delivered" value={t.deliveries.delivered} sub={t.deliveries.failed ? `${t.deliveries.failed} failed` : undefined} onClick={() => go('deliveries', { delivery_status: ['delivered'] })} active={is('deliveries', 'delivery_status', ['delivered'])} />
+            {t.deliveries.unpinned > 0 && <Stat label="Not pinned" value={t.deliveries.unpinned} sub="ask for a location" tone="red" onClick={() => go('deliveries', { unpinned: true })} active={is('deliveries', 'unpinned')} />}
           </Group>
-          <Group title="Quotes">
+          <Group title={cfg.proforma ? 'Proformas' : 'Quotes'}>
             <Stat label="Open" value={t.quotes.open} sub={money0(t.quotes.open_value)} onClick={() => navigate('/quotes')} />
-            <Stat label="Expiring 7 days" value={t.quotes.expiring_7d} onClick={() => navigate('/quotes')} />
+            {!cfg.proforma && <Stat label="Expiring 7 days" value={t.quotes.expiring_7d} onClick={() => navigate('/quotes')} />}
             <Stat label="Conversion" value={t.quotes.conversion == null ? '–' : `${Math.round(t.quotes.conversion * 100)}%`} sub={`${t.quotes.accepted} of ${t.quotes.decided}`} />
           </Group>
           {t.fenix && (

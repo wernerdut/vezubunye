@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api, errMsg, openPdf } from '../api'
 import { PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from '../components/Actions'
 import { cleanLines, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
-import { Chip, ErrorBox, Field, Modal, PageTitle, Spinner, Status, useAction } from '../components/ui'
+import { Chip, ErrorBox, Field, Modal, PageTitle, SiteText, Spinner, Status, useAction } from '../components/ui'
 import { colourOf, lineLabel, useApp } from '../lib/ctx'
 import { date, label, money } from '../lib/format'
 
@@ -47,6 +47,7 @@ export default function OrderDetail() {
           <div key={l} className="card p-3"><div className="label">{l}</div><div className="text-lg font-bold tabular-nums">{v}</div></div>
         ))}
       </div>
+      <div className="mb-1 text-sm text-gray-600">{o.site ? <>Deliver to <SiteText label={o.site.label} address={o.site.address} town={o.site.town} pinned={o.site.lat != null && o.site.lng != null} /></> : 'No delivery address (collect)'}</div>
       <div className="mb-2 text-sm font-semibold text-brand-primary">Next: {o.next_action.label}</div>
 
       <div className="card mb-4 overflow-x-auto">

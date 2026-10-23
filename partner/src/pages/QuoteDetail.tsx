@@ -5,7 +5,7 @@ import { api, errMsg, openPdf } from '../api'
 import { ShareBar } from '../components/Actions'
 import { ErrorBox, Field, Modal, PageTitle, Spinner, Status, useAction } from '../components/ui'
 import { colourOf, lineLabel, useApp } from '../lib/ctx'
-import { date, money } from '../lib/format'
+import { date, money, siteLine } from '../lib/format'
 import { QuoteForm } from './Quotes'
 
 export default function QuoteDetail() {
@@ -54,7 +54,7 @@ export default function QuoteDetail() {
           <tfoot><tr><td className="td" colSpan={3}>Excl VAT {money(q.subtotal)} · VAT {money(q.vat)}</td><td className="td text-right font-bold">{money(q.total)}</td></tr></tfoot>
         </table>
       </div>
-      <p className="mb-4 text-sm text-gray-600">Dated {date(q.date)}{pf ? '' : ` · valid until ${date(q.valid_until)}`}{q.site ? ` · ${[q.site.label, q.site.address, q.site.town].filter(Boolean).join(', ')}` : ''}</p>
+      <p className="mb-4 text-sm text-gray-600">Dated {date(q.date)}{pf ? '' : ` · valid until ${date(q.valid_until)}`}{q.site ? ` · ${siteLine(q.site)}` : ''}</p>
       {q.status === 'cancelled' && <p className="mb-4 text-sm text-gray-600">Cancelled: {q.cancelled_reason}</p>}
       {open && pf && (
         <div className="flex flex-wrap gap-2">

@@ -1,4 +1,4 @@
-import { X } from 'lucide-react'
+import { MapPin, X } from 'lucide-react'
 import { ReactNode, useEffect, useState } from 'react'
 import { label } from '../lib/format'
 
@@ -149,4 +149,17 @@ export function useAction() {
     }
   }
   return { busy, error, setError, run }
+}
+
+/** A delivery site in a list: label (dropped on narrow screens) · street, town; a red tag when
+ * the site has no pin, so Steven asks the customer for one before the truck leaves. */
+export function SiteText({ label: l, address, town, pinned }: { label?: string; address?: string; town?: string; pinned?: boolean | null }) {
+  const addr = [address, town].filter(Boolean).join(', ')
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-1">
+      {l && <span className={addr ? 'hidden sm:inline' : ''}>{l}{addr ? ' ·' : ''}</span>}
+      {addr && <span>{addr}</span>}
+      {pinned === false && <span className="inline-flex items-center gap-0.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-600/20"><MapPin size={10} /> Not pinned</span>}
+    </span>
+  )
 }

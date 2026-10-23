@@ -4,7 +4,7 @@ import { Crosshair, MapPin, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api, errMsg } from '../api'
 import { useApp } from '../lib/ctx'
-import { label, money } from '../lib/format'
+import { label, money, siteLine } from '../lib/format'
 import { ErrorBox, Field, Modal, useAction } from './ui'
 
 // ---------------------------------------------------------------- lines
@@ -227,7 +227,7 @@ export function DeliverTo({ customer, siteId, setSiteId, site, setSite, optional
       <Field label={optional ? 'Delivery address (optional)' : 'Deliver to'}>
         <select className="input" value={siteId} onChange={(e) => choose(e.target.value)}>
           {optional && <option value="">Not yet</option>}
-          {sites.map((s: any) => <option key={s.site_id} value={s.site_id}>{[s.label, s.address, s.town].filter(Boolean).join(', ')}</option>)}
+          {sites.map((s: any) => <option key={s.site_id} value={s.site_id}>{siteLine(s)}{s.lat == null ? ' (not pinned)' : ''}</option>)}
           <option value={NEW_SITE}>+ New address…</option>
         </select>
       </Field>
@@ -247,21 +247,25 @@ export async function siteIdFor(customer: any, siteId: string, site: any, onSave
   return r.data.site_id
 }
 
-/** Paste a Google Maps link, use my location, or type coordinates. The link is always kept;
- * coordinates are parsed server-side (short links resolved). A link that does not parse shows
- * "location not pinned" so it is never silently wrong. */
+/** Paste a Google Maps link (or a shared WhatsApp location), use my location, type
+ * coordinates, or tap the map. The link is always kept; coordinates are parsed server-side
+ * (short links resolved) and must be in South Africa. The pin can be dragged to correct it. */
 export function SiteFields({ site, setSite }: { site: any; setSite: (s: any) => void }) {
   const [status, setStatus] = useState<string | null>(null)
   const pinned = site.lat != null && site.lng != null && site.lat !== '' && site.lng !== ''
-  const paste = async (url: string) => {
+  const NOT_READ = "Couldn't read a location from that link, drop the pin on the map instead."
+  const locate = async (url: string) => {
     setSite({ ...site, maps_link: url, lat: null, lng: null })
-    if (!url) return
+    if (!url) { setStatus(null); return }
     setStatus('Finding the pin…')
     try {
       const r = await api.post('/api/p/maps/locate', { url })
       setSite({ ...site, maps_link: url, lat: r.data.lat, lng: r.data.lng })
-      setStatus(r.data.pinned ? null : 'Location not pinned: the link is kept, but add coordinates or use your location.')
-    } catch { setStatus('Location not pinned.') }
+      setStatus(r.data.pinned ? null : r.data.message || NOT_READ)
+    } catch { setStatus(NOT_READ) }
+  }
+  const pasteButton = async () => {
+    try { locate(((await navigator.clipboard.readText()) || '').trim()) } catch { setStatus('Paste the link into the box (this browser blocks reading the clipboard).') }
   }
   const here = () => {
     if (!navigator.geolocation) return setStatus('This device cannot share its location.')
@@ -275,9 +279,14 @@ export function SiteFields({ site, setSite }: { site: any; setSite: (s: any) => 
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Label"><input className="input" placeholder="Farm, Komani road" {...f('label')} /></Field>
-        <Field label="Town"><input className="input" {...f('town')} /></Field>
-        <Field label="Address"><input className="input" {...f('address')} /></Field>
-        <Field label="Google Maps link"><input className="input" placeholder="Paste the link" value={site.maps_link || ''} onChange={(e) => paste(e.target.value.trim())} /></Field>
+        <Field label="Address"><input className="input" placeholder="32 Montreal Dr" {...f('address')} /></Field>
+        <Field label="Suburb / town"><input className="input" {...f('town')} /></Field>
+        <Field label="Google Maps link (optional)">
+          <div className="flex gap-2">
+            <input className="input" placeholder="Paste a Maps link or shared location" value={site.maps_link || ''} onChange={(e) => locate(e.target.value.trim())} />
+            <button type="button" className="btn-ghost btn-sm shrink-0" onClick={pasteButton}>Paste</button>
+          </div>
+        </Field>
         <Field label="Site contact"><input className="input" {...f('contact_name')} /></Field>
         <Field label="Contact phone"><input className="input" {...f('contact_phone')} /></Field>
       </div>
@@ -286,29 +295,46 @@ export function SiteFields({ site, setSite }: { site: any; setSite: (s: any) => 
         <button type="button" className="btn-ghost btn-sm" onClick={here}><Crosshair size={14} /> Use my location</button>
         <input className="input w-32" placeholder="Latitude" value={site.lat ?? ''} onChange={(e) => setSite({ ...site, lat: e.target.value === '' ? null : Number(e.target.value) })} />
         <input className="input w-32" placeholder="Longitude" value={site.lng ?? ''} onChange={(e) => setSite({ ...site, lng: e.target.value === '' ? null : Number(e.target.value) })} />
-        <span className={`text-xs font-semibold ${pinned ? 'text-emerald-700' : 'text-amber-700'}`}><MapPin size={12} className="inline" /> {pinned ? 'Pinned' : 'Location not pinned'}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${pinned ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}><MapPin size={12} className="inline" /> {pinned ? 'Pinned' : 'Location not pinned'}</span>
       </div>
       {status && <p className="text-xs text-amber-700">{status}</p>}
-      {pinned && <MapPreview lat={Number(site.lat)} lng={Number(site.lng)} />}
+      <MapPreview lat={pinned ? Number(site.lat) : null} lng={pinned ? Number(site.lng) : null}
+        onPick={(lat, lng) => { setSite({ ...site, lat, lng }); setStatus(null) }} />
+      {!pinned && <p className="text-xs text-gray-500">Tap the map to drop the pin.</p>}
     </div>
   )
 }
 
-export function MapPreview({ lat, lng }: { lat: number; lng: number }) {
+const PIN = L.divIcon({ className: '', iconSize: [18, 18], iconAnchor: [9, 9],
+  html: '<div style="width:18px;height:18px;border-radius:9999px;background:#d33;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>' })
+const CAPE_TOWN: [number, number] = [-33.93, 18.6]
+
+/** The site's map. Read-only without `onPick`; with it, tapping drops the pin and the pin drags. */
+export function MapPreview({ lat, lng, onPick }: { lat: number | null; lng: number | null; onPick?: (lat: number, lng: number) => void }) {
   const el = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
+  const marker = useRef<L.Marker | null>(null)
+  const pick = useRef(onPick)
+  pick.current = onPick
   useEffect(() => {
     if (!el.current) return
     if (!map.current) {
-      map.current = L.map(el.current, { zoomControl: false, attributionControl: true }).setView([lat, lng], 14)
+      map.current = L.map(el.current, { zoomControl: !!onPick, attributionControl: true }).setView(lat != null && lng != null ? [lat, lng] : CAPE_TOWN, lat != null ? 15 : 9)
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 19 }).addTo(map.current)
+      if (onPick) map.current.on('click', (e: L.LeafletMouseEvent) => pick.current?.(+e.latlng.lat.toFixed(6), +e.latlng.lng.toFixed(6)))
     }
-    map.current.setView([lat, lng], 14)
-    map.current.eachLayer((l) => { if (l instanceof L.CircleMarker) l.remove() })
-    L.circleMarker([lat, lng], { radius: 8, color: '#fff', weight: 2, fillColor: '#d33', fillOpacity: 1 }).addTo(map.current)
-  }, [lat, lng])
-  useEffect(() => () => { map.current?.remove(); map.current = null }, [])
-  return <div ref={el} className="h-44 w-full overflow-hidden rounded-lg border" />
+    if (lat == null || lng == null) { marker.current?.remove(); marker.current = null; return }
+    if (!marker.current) {
+      marker.current = L.marker([lat, lng], { icon: PIN, draggable: !!onPick }).addTo(map.current)
+      marker.current.on('dragend', () => { const p = marker.current!.getLatLng(); pick.current?.(+p.lat.toFixed(6), +p.lng.toFixed(6)) })
+      map.current.setView([lat, lng], Math.max(map.current.getZoom(), 15))
+    } else {
+      marker.current.setLatLng([lat, lng])
+      if (!map.current.getBounds().contains([lat, lng])) map.current.setView([lat, lng])
+    }
+  }, [lat, lng])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { map.current?.remove(); map.current = null; marker.current = null }, [])
+  return <div ref={el} className={`${onPick ? 'h-56' : 'h-44'} w-full overflow-hidden rounded-lg border`} />
 }
 
 export function SiteModal({ customerId, initial, onClose, onSaved }: { customerId: string; initial?: any; onClose: () => void; onSaved: () => void }) {

@@ -596,6 +596,37 @@ async def test_maps_parsing():
     assert not loc["pinned"] and loc["lat"] is None and loc["maps_link"] == "https://maps.app.goo.gl/broken"
     assert maps.nav_link({"maps_link": "https://maps.app.goo.gl/x"}) == "https://maps.app.goo.gl/x"
     assert maps.nav_link({"address": "4 Fabriek St", "town": "Bellville"}).endswith("destination=4%20Fabriek%20St%2C%20Bellville")
+    # WhatsApp shares (ll=, query=), the pin beats the camera, and only South African pins count
+    assert maps.parse_coords("https://maps.google.com/maps?ll=-33.8812,18.6421&z=16") == (-33.8812, 18.6421)
+    assert maps.parse_coords("https://www.google.com/maps/search/?api=1&query=-33.8812,18.6421") == (-33.8812, 18.6421)
+    assert maps.parse_coords("https://www.google.com/maps/place/x/@-33.9,18.6,17z/data=!3d-33.8812!4d18.6421") == (-33.8812, 18.6421)
+    loc = await maps.locate("https://www.google.com/maps/@51.5072,-0.1276,15z")          # London
+    assert not loc["pinned"] and loc["message"].startswith("Couldn't read a location")
+    assert maps.nav_link({"lat": -33.88, "lng": 18.64}) == "https://www.google.com/maps/dir/?api=1&destination=-33.88,18.64"
+
+
+async def test_sites_pins_and_unpinned_deliveries(client):
+    c = client
+    cid = S["mx_cust"]["_id"]
+    r = await c.post(f"/api/p/customers/{cid}/sites", headers=S["mx"], json={"label": "Wrong", "lat": 51.5, "lng": -0.12})
+    assert r.status_code == 400 and "outside South Africa" in r.text
+    st = await ok(await c.post(f"/api/p/customers/{cid}/sites", headers=S["mx"], json={
+        "label": "Delivery 3", "address": "32 Montreal Dr", "town": "Cape Town", "maps_link": "https://maps.google.com/?q=-33.93,18.55"}))
+    assert st["pinned"] and st["lat"] == -33.93 and st["maps_link"].endswith("q=-33.93,18.55")
+    nopin = await ok(await c.post(f"/api/p/customers/{cid}/sites", headers=S["mx"], json={"label": "Delivery 4", "address": "1 Unknown Rd", "town": "Atlantis"}))
+    assert not nopin["pinned"]
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_terms"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    await db.delivery_notes().insert_one({"_id": "dn-nopin", "node_id": "makulu", "order_id": o["_id"], "dn_number": "MX-DN-9999",
+                                          "client_name": "X", "date": today(), "planned_date": today(), "delivery_status": "scheduled",
+                                          "site": nopin, "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 1,
+                                                                    "tank_type": "W1000"}]})
+    import board
+    rows = board.apply("deliveries", await board.delivery_rows("makulu"), {"unpinned": True})
+    assert [r["_id"] for r in rows] == ["dn-nopin"] and rows[0]["address"] == "1 Unknown Rd"
+    t = await board.tiles("makulu", board.period_range("today"), False, False)
+    assert t["deliveries"]["unpinned"] == 1
+    await db.delivery_notes().delete_one({"_id": "dn-nopin"})
 
 
 # ---------------------------------------------------------------- Yoco catch-up, cash control, Xero
