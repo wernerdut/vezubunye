@@ -19,7 +19,7 @@ export default function CustomerDetail() {
   const a = c.aging || { current: 0, d30: 0, d60: 0, d90: 0, balance: 0, credit: 0 }
   return (
     <div>
-      <PageTitle title={c.name} sub={<span className="flex flex-wrap gap-2"><Chip tone={c.payment_basis === 'terms' ? 'blue' : 'grey'}>{label(c.payment_basis)}{c.payment_basis === 'terms' ? ` ${c.payment_terms_days}d` : ''}</Chip><Chip>{label(c.price_tier)}</Chip>{c.phone} {c.email}</span>}
+      <PageTitle title={c.name} sub={<span className="flex flex-wrap gap-2">{c.ref && <Chip>{c.ref}</Chip>}{c.type_check && <Chip tone="amber">{c.type_check}</Chip>}<Chip tone={c.payment_basis === 'terms' ? 'blue' : 'grey'}>{label(c.payment_basis)}{c.payment_basis === 'terms' ? ` ${c.payment_terms_days}d` : ''}</Chip><Chip>{label(c.price_tier)}</Chip>{c.phone} {c.email}</span>}
         actions={<>
           <button className="btn-ghost" onClick={() => setModal(<CustomerForm initial={c} onClose={() => setModal(null)} onSaved={close} />)}><Pencil size={16} /> Edit</button>
           <button className="btn-ghost" onClick={() => openPdf(`/api/p/customers/${id}/statement.pdf`)}><FileDown size={16} /> Statement</button>

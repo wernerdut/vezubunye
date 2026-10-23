@@ -28,6 +28,7 @@ import board
 import capture
 import commerce
 import corrections
+import customer_search
 import db
 import files
 import maps
@@ -304,6 +305,35 @@ async def locate(payload: dict, user: dict = Depends(current_partner)):
     return await maps.locate(payload.get("url", ""))
 
 
+@router.post("/customers/import/cin7")
+async def import_cin7_customers(customers: UploadFile = File(...), addresses: UploadFile = File(...),
+                                apply: bool = Form(False), user: dict = Depends(partner_admin)):
+    """Cin7 customer export: dry run by default (counts only), then `apply`. Re-running updates."""
+    import import_cin7
+    try:
+        return await import_cin7.run(await customers.read(), await addresses.read(), apply,
+                                     node_id=user["node_id"], user=user)
+    except (ValueError, KeyError, UnicodeDecodeError) as e:
+        raise HTTPException(400, f"Could not read the Cin7 files: {e}")
+
+
+@router.get("/customers/search")
+async def search_customers(q: str = "", inactive: bool = False, user: dict = Depends(current_partner)):
+    """One box: name, contact, phone (partial), email, suburb, ref. Empty: recent customers."""
+    return await customer_search.search(user["node_id"], q, include_inactive=inactive)
+
+
+@router.get("/customers/duplicates")
+async def customer_duplicates(phone: str = "", email: str = "", exclude: Optional[str] = None,
+                              user: dict = Depends(current_partner)):
+    return await customer_search.duplicates(user["node_id"], phone, email, exclude)
+
+
+@router.get("/customers/by-phone")
+async def customer_by_phone(phone: str, user: dict = Depends(current_partner)):
+    return await customer_search.by_phone(user["node_id"], phone)
+
+
 @router.get("/customers")
 async def list_customers(q: Optional[str] = None, user: dict = Depends(current_partner)):
     filt: dict = {"node_id": user["node_id"]}
@@ -320,9 +350,11 @@ async def create_customer(payload: dict, user: dict = Depends(current_partner)):
 
 
 @router.get("/customers/{customer_id}")
-async def get_customer(customer_id: str, user: dict = Depends(current_partner)):
+async def get_customer(customer_id: str, brief: bool = False, user: dict = Depends(current_partner)):
     node, cfg = await ctx(user)
     c = await commerce.get_customer(node["node_id"], customer_id)
+    if brief:       # the customer alone, for pickers
+        return wall(c, cfg, user["role"])
     nid = node["node_id"]
     quotes = [q async for q in db.quotes().find({"node_id": nid, "customer_id": customer_id}).sort("date", -1)]
     orders = [r for r in await board.order_rows(nid) if r["customer_id"] == customer_id]
@@ -340,6 +372,8 @@ async def update_customer(customer_id: str, payload: dict, user: dict = Depends(
     c = await commerce.get_customer(node["node_id"], customer_id)
     upd = {k: payload[k] for k in ("name", "contact_person", "email", "phone", "billing_address", "vat_number",
                                    "payment_terms_days", "active") if k in payload}
+    if "phone" in upd:
+        upd["phone"] = customer_search.phone_e164(upd["phone"])
     for k in ("payment_basis", "price_tier"):
         if k in payload and payload[k] != c.get(k):
             if user["role"] != "partner_admin":
@@ -352,6 +386,7 @@ async def update_customer(customer_id: str, payload: dict, user: dict = Depends(
     if "payment_terms_days" in upd and user["role"] != "partner_admin":
         raise HTTPException(403, "Only a partner admin changes terms")
     await db.customers().update_one({"_id": customer_id}, {"$set": upd})
+    customer_search.invalidate(node["node_id"])
     await audit.log(user, node["node_id"], "update", "customers", customer_id,
                     before={k: c.get(k) for k in upd}, after=upd)
     return {**c, **upd}
@@ -363,6 +398,7 @@ async def save_site(customer_id: str, payload: dict, user: dict = Depends(curren
     site = await commerce.make_site(payload)
     sites = [s for s in c.get("sites") or [] if s["site_id"] != site["site_id"]] + [site]
     await db.customers().update_one({"_id": customer_id}, {"$set": {"sites": sites}})
+    customer_search.invalidate(user["node_id"])
     await audit.log(user, user["node_id"], "update", "customers", customer_id, after={"site": site})
     return site
 

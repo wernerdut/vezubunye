@@ -72,5 +72,6 @@ export function errMsg(e: unknown): string {
   const d = ax.response?.data?.detail
   if (typeof d === 'string') return d
   if (Array.isArray(d)) return d.map((x: { msg?: string }) => x.msg).join('; ')
+  if (d && typeof d === 'object' && typeof (d as { message?: unknown }).message === 'string') return (d as { message: string }).message
   return ax.message || 'Something went wrong'
 }

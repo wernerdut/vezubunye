@@ -6,11 +6,12 @@ import { Chip, ErrorBox, Field, PageTitle, Tabs, useAction } from '../components
 import { Colour, Config, useApp } from '../lib/ctx'
 import { date, label, today } from '../lib/format'
 
-type Tab = 'company' | 'branding' | 'products' | 'colours' | 'prices' | 'charges' | 'drivers' | 'users' | 'xero' | 'yoco'
+type Tab = 'company' | 'branding' | 'products' | 'colours' | 'prices' | 'charges' | 'drivers' | 'users' | 'xero' | 'yoco' | 'import'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'company', label: 'Company' }, { key: 'branding', label: 'Branding' }, { key: 'products', label: 'Products' },
   { key: 'colours', label: 'Colours' }, { key: 'prices', label: 'Prices' }, { key: 'charges', label: 'Charges & general' },
   { key: 'drivers', label: 'Drivers' }, { key: 'users', label: 'Users' }, { key: 'xero', label: 'Xero' }, { key: 'yoco', label: 'Yoco' },
+  { key: 'import', label: 'Import' },
 ]
 
 export default function Settings() {
@@ -31,6 +32,7 @@ export default function Settings() {
       {tab === 'users' && <Users />}
       {tab === 'xero' && <Xero />}
       {tab === 'yoco' && <Yoco />}
+      {tab === 'import' && <ImportCin7 />}
     </div>
   )
 }
@@ -362,6 +364,45 @@ function Yoco() {
       <div className="flex justify-end gap-2">
         {y.connected && <button className="btn-danger" onClick={() => a.run(async () => { await api.delete('/api/p/yoco'); await load(); await reload() }, errMsg)}>Disconnect</button>}
         <button className="btn-primary" disabled={!key || a.busy} onClick={() => a.run(async () => { await api.put('/api/p/yoco', { secret_key: key }); setKey(''); await load(); await reload() }, errMsg)}>Save key</button>
+      </div>
+    </div>
+  )
+}
+
+/** Cin7 customer export: check first (counts, nothing saved), then import. Running it again
+ * updates the same customers rather than adding them twice. */
+function ImportCin7() {
+  const [cust, setCust] = useState<File | null>(null)
+  const [addr, setAddr] = useState<File | null>(null)
+  const [res, setRes] = useState<any>(null)
+  const a = useAction()
+  const send = (apply: boolean) => a.run(async () => {
+    const fd = new FormData()
+    fd.append('customers', cust as File)
+    fd.append('addresses', addr as File)
+    fd.append('apply', String(apply))
+    setRes((await api.post('/api/p/customers/import/cin7', fd)).data)
+  }, errMsg)
+  return (
+    <div className="card space-y-3 p-4">
+      <p className="text-sm text-gray-600">Customers and addresses from the Cin7 export. Check shows what would happen and saves nothing. Import can be run again: it updates the same customers.</p>
+      <Field label="Customers file (makx_customers.csv)"><input type="file" accept=".csv" className="input" onChange={(e) => { setCust(e.target.files?.[0] || null); setRes(null) }} /></Field>
+      <Field label="Addresses file (makx_customer_addresses.csv)"><input type="file" accept=".csv" className="input" onChange={(e) => { setAddr(e.target.files?.[0] || null); setRes(null) }} /></Field>
+      <ErrorBox msg={a.error} />
+      {res && <div className="rounded-lg border bg-gray-50 p-3 text-sm">
+        <div className="font-semibold">{res.applied ? 'Imported' : 'Check only: nothing saved yet'}</div>
+        <ul className="mt-1 space-y-0.5">
+          <li>{res.rows} customers in the file: {res.new} new, {res.updated} already imported (updated), {res.merged_with_existing.length} matched to customers already in the app</li>
+          <li>{res.trade} on trade prices (Cin7 wholesale list); {res.trade_to_check} look like trade but import as retail, marked to check</li>
+          <li>{res.with_delivery_sites} with a delivery address; {res.no_address} with no address at all</li>
+          <li>Everyone imports paying upfront. New customers continue after {res.refs_continue_after}.</li>
+        </ul>
+        {res.merged_with_existing.length > 0 && <details className="mt-2"><summary className="cursor-pointer">Matched to existing customers</summary>
+          <ul className="mt-1 text-xs text-gray-600">{res.merged_with_existing.map((m: string) => <li key={m}>{m}</li>)}</ul></details>}
+      </div>}
+      <div className="flex justify-end gap-2">
+        <button className="btn-ghost" disabled={!cust || !addr || a.busy} onClick={() => send(false)}>Check</button>
+        <button className="btn-primary" disabled={!cust || !addr || a.busy || !res || res.applied} onClick={() => send(true)}>Import</button>
       </div>
     </div>
   )

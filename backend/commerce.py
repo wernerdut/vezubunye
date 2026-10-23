@@ -184,10 +184,25 @@ async def make_site(raw: dict) -> dict:
     return site
 
 
+def customer_prefix(node: dict) -> str:
+    return node.get("customer_prefix") or f"{prefix(node)}C"
+
+
 async def create_customer(node_id: str, raw: dict, user: dict, allow_terms: bool) -> dict:
+    """New customer, numbered <prefix>-0001. Same phone or email as an existing customer is
+    refused (409, with the matches) unless `force` is set: "Create anyway"."""
+    import customer_search
     cfg = await get_cfg(node_id)
     if not (raw.get("name") or "").strip():
         raise HTTPException(400, "Customer name required")
+    phone = customer_search.phone_e164(raw.get("phone"))
+    if not raw.get("force"):
+        dup = await customer_search.duplicates(node_id, phone, raw.get("email"))
+        if dup:
+            d = dup[0]
+            what = "number" if d["match"] == "phone" else "email"
+            raise HTTPException(409, {"message": f"This {what} belongs to {d['name']}. Use them instead?",
+                                      "matches": dup})
     basis = raw.get("payment_basis") or "upfront"
     tier = raw.get("price_tier") or "retail"
     if not allow_terms and (basis != "upfront" or tier != "retail"):
@@ -196,12 +211,15 @@ async def create_customer(node_id: str, raw: dict, user: dict, allow_terms: bool
     sites = [await make_site(s) for s in raw.get("sites") or []]
     doc = {"_id": uuid4().hex, "node_id": node_id, "name": raw["name"].strip(),
            "contact_person": raw.get("contact_person", ""), "email": raw.get("email", ""),
-           "phone": raw.get("phone", ""), "billing_address": raw.get("billing_address", ""),
+           "phone": phone, "billing_address": raw.get("billing_address", ""),
            "vat_number": raw.get("vat_number", ""), "payment_basis": basis,
            "payment_terms_days": raw.get("payment_terms_days") or cfg.get("payment_terms_days", 30),
            "price_tier": tier, "xero_contact_id": None, "active": True, "sites": sites,
-           "date": today(), "created_at": now(), "created_by": user["email"]}
+           "date": today(), "last_activity": today(), "created_at": now(), "created_by": user["email"]}
+    node = await db.nodes().find_one({"node_id": node_id}) or {"node_id": node_id}
+    doc["ref"] = f"{customer_prefix(node)}-{await db.next_number(node_id, 'customer'):04d}"
     await db.customers().insert_one(doc)
+    customer_search.invalidate(node_id)
     await audit.log(user, node_id, "create", "customers", doc["_id"], after=doc)
     return doc
 
@@ -245,10 +263,20 @@ async def create_order(node: dict, cfg: dict, customer: dict, raw: dict, user: d
         **(extra or {}),
     }
     await db.orders().insert_one(order, session=session)
+    if not legacy:
+        await touch_customer(customer["_id"], order["date"], session=session)
     if basis == "upfront" and not legacy:
         await create_invoice(node, cfg, order, order["lines"], user, session=session)
     await audit.log(user, node_id, "create", "orders", order["_id"], after=order, session=session)
     return order
+
+
+async def touch_customer(customer_id: str, order_date: str | None = None, session=None) -> None:
+    """Keep last order / last activity on the customer for search ranking and the recent list."""
+    upd = {"last_activity": today()}
+    if order_date:
+        upd["last_order_date"] = order_date
+    await db.customers().update_one({"_id": customer_id}, {"$max": upd}, session=session)
 
 
 async def order_or_404(node_id: str, order_id: str) -> dict:
@@ -934,6 +962,7 @@ async def create_quote(node: dict, cfg: dict, customer: dict, raw: dict, user: d
          "revisions": [], "share_token": driver_token(),
          "created_by": user["email"], "created_at": now()}
     await db.quotes().insert_one(q)
+    await touch_customer(customer["_id"])
     await audit.log(user, node_id, "create", "quotes", q["_id"], after=q)
     return q
 

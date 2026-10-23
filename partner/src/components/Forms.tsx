@@ -23,6 +23,7 @@ export function LineEditor({ lines, setLines, tier }: { lines: Line[]; setLines:
   const unit = (l: Line) => (l.unit_price ?? (l.kind === 'charge' ? cfg.charges.find((c) => c.code === l.code)?.amount : listPrice(l)) ?? 0)
   const upd = (i: number, patch: Partial<Line>) => setLines(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)))
   const total = lines.reduce((s, l) => s + unit(l) * (l.qty || 0), 0)
+  const delivery = cfg.charges.find((c) => /deliver/i.test(c.name))
   return (
     <div className="space-y-2">
       {lines.map((l, i) => {
@@ -70,7 +71,8 @@ export function LineEditor({ lines, setLines, tier }: { lines: Line[]; setLines:
       })}
       <div className="flex flex-wrap items-center gap-2">
         <button className="btn-ghost btn-sm" onClick={() => setLines([...lines, { kind: 'tank', qty: 1, grade: 'A' }])}><Plus size={14} /> Tank</button>
-        {cfg.charges.length > 0 && <button className="btn-ghost btn-sm" onClick={() => setLines([...lines, { kind: 'charge', qty: 1, code: cfg.charges[0].code }])}><Plus size={14} /> Charge</button>}
+        {delivery && <button className="btn-ghost btn-sm" onClick={() => setLines([...lines, { kind: 'charge', qty: 1, code: delivery.code }])}><Plus size={14} /> Delivery</button>}
+        {cfg.charges.some((c) => c !== delivery) && <button className="btn-ghost btn-sm" onClick={() => setLines([...lines, { kind: 'charge', qty: 1, code: (cfg.charges.find((c) => c !== delivery) || cfg.charges[0]).code }])}><Plus size={14} /> Charge</button>}
         <span className="ml-auto text-sm">Total <b className="tabular-nums">{money(total)}</b> <span className="text-gray-500">{tierDef?.prices_include_vat ? 'incl VAT' : 'excl VAT'} · {label(tier)}</span></span>
       </div>
     </div>
@@ -83,36 +85,72 @@ export function cleanLines(lines: Line[]) {
 
 // ---------------------------------------------------------------- customers
 
-export function CustomerPicker({ value, onChange }: { value: any; onChange: (c: any) => void }) {
+/** One search box over all customers: name, contact, phone (partial), email, suburb, ref.
+ * Results as you type (150 ms), arrow keys and Enter on desktop, big rows on a phone. Empty box
+ * shows customers active in the past 30 days. */
+export function CustomerSearch({ onPick, autoFocus = true, action }: { onPick: (row: any) => void; autoFocus?: boolean; action?: React.ReactNode }) {
   const [q, setQ] = useState('')
-  const [list, setList] = useState<any[]>([])
+  const [rows, setRows] = useState<any[] | null>(null)
+  const [hi, setHi] = useState(0)
+  useEffect(() => {
+    let live = true
+    const t = setTimeout(() => {
+      api.get('/api/p/customers/search', { params: { q } }).then((r) => { if (live) { setRows(r.data); setHi(0) } })
+    }, q ? 150 : 0)
+    return () => { live = false; clearTimeout(t) }
+  }, [q])
+  const key = (e: React.KeyboardEvent) => {
+    if (!rows?.length) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, rows.length - 1)) }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)) }
+    if (e.key === 'Enter') { e.preventDefault(); onPick(rows[hi]) }
+  }
+  return (
+    <div>
+      <div className="flex gap-2">
+        <input className="input" autoFocus={autoFocus} placeholder="Name, phone, suburb, email or MKC number" value={q}
+          onChange={(e) => setQ(e.target.value)} onKeyDown={key} inputMode="search" />
+        {action}
+      </div>
+      {!q && rows && rows.length > 0 && <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Recent</div>}
+      <div className="mt-1 divide-y rounded-lg border">
+        {rows === null ? <div className="px-3 py-3 text-sm text-gray-400">Searching…</div>
+          : rows.length === 0 ? <div className="px-3 py-3 text-sm text-gray-400">{q ? 'No match' : 'Type to search'}</div>
+          : rows.map((c, i) => (
+            <button key={c._id} onMouseEnter={() => setHi(i)} onClick={() => onPick(c)}
+              className={`flex w-full items-center justify-between gap-3 px-3 py-3 text-left ${i === hi ? 'bg-brand-primary/10' : 'hover:bg-gray-50'}`}>
+              <div className="min-w-0">
+                <div className="truncate font-semibold">{c.name}</div>
+                <div className="truncate text-xs text-gray-500">
+                  {[c.suburb, c.last_order_date ? `last order ${c.last_order_date}` : 'no orders yet', c.phone_last4 ? `••${c.phone_last4}` : '', c.ref].filter(Boolean).join(' · ')}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                {c.payment_basis === 'terms' && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-800">Terms</span>}
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${c.price_tier === 'trade' ? 'bg-violet-50 text-violet-800' : 'bg-gray-100 text-gray-700'}`}>{label(c.price_tier)}</span>
+              </div>
+            </button>
+          ))}
+      </div>
+    </div>
+  )
+}
+
+export function CustomerPicker({ value, onChange }: { value: any; onChange: (c: any) => void }) {
   const [adding, setAdding] = useState(false)
-  useEffect(() => { api.get('/api/p/customers').then((r) => setList(r.data)) }, [adding])
-  const shown = list.filter((c) => c.active !== false && (!q || c.name.toLowerCase().includes(q.toLowerCase()) || (c.phone || '').includes(q))).slice(0, 8)
+  const pick = async (row: any) => onChange((await api.get(`/api/p/customers/${row._id}`, { params: { brief: true } })).data)
   if (value) {
     return (
       <div className="flex items-center justify-between rounded-lg border bg-gray-50 p-3">
         <div><div className="font-semibold">{value.name}</div>
-          <div className="text-xs text-gray-500">{label(value.payment_basis)} · {label(value.price_tier)}{value.phone ? ` · ${value.phone}` : ''}</div></div>
+          <div className="text-xs text-gray-500">{[value.ref, label(value.payment_basis), label(value.price_tier), value.phone].filter(Boolean).join(' · ')}</div></div>
         <button className="btn-ghost btn-sm" onClick={() => onChange(null)}>Change</button>
       </div>
     )
   }
   return (
     <div>
-      <div className="flex gap-2">
-        <input className="input" placeholder="Search customers" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="btn-ghost" onClick={() => setAdding(true)}><Plus size={16} /> New</button>
-      </div>
-      <div className="mt-2 divide-y rounded-lg border">
-        {shown.map((c) => (
-          <button key={c._id} className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-50" onClick={() => onChange(c)}>
-            <span className="font-medium">{c.name}</span> <span className="text-gray-500">{c.phone}</span>
-            {c.payment_basis === 'terms' && <span className="ml-1 text-xs text-sky-700">terms</span>}
-          </button>
-        ))}
-        {shown.length === 0 && <div className="px-3 py-2 text-sm text-gray-400">No match</div>}
-      </div>
+      <CustomerSearch onPick={pick} action={<button className="btn-ghost" onClick={() => setAdding(true)}><Plus size={16} /> New</button>} />
       {adding && <CustomerForm onClose={() => setAdding(false)} onSaved={(c) => { setAdding(false); onChange(c) }} />}
     </div>
   )
@@ -123,11 +161,18 @@ export function CustomerForm({ initial, onClose, onSaved }: { initial?: any; onC
   const [c, setC] = useState<any>(initial || { name: '', phone: '', email: '', contact_person: '', billing_address: '', vat_number: '', payment_basis: 'upfront', price_tier: 'retail' })
   const [site, setSite] = useState<any>(initial ? null : { label: 'Main', address: '', town: '', maps_link: '' })
   const a = useAction()
-  const save = () => a.run(async () => {
-    const r = initial ? await api.put(`/api/p/customers/${initial._id}`, c)
-      : await api.post('/api/p/customers', { ...c, sites: site && (site.address || site.maps_link || site.lat) ? [site] : [] })
-    onSaved(r.data)
+  const [dup, setDup] = useState<{ message: string; matches: any[] } | null>(null)
+  const save = (force = false) => a.run(async () => {
+    try {
+      const r = initial ? await api.put(`/api/p/customers/${initial._id}`, c)
+        : await api.post('/api/p/customers', { ...c, force, sites: site && (site.address || site.maps_link || site.lat) ? [site] : [] })
+      onSaved(r.data)
+    } catch (e: any) {
+      if (e?.response?.status === 409 && e.response.data?.detail?.matches) { setDup(e.response.data.detail); return }
+      throw e
+    }
   }, errMsg)
+  const pickExisting = (m: any) => a.run(async () => onSaved((await api.get(`/api/p/customers/${m._id}`, { params: { brief: true } })).data), errMsg)
   const f = (k: string) => ({ value: c[k] || '', onChange: (e: any) => setC({ ...c, [k]: e.target.value }) })
   return (
     <Modal title={initial ? 'Edit customer' : 'New customer'} onClose={onClose} wide>
@@ -146,7 +191,17 @@ export function CustomerForm({ initial, onClose, onSaved }: { initial?: any; onC
       </div>
       {site && <div className="mt-4"><div className="label">Delivery site</div><SiteFields site={site} setSite={setSite} /></div>}
       <ErrorBox msg={a.error} />
-      <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={a.busy || !c.name} onClick={save}>Save</button></div>
+      {dup && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
+        <div className="font-semibold text-amber-900">{dup.message}</div>
+        {dup.matches.map((m) => (
+          <div key={m._id} className="mt-2 flex items-center justify-between gap-2">
+            <span>{m.name}{m.suburb ? ` · ${m.suburb}` : ''}{m.ref ? ` · ${m.ref}` : ''} <span className="text-gray-500">(same {m.match})</span></span>
+            <button className="btn-primary btn-sm" disabled={a.busy} onClick={() => pickExisting(m)}>Use existing</button>
+          </div>
+        ))}
+        <div className="mt-3 flex justify-end"><button className="btn-ghost btn-sm" disabled={a.busy} onClick={() => save(true)}>Create anyway</button></div>
+      </div>}
+      <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={a.busy || !c.name} onClick={() => save()}>Save</button></div>
     </Modal>
   )
 }

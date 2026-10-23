@@ -718,6 +718,41 @@ async def test_xero_match_mode_links_yoco_not_new_eft(client):
     await db.xero_connections().delete_one({"node_id": "makulu"})
 
 
+
+async def test_customer_search_and_duplicates(client):
+    c = client
+    import customer_search as cs
+    assert cs.phone_e164("082 555-0101") == "+27825550101" == cs.phone_e164("27825550101") == cs.phone_e164("+27 82 555 0101")
+    assert cs.norm("A.R. Búx") == "a r bux"
+    cust = await db.customers().find_one({"_id": S["mx_cust"]["_id"]})
+    assert cust["phone"] == "+27825550101" and cust["ref"].startswith("MKC-")
+    # same number typed another way: refused with the match, then created on "Create anyway"
+    r = await c.post("/api/p/customers", headers=S["mx"], json={"name": "P Hanekom", "phone": "0825550101"})
+    assert r.status_code == 409 and r.json()["detail"]["matches"][0]["_id"] == cust["_id"]
+    assert "Hanekom Farms" in r.json()["detail"]["message"]
+    other = await ok(await c.post("/api/p/customers", headers=S["mx"], json={"name": "Gert Geringoe", "phone": "0721118054",
+                                                                            "email": "gert@x.co.za", "sites": [{"address": "1 Main Rd", "town": "Milnerton"}]}))
+    r = await c.post("/api/p/customers", headers=S["mx"], json={"name": "G G", "email": "GERT@x.co.za"})
+    assert r.status_code == 409 and r.json()["detail"]["matches"][0]["match"] == "email"
+    forced = await ok(await c.post("/api/p/customers", headers=S["mx"], json={"name": "G G", "email": "gert@x.co.za", "force": True}))
+    async def find(q):
+        return [x["_id"] for x in await ok(await c.get("/api/p/customers/search", headers=S["mx"], params={"q": q}))]
+    assert (await find("082 555 0101"))[0] == cust["_id"]          # exact phone first
+    assert other["_id"] in await find("8054")                      # partial phone
+    assert (await find("Gringoe"))[0] == other["_id"]              # typo
+    assert other["_id"] in await find("milnerton")                 # suburb
+    assert (await find(other["ref"]))[0] == other["_id"]          # ref
+    assert (await find("hanekom"))[0] == cust["_id"]
+    row = (await ok(await c.get("/api/p/customers/search", headers=S["mx"], params={"q": "geringoe"})))[0]
+    assert row["suburb"] == "Milnerton" and row["phone_last4"] == "8054" and row["price_tier"] == "retail"
+    recent = await find("")
+    assert cust["_id"] in recent                                   # has orders this month
+    # other nodes never show up
+    assert await ok(await c.get("/api/p/customers/search", headers=S["nb"], params={"q": "hanekom"})) == []
+    await db.customers().delete_one({"_id": forced["_id"]})
+    cs.invalidate("makulu")
+
+
 # ---------------------------------------------------------------- dashboard
 
 async def test_dashboard_board(client):

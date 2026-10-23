@@ -114,7 +114,7 @@ def _add(d: str, n: int) -> str:
 
 MAKULU_NODE = {
     "node_id": "makulu", "name": "Makulu Tanks", "location": "Bellville South, Cape Town",
-    "status": "active", "slug": "makx", "prefix": "MX", "partner_app_live": False,
+    "status": "active", "slug": "makx", "prefix": "MX", "customer_prefix": "MKC", "partner_app_live": False,
     "branding": {
         "display_name": "Makulu Tanks",
         "colors": {"primary": "#00B499", "accent": "#9CC938", "dark": "#0A1D23",
@@ -225,6 +225,9 @@ async def seed_makulu() -> list[str]:
     if not await db.nodes().find_one({"node_id": "makulu"}):
         await db.nodes().insert_one({"_id": uuid4().hex, **MAKULU_NODE, "created_at": datetime.utcnow()})
         done.append("node")
+    elif not (await db.nodes().find_one({"node_id": "makulu"})).get("customer_prefix"):
+        await db.nodes().update_one({"node_id": "makulu"}, {"$set": {"customer_prefix": "MKC"}})   # Cin7 numbering
+        done.append("customer_prefix")
     if not await db.node_config().find_one({"node_id": "makulu"}):
         await db.node_config().insert_one({"_id": uuid4().hex, **makulu_config()})
         done.append("config")
