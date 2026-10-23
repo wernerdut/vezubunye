@@ -208,6 +208,45 @@ export function CustomerForm({ initial, onClose, onSaved }: { initial?: any; onC
 
 // ---------------------------------------------------------------- sites and maps
 
+export const NEW_SITE = '__new'
+
+/** Where the order goes: one of the customer's addresses, or a new one typed in here. A new
+ * address is saved on the customer (so it is there next time) when the order is saved. */
+export function DeliverTo({ customer, siteId, setSiteId, site, setSite, optional }: {
+  customer: any; siteId: string; setSiteId: (v: string) => void; site: any; setSite: (s: any) => void; optional?: boolean
+}) {
+  const sites = customer.sites || []
+  const choose = (v: string) => {
+    setSiteId(v)
+    if (v === NEW_SITE && !site) setSite({ label: sites.length ? `Delivery ${sites.length + 1}` : 'Delivery', address: '', town: '', maps_link: '' })
+  }
+  // no address on file: go straight to typing one
+  useEffect(() => { if (!optional && sites.length === 0 && !siteId) choose(NEW_SITE) }, [customer?._id])  // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="sm:col-span-2">
+      <Field label={optional ? 'Delivery address (optional)' : 'Deliver to'}>
+        <select className="input" value={siteId} onChange={(e) => choose(e.target.value)}>
+          {optional && <option value="">Not yet</option>}
+          {sites.map((s: any) => <option key={s.site_id} value={s.site_id}>{[s.label, s.address, s.town].filter(Boolean).join(', ')}</option>)}
+          <option value={NEW_SITE}>+ New address…</option>
+        </select>
+      </Field>
+      {siteId === NEW_SITE && site && <div className="mt-2 rounded-lg border p-3"><SiteFields site={site} setSite={setSite} /></div>}
+    </div>
+  )
+}
+
+/** Save a new address typed on an order or quote; returns the site id to use. */
+export async function siteIdFor(customer: any, siteId: string, site: any, onSaved?: (site: any) => void): Promise<string | undefined> {
+  if (siteId !== NEW_SITE) return siteId || undefined
+  if (!site || !(site.address || site.town || site.maps_link || (site.lat != null && site.lat !== ''))) {
+    throw new Error('Type the new address, paste a Maps link or pin it')
+  }
+  const r = await api.post(`/api/p/customers/${customer._id}/sites`, site)
+  onSaved?.(r.data)         // a retry after a failed save reuses it instead of adding it twice
+  return r.data.site_id
+}
+
 /** Paste a Google Maps link, use my location, or type coordinates. The link is always kept;
  * coordinates are parsed server-side (short links resolved). A link that does not parse shows
  * "location not pinned" so it is never silently wrong. */

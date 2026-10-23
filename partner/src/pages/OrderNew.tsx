@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, errMsg } from '../api'
 import { ShareBar } from '../components/Actions'
-import { cleanLines, CustomerPicker, Line, LineEditor } from '../components/Forms'
+import { cleanLines, CustomerPicker, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { ErrorBox, Field, PageTitle, useAction } from '../components/ui'
 import { useApp } from '../lib/ctx'
 
@@ -13,6 +13,7 @@ export default function OrderNew({ quick }: { quick?: boolean }) {
   const [customer, setCustomer] = useState<any>(null)
   const [lines, setLines] = useState<Line[]>([{ kind: 'tank', qty: 1, grade: 'A' }])
   const [siteId, setSiteId] = useState('')
+  const [newSite, setNewSite] = useState<any>(null)
   const [requested, setRequested] = useState('')
   const [notes, setNotes] = useState('')
   const [cod, setCod] = useState(false)
@@ -29,8 +30,9 @@ export default function OrderNew({ quick }: { quick?: boolean }) {
       else navigate(`/orders/${r.data.order._id}`)
       return
     }
+    const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
     const r = await api.post('/api/p/orders', {
-      customer_id: customer._id, lines: cleanLines(lines), site_id: siteId || undefined, requested_date: requested || undefined,
+      customer_id: customer._id, lines: cleanLines(lines), site_id, requested_date: requested || undefined,
       notes, pay_on_delivery: upfront && cod, cod_method: codMethod,
     })
     navigate(`/orders/${r.data._id}`)
@@ -50,17 +52,12 @@ export default function OrderNew({ quick }: { quick?: boolean }) {
     <div className="mx-auto max-w-3xl">
       <PageTitle title={quick ? 'Quick sale' : 'New order'} sub={quick ? 'Walk-in at the factory: order, invoice, payment and delivery note in one go.' : undefined} />
       <div className="card space-y-4 p-4">
-        <CustomerPicker value={customer} onChange={setCustomer} />
+        <CustomerPicker value={customer} onChange={(c) => { setCustomer(c); setSiteId(''); setNewSite(null) }} />
         {customer && <>
           <LineEditor lines={lines} setLines={setLines} tier={customer.price_tier || 'retail'} />
           {!quick && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Deliver to">
-                <select className="input" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-                  {(customer.sites || []).length === 0 && <option value="">No site yet</option>}
-                  {(customer.sites || []).map((s: any) => <option key={s.site_id} value={s.site_id}>{s.label}{s.town ? `, ${s.town}` : ''}</option>)}
-                </select>
-              </Field>
+              <DeliverTo customer={customer} siteId={siteId} setSiteId={setSiteId} site={newSite} setSite={setNewSite} />
               <Field label="Requested date"><input type="date" className="input" value={requested} onChange={(e) => setRequested(e.target.value)} /></Field>
             </div>
           )}

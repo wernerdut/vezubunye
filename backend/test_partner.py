@@ -753,6 +753,21 @@ async def test_customer_search_and_duplicates(client):
     cs.invalidate("makulu")
 
 
+
+async def test_new_address_typed_on_order(client):
+    """New order, '+ New address': the address is saved on the customer, then the order uses it."""
+    c = client
+    site = await ok(await c.post(f"/api/p/customers/{S['mx_cust']['_id']}/sites", headers=S["mx"], json={
+        "label": "Delivery 2", "address": "12 Vlei Rd", "town": "Philippi"}))
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "site_id": site["site_id"],
+        "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}, {"kind": "charge", "code": "DEL50"}]}))
+    assert o["site"]["address"] == "12 Vlei Rd" and o["site"]["town"] == "Philippi"
+    cust = await db.customers().find_one({"_id": S["mx_cust"]["_id"]})
+    assert any(s["site_id"] == site["site_id"] for s in cust["sites"])
+    assert any(ln["kind"] == "charge" and ln["unit_price"] == 300 for ln in o["lines"])
+
+
 # ---------------------------------------------------------------- dashboard
 
 async def test_dashboard_board(client):

@@ -2,7 +2,7 @@ import { Plus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, errMsg } from '../api'
-import { cleanLines, CustomerPicker, Line, LineEditor } from '../components/Forms'
+import { cleanLines, CustomerPicker, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { Empty, ErrorBox, Field, Modal, PageTitle, Spinner, Status, Tabs, useAction } from '../components/ui'
 import { date, money } from '../lib/format'
 
@@ -42,29 +42,26 @@ export default function Quotes() {
 export function QuoteForm({ initial, onClose, onSaved }: { initial?: any; onClose: () => void; onSaved: (q: any) => void }) {
   const [customer, setCustomer] = useState<any>(null)
   const [lines, setLines] = useState<Line[]>(initial?.lines || [{ kind: 'tank', qty: 1, grade: 'A' }])
-  const [siteId, setSiteId] = useState('')
+  const [siteId, setSiteId] = useState(initial?.site?.site_id || '')
+  const [newSite, setNewSite] = useState<any>(null)
   const [notes, setNotes] = useState(initial?.notes || '')
   const [validUntil, setValidUntil] = useState(initial?.valid_until || '')
   const a = useAction()
   useEffect(() => { if (initial) api.get(`/api/p/customers/${initial.customer_id}`).then((r) => setCustomer(r.data)) }, [initial])
   const save = () => a.run(async () => {
-    const body = { customer_id: customer._id, lines: cleanLines(lines), site_id: siteId || undefined, notes, valid_until: validUntil || undefined }
+    const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
+    const body = { customer_id: customer._id, lines: cleanLines(lines), site_id, notes, valid_until: validUntil || undefined }
     const r = initial ? await api.put(`/api/p/quotes/${initial._id}`, body) : await api.post('/api/p/quotes', body)
     onSaved(r.data)
   }, errMsg)
   return (
     <Modal title={initial ? `Revise ${initial.quote_number}` : 'New quote'} onClose={onClose} wide>
       <div className="space-y-4">
-        {initial ? <div className="font-semibold">{initial.customer_name}</div> : <CustomerPicker value={customer} onChange={setCustomer} />}
+        {initial ? <div className="font-semibold">{initial.customer_name}</div> : <CustomerPicker value={customer} onChange={(c) => { setCustomer(c); setSiteId(''); setNewSite(null) }} />}
         {customer && <>
           <LineEditor lines={lines} setLines={setLines} tier={customer.price_tier || 'retail'} />
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Delivery site (optional)">
-              <select className="input" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
-                <option value="">Not yet</option>
-                {(customer.sites || []).map((s: any) => <option key={s.site_id} value={s.site_id}>{s.label}</option>)}
-              </select>
-            </Field>
+            <DeliverTo customer={customer} siteId={siteId} setSiteId={setSiteId} site={newSite} setSite={setNewSite} optional />
             <Field label="Valid until"><input type="date" className="input" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} /></Field>
           </div>
           <Field label="Notes"><textarea className="input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
