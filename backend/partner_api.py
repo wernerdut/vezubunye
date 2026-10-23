@@ -167,7 +167,7 @@ async def get_config(user: dict = Depends(current_partner)):
 
 
 SETTABLE = {"tank_types", "colours", "price_tiers", "charges", "quote_validity_days", "cash_banking_days",
-            "drivers", "payment_terms_days"}
+            "drivers", "payment_terms_days", "proforma"}
 
 
 @router.put("/settings/config")
@@ -463,12 +463,53 @@ async def quote_status(quote_id: str, payload: dict, user: dict = Depends(curren
     return wall(out)
 
 
+async def _quote_link(node: dict, q: dict) -> str | None:
+    """The proforma's open card link, if one was made (printed on the PDF)."""
+    pl = await db.pay_links().find_one({"quote_id": q["_id"], "status": {"$in": ["open", "sent"]}})
+    return yoco.public_url(node, pl["token"]) if pl and q["status"] in ("draft", "sent") else None
+
+
+@router.post("/quotes/{quote_id}/pay-link")
+async def proforma_pay_link(quote_id: str, user: dict = Depends(current_partner)):
+    node, _ = await ctx(user)
+    q = await quote_or_404(node["node_id"], quote_id)
+    pl = await yoco.proforma_pay_link(node, q, user, mark_sent=True)
+    cust = await db.customers().find_one({"_id": q["customer_id"]})
+    msg = f"{_greeting(cust)} you can pay proforma {q['quote_number']} ({partner_pdf.money(q['total'])}) by card here: {pl['url']}"
+    return {"url": pl["url"], "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg)}
+
+
+@router.post("/quotes/{quote_id}/payments")
+async def pay_proforma(quote_id: str, payload: dict, user: dict = Depends(current_partner)):
+    """Cash, card-machine slip or EFT on a proforma: the first payment makes the order and its
+    tax invoice. Part payments are fine."""
+    node, cfg = await ctx(user)
+    q = await quote_or_404(node["node_id"], quote_id)
+    method = payload.get("method")
+    if method not in ("cash", "yoco_machine", "eft"):
+        raise HTTPException(400, "Method is cash, yoco_machine or eft")
+    if method == "yoco_machine" and not payload.get("reference"):
+        raise HTTPException(400, "Enter the card-machine slip reference")
+    try:
+        amount = float(payload.get("amount") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Amount must be a number")
+    raw = {"amount": amount, "method": "yoco" if method == "yoco_machine" else method,
+           "source": "machine" if method == "yoco_machine" else None,
+           "reference": payload.get("reference") or q["quote_number"], "date": payload.get("date"),
+           "holder": {"type": "staff", "name": user.get("name") or user["email"]} if method == "cash" else None}
+    out = await commerce.pay_proforma(node, q, raw, user)
+    await _xero_invoice(out["invoice_id"])
+    await _xero_payment(node["node_id"], out["payment"]["_id"])
+    return wall({**out, "quote": await quote_or_404(node["node_id"], quote_id)}, cfg, user["role"])
+
+
 @router.get("/quotes/{quote_id}/pdf")
 async def quote_pdf(quote_id: str, user: dict = Depends(current_partner)):
     node, cfg = await ctx(user)
     q = await quote_or_404(node["node_id"], quote_id)
     cust = await db.customers().find_one({"_id": q["customer_id"]})
-    return pdf_response(partner_pdf.quote(await node_for_pdf(node), cfg, q, cust), q["quote_number"])
+    return pdf_response(partner_pdf.quote(await node_for_pdf(node), cfg, q, cust, await _quote_link(node, q)), q["quote_number"])
 
 
 # ---------- share links (signed, read-only, expiring) ---------- #
@@ -495,17 +536,25 @@ def _greeting(cust: dict | None) -> str:
 
 @router.post("/quotes/{quote_id}/share")
 async def share_quote(quote_id: str, user: dict = Depends(current_partner)):
-    node, _ = await ctx(user)
+    node, cfg = await ctx(user)
     q = await quote_or_404(node["node_id"], quote_id)
     if not q.get("share_token"):
         q["share_token"] = commerce.driver_token()
         await db.quotes().update_one({"_id": q["_id"]}, {"$set": {"share_token": q["share_token"]}})
-    exp = datetime.fromisoformat(q["valid_until"]) + timedelta(days=1)
+    proforma = commerce.is_proforma(cfg)
+    exp = (datetime.utcnow() + timedelta(days=180)) if proforma else datetime.fromisoformat(q["valid_until"]) + timedelta(days=1)
     url = share_url(node, "q", share_token("q", q, exp))
     cust = await db.customers().find_one({"_id": q["customer_id"]})
     biz = (node.get("branding") or {}).get("display_name") or node["name"]
-    msg = (f"{_greeting(cust)} here is your quote {q['quote_number']} from {biz} for "
-           f"{partner_pdf.money(q['total'])}, valid until {q['valid_until']}.\n{url}")
+    if proforma:
+        msg = (f"{_greeting(cust)} here is your proforma {q['quote_number']} from {biz} for "
+               f"{partner_pdf.money(q['total'])}. Please use {q['quote_number']} as your payment reference.\n{url}")
+        if await yoco.configured(node["node_id"]) and q["status"] in ("draft", "sent"):
+            pl = await yoco.proforma_pay_link(node, q, user, mark_sent=True)
+            msg += f"\nPay by card: {pl['url']}"
+    else:
+        msg = (f"{_greeting(cust)} here is your quote {q['quote_number']} from {biz} for "
+               f"{partner_pdf.money(q['total'])}, valid until {q['valid_until']}.\n{url}")
     if q["status"] == "draft":
         await commerce.set_quote_status(node, q, "sent", user)
     return {"url": url, "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg)}
@@ -530,7 +579,7 @@ async def shared_pdf(kind: str, token: str):
     cfg = await commerce.get_cfg(doc["node_id"])
     cust = await db.customers().find_one({"_id": doc.get("customer_id")})
     if kind == "q":
-        return pdf_response(partner_pdf.quote(node, cfg, doc, cust), doc["quote_number"])
+        return pdf_response(partner_pdf.quote(node, cfg, doc, cust, await _quote_link(node, doc)), doc["quote_number"])
     link = await _existing_pay_link(node, doc)
     return pdf_response(partner_pdf.invoice(node, cfg, doc, cust, link), doc["display_number"])
 
@@ -921,14 +970,13 @@ async def list_payments(method: Optional[str] = None, user: dict = Depends(curre
 
 @router.post("/payments")
 async def capture_payment(payload: dict, user: dict = Depends(current_partner)):
-    """Cash received, a Yoco card-machine slip, or (on nodes without Xero) an EFT receipt.
+    """Cash received, a Yoco card-machine slip, or an EFT that shows in the bank. With Xero
+    connected, the EFT is linked to the matching payment when it is reconciled there.
     Allocation defaults to oldest open invoice first and is editable before saving."""
     node, cfg = await ctx(user)
     method = payload.get("method")
     if method not in ("cash", "yoco_machine", "eft"):
         raise HTTPException(400, "Method is cash, yoco_machine or eft")
-    if method == "eft" and await xero_mt.connection(node["node_id"]):
-        raise HTTPException(400, "EFT comes from Xero on this business: reconcile the bank line in Xero")
     if method == "yoco_machine" and not payload.get("reference"):
         raise HTTPException(400, "Enter the card-machine slip reference")
     raw = {**payload, "method": "yoco" if method == "yoco_machine" else method,

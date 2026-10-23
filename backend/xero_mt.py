@@ -471,7 +471,13 @@ async def queue_payment(node_id: str, payment_id: str):
     """Mark a Yoco or cash payment for posting; post now when connected."""
     p = await db.payments().find_one({"_id": payment_id})
     c = await connection(node_id)
-    if not p or p.get("method") not in ("yoco", "cash") or not c:
+    if not p or not c:
+        return
+    if p.get("method") == "eft" and not p.get("xero_payment_id"):
+        # keyed in the app when it showed in the bank: Xero gets it when the bank line is matched
+        await db.payments().update_one({"_id": payment_id}, {"$set": {"xero_status": "match_in_xero"}})
+        return
+    if p.get("method") not in ("yoco", "cash"):
         return
     if p["method"] == "yoco" and yoco_mode(c) == "match":
         await db.payments().update_one({"_id": payment_id}, {"$set": {"xero_status": "match_in_xero"}})
@@ -571,7 +577,8 @@ async def pull_invoice_payments(node_id: str) -> dict:
             for a in p.get("allocations") or []:
                 await commerce.refresh_invoice(a["invoice_id"])
             removed += 1
-    async for p in db.payments().find({"node_id": node_id, "method": "yoco", "xero_status": "matched", **ACTIVE}):
+    async for p in db.payments().find({"node_id": node_id, "method": {"$in": ["yoco", "eft"]},
+                                       "xero_status": "matched", **ACTIVE}):
         gone = {k: v for k, v in (p.get("xero_payment_ids") or {}).items() if v not in seen}
         if gone:
             left = {k: v for k, v in p["xero_payment_ids"].items() if k not in gone}
@@ -586,10 +593,11 @@ async def pull_invoice_payments(node_id: str) -> dict:
 
 
 async def _link_yoco(node_id: str, invoice_id: str, xp: dict) -> bool:
-    """Link a Xero payment to the oldest Yoco payment on this invoice not yet matched in Xero."""
-    if yoco_mode(await connection(node_id)) != "match":
-        return False
-    async for p in db.payments().find({"node_id": node_id, "method": "yoco", "allocations.invoice_id": invoice_id,
+    """Link a Xero payment to the oldest payment on this invoice that waits to be matched in
+    Xero: a Yoco payment (in "match" mode) or an EFT keyed in the app when it showed in the bank."""
+    methods = ["eft"] + (["yoco"] if yoco_mode(await connection(node_id)) == "match" else [])
+    async for p in db.payments().find({"node_id": node_id, "method": {"$in": methods}, "allocations.invoice_id": invoice_id,
+                                       "xero_payment_id": {"$in": [None]},
                                        f"xero_payment_ids.{invoice_id}": {"$exists": False}, **ACTIVE}).sort("created_at", 1):
         alloc = sum(a["amount"] for a in p["allocations"] if a["invoice_id"] == invoice_id)
         upd = {f"xero_payment_ids.{invoice_id}": xp["PaymentID"], "xero_status": "matched"}

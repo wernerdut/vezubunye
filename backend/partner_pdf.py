@@ -288,10 +288,11 @@ PRICE_COLS = [("Description", 0.46, "l"), ("Qty", 0.08, "r"), ("Unit", 0.15, "r"
 
 def quote(node: dict, cfg: dict, q: dict, customer: dict | None, pay_link: str | None = None) -> bytes:
     rev = f"Revision {q['rev']}" if q.get("rev", 1) > 1 else ""
-    d = Doc(node, "Quotation", q["quote_number"], q["date"],
-            [f"Valid until {q['valid_until']}"] + ([rev] if rev else []))
+    proforma = bool(cfg.get("proforma"))
+    d = Doc(node, "Pro forma invoice" if proforma else "Quotation", q["quote_number"], q["date"],
+            ([] if proforma else [f"Valid until {q['valid_until']}"]) + ([rev] if rev else []))
     y0 = d.y
-    yl = d.block("Quote for", _customer_lines(customer, q["customer_name"]), MARGIN, y0)
+    yl = d.block("Bill to" if proforma else "Quote for", _customer_lines(customer, q["customer_name"]), MARGIN, y0)
     site = q.get("site") or {}
     yr = d.block("Delivery site", [x for x in (site.get("label"), site.get("address"), site.get("town")) if x], W / 2, y0) if site else y0
     d.y = min(yl, yr) - 4 * mm
@@ -308,7 +309,7 @@ def quote(node: dict, cfg: dict, q: dict, customer: dict | None, pay_link: str |
         d.text("Pay on delivery: cash or card at the site.", 9)
     bank = _bank_lines(node, q["quote_number"])
     if bank:
-        d.text("EFT on acceptance:", 9)
+        d.text(f"EFT, using {q['quote_number']} as the reference:" if proforma else "EFT on acceptance:", 9)
         for ln in bank:
             d.text(ln, 9, x=MARGIN + 4 * mm)
     if q.get("notes"):

@@ -20,7 +20,7 @@ const NAV = [
 ]
 
 export default function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
-  const { brand, me, isAdmin } = useApp()
+  const { brand, me, isAdmin, cfg } = useApp()
   const [open, setOpen] = useState(false)
   const [xero, setXero] = useState<{ connected: boolean; status?: string; waiting?: number } | null>(null)
   const loc = useLocation()
@@ -36,7 +36,7 @@ export default function Shell({ children, onLogout }: { children: ReactNode; onL
       {NAV.map((n) => (
         <NavLink key={n.to} to={n.to} end={n.end}
           className={({ isActive }) => `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium ${isActive ? 'bg-white/15 text-white' : 'text-white/80 hover:bg-white/10 hover:text-white'}`}>
-          <n.icon size={18} /> {n.label}
+          <n.icon size={18} /> {n.to === '/quotes' && cfg.proforma ? 'Proformas' : n.label}
         </NavLink>
       ))}
       {isAdmin && (

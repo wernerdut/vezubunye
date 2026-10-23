@@ -184,7 +184,7 @@ def makulu_config() -> dict:
             {"code": "DEL50", "name": "Delivery within 50 km", "amount": 300.0, "includes_vat": True, "xero_account": ""},
             {"code": "DELQ", "name": "Delivery beyond 50 km", "amount": None, "includes_vat": True, "xero_account": ""},
         ],
-        "quote_validity_days": 14, "cash_banking_days": 2,
+        "quote_validity_days": 14, "cash_banking_days": 2, "proforma": True,
         "drivers": [{"name": "Jimmy", "phone": "+27 67 046 3659", "vehicle_reg": ""},
                     {"name": "Tapiwa L", "phone": "+27 68 473 7805", "vehicle_reg": ""}],
         "updated_at": datetime.utcnow(),
@@ -231,6 +231,10 @@ async def seed_makulu() -> list[str]:
     if not await db.node_config().find_one({"node_id": "makulu"}):
         await db.node_config().insert_one({"_id": uuid4().hex, **makulu_config()})
         done.append("config")
+    if (await db.node_config().find_one({"node_id": "makulu"})).get("proforma") is None:
+        # Makulu works from proformas: paid first, then the order and tax invoice
+        await db.node_config().update_one({"node_id": "makulu"}, {"$set": {"proforma": True}})
+        done.append("proforma")
     for tier, prices in MAKULU_PRICES.items():
         if not await db.price_lists().find_one({"node_id": "makulu", "tier": tier}):
             await pricing.new_version("makulu", tier, "2026-10-01", prices, SYSTEM)

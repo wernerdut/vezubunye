@@ -95,7 +95,7 @@ class Yoco:
             return httpx.Response(200, json={"id": "wh_1", "secret": self.secret, "mode": "test"})
         if p.endswith("/checkouts") and request.method == "POST":
             body = json.loads(request.content)
-            cid = f"co_{body['metadata']['invoice_id'][:6]}_{body['amount']}"
+            cid = f"co_{(body['metadata']['invoice_id'] or body['metadata'].get('quote_id', ''))[:6]}_{body['amount']}"
             return httpx.Response(200, json={"id": cid, "redirectUrl": f"https://pay.example/{cid}", "status": "created"})
         if "/checkouts/" in p:
             cid = p.rsplit("/", 1)[1]
@@ -300,10 +300,13 @@ async def test_prices_incl_vat_and_versions(client):
     acc = await ok(await c.post(f"/api/p/quotes/{q['_id']}/status", headers=S["mx"], json={"status": "accepted"}))
     assert acc["order"]["total"] == 4400.00 and acc["order"]["quote_number"] == q["quote_number"]
     assert (await c.put(f"/api/p/quotes/{q['_id']}", headers=S["mx"], json={"lines": q["lines"]})).status_code == 400
-    # expiry sweep
+    # expiry sweep: Makulu's proformas never lapse (cancelled by hand); a quote node's do
     import commerce
     await db.quotes().update_one({"_id": q3["_id"]}, {"$set": {"valid_until": days(-1)}})
+    assert await commerce.sweep_quotes("makulu") == []
+    await db.node_config().update_one({"node_id": "makulu"}, {"$set": {"proforma": False}})
     assert q3["_id"] in await commerce.sweep_quotes("makulu")
+    await db.node_config().update_one({"node_id": "makulu"}, {"$set": {"proforma": True}})
 
 
 # ---------------------------------------------------------------- pay first, part paid, part delivered
@@ -614,6 +617,54 @@ async def test_yoco_sweep_catches_missed_webhook(client):
     assert await yoco.sweep_links("makulu") == []        # idempotent
 
 
+
+async def test_proforma_paid_becomes_order(client):
+    """Makulu: the quote is a proforma. It never lapses, is cancelled with a reason, and the first
+    payment (card link, cash, card machine or EFT) makes the order and its tax invoice."""
+    c = client
+    import yoco
+    mock = Yoco()
+    yoco.transport = httpx.MockTransport(mock.handler)
+    def new_pf():
+        return c.post("/api/p/quotes", headers=S["mx"], json={
+            "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1},
+                                                           {"kind": "charge", "code": "DEL50"}]})
+    pf = await ok(await new_pf())
+    assert "-PF-" in pf["quote_number"]
+    total = pf["total"]
+    pdf = await c.get(f"/api/p/quotes/{pf['_id']}/pdf", headers=S["mx"])
+    assert pdf.status_code == 200
+    sh = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/share", headers=S["mx"]))
+    assert "proforma" in sh["message"] and pf["quote_number"] in sh["message"] and "Pay by card" in sh["message"]
+    # card link: paying it makes the order, invoice and payment in one go
+    link = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/pay-link", headers=S["mx"]))
+    opened = await ok(await c.get(f"/api/p/pay/{link['url'].rsplit('/', 1)[1]}"))
+    assert opened["amount"] == total and opened["invoice"] == pf["quote_number"]
+    await ok(await webhook(c, "makulu", "pay_pf1", total, {"quote_id": pf["_id"], "invoice_id": ""}))
+    q = await db.quotes().find_one({"_id": pf["_id"]})
+    assert q["status"] == "accepted" and q["order_id"]
+    inv = await db.invoices().find_one({"order_id": q["order_id"], "void": {"$exists": False}})
+    assert inv["status"] == "paid"
+    assert (await db.pay_links().find_one({"quote_id": pf["_id"]}))["status"] == "paid"
+    await ok(await webhook(c, "makulu", "pay_pf1", total, {"quote_id": pf["_id"], "invoice_id": ""}))   # replay: no double
+    assert await db.payments().count_documents({"external_id": "pay_pf1"}) == 1
+    # cash deposit then EFT balance on a second proforma: one order, one invoice
+    pf2 = await ok(await new_pf())
+    r = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/payments", headers=S["mx"], json={"method": "cash", "amount": 1000}))
+    order_id = r["order_id"]
+    r2 = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/payments", headers=S["mx"], json={"method": "eft", "amount": total - 1000}))
+    assert r2["order_id"] == order_id and r2["invoice_id"] == r["invoice_id"]
+    assert (await db.invoices().find_one({"_id": r["invoice_id"]}))["status"] == "paid"
+    assert (await db.payments().find_one({"_id": r2["payment"]["_id"]}))["reference"] == pf2["quote_number"]
+    # unpaid: cancelled by hand with a reason, and its card link stops working
+    pf3 = await ok(await new_pf())
+    link3 = await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/pay-link", headers=S["mx"]))
+    assert (await c.post(f"/api/p/quotes/{pf3['_id']}/status", headers=S["mx"], json={"status": "cancelled"})).status_code == 400
+    await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/status", headers=S["mx"], json={"status": "cancelled", "reason": "Bought elsewhere"}))
+    assert (await ok(await c.get(f"/api/p/pay/{link3['url'].rsplit('/', 1)[1]}")))["state"] == "closed"
+    assert (await c.post(f"/api/p/quotes/{pf3['_id']}/payments", headers=S["mx"], json={"method": "cash", "amount": 5})).status_code == 400
+
+
 async def test_cash_control(client):
     c = client
     import commerce
@@ -668,9 +719,10 @@ async def test_xero_pull_skips_our_payments(client):
     assert p["method"] == "eft" and p["allocations"][0]["invoice_id"] == tinv["_id"]
     assert (await db.invoices().find_one({"_id": tinv["_id"]}))["status"] == "paid"
     assert await xero_mt.pull_invoice_payments("makulu") == {"new": 0, "removed": 0}
-    # with Xero connected, EFT is not keyed in the app
-    r = await client.post("/api/p/payments", headers=S["mx"], json={"method": "eft", "amount": 1, "customer_id": S["mx_terms"]["_id"]})
-    assert r.status_code == 400
+    # with Xero connected, EFT keyed in the app waits to be matched in Xero (and is linked, not doubled)
+    r = await ok(await client.post("/api/p/payments", headers=S["mx"], json={"method": "eft", "amount": 1, "customer_id": S["mx_terms"]["_id"]}))
+    assert (await db.payments().find_one({"_id": r["_id"]}))["xero_status"] == "match_in_xero"
+    await db.payments().delete_one({"_id": r["_id"]})
     await db.xero_connections().delete_one({"node_id": "makulu"})
 
 

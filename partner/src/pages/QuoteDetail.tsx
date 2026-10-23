@@ -10,7 +10,10 @@ import { QuoteForm } from './Quotes'
 
 export default function QuoteDetail() {
   const { id } = useParams()
-  const { cfg } = useApp()
+  const { cfg, me } = useApp()
+  const pf = !!cfg.proforma
+  const [paying, setPaying] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const navigate = useNavigate()
   const [q, setQ] = useState<any>(null)
   const [share, setShare] = useState<any>(null)
@@ -51,8 +54,17 @@ export default function QuoteDetail() {
           <tfoot><tr><td className="td" colSpan={3}>Excl VAT {money(q.subtotal)} · VAT {money(q.vat)}</td><td className="td text-right font-bold">{money(q.total)}</td></tr></tfoot>
         </table>
       </div>
-      <p className="mb-4 text-sm text-gray-600">Dated {date(q.date)} · valid until {date(q.valid_until)}{q.site ? ` · ${q.site.label}` : ''}</p>
-      {open && (
+      <p className="mb-4 text-sm text-gray-600">Dated {date(q.date)}{pf ? '' : ` · valid until ${date(q.valid_until)}`}{q.site ? ` · ${[q.site.label, q.site.address, q.site.town].filter(Boolean).join(', ')}` : ''}</p>
+      {q.status === 'cancelled' && <p className="mb-4 text-sm text-gray-600">Cancelled: {q.cancelled_reason}</p>}
+      {open && pf && (
+        <div className="flex flex-wrap gap-2">
+          <button className="btn-primary" disabled={a.busy} onClick={() => setPaying(true)}>Record payment</button>
+          {me.features.yoco && <button className="btn-ghost" disabled={a.busy} onClick={() => a.run(async () => setShare((await api.post(`/api/p/quotes/${id}/pay-link`)).data), errMsg)}>Card payment link</button>}
+          <button className="btn-ghost" disabled={a.busy} onClick={() => setAccepting(true)}>Order without payment</button>
+          <button className="btn-danger" onClick={() => setCancelling(true)}>Cancel proforma</button>
+        </div>
+      )}
+      {open && !pf && (
         <div className="flex flex-wrap gap-2">
           {q.status === 'draft' && <button className="btn-ghost" onClick={() => status('sent')}>Mark sent</button>}
           <button className="btn-primary" disabled={a.busy} onClick={() => setAccepting(true)}>Accept → order</button>
@@ -68,12 +80,51 @@ export default function QuoteDetail() {
           <div className="mt-4 flex justify-end"><button className="btn-primary" onClick={() => { setDeclining(false); status('declined', { reason }) }}>Save</button></div>
         </Modal>
       )}
+      {paying && <ProformaPayment q={q} onClose={() => setPaying(false)} onDone={(orderId) => navigate(`/orders/${orderId}`)} />}
+      {cancelling && (
+        <Modal title="Cancel proforma" onClose={() => setCancelling(false)}>
+          <Field label="Reason"><input className="input" autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Bought elsewhere, no reply, duplicate…" /></Field>
+          <div className="mt-4 flex justify-end"><button className="btn-danger" disabled={!reason.trim()} onClick={() => { setCancelling(false); status('cancelled', { reason }) }}>Cancel proforma</button></div>
+        </Modal>
+      )}
       {accepting && (
-        <Modal title="Accept quote" onClose={() => setAccepting(false)}>
+        <Modal title={pf ? 'Order without payment' : 'Accept quote'} onClose={() => setAccepting(false)}>
+          {pf && <p className="mb-3 text-sm text-gray-600">For a trade customer on account, or pay on delivery. The order and its tax invoice are made now; retail tanks still only leave once paid.</p>}
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={cod} onChange={(e) => setCod(e.target.checked)} /> Pay on delivery (cash or card at the site)</label>
           <div className="mt-4 flex justify-end"><button className="btn-primary" onClick={() => { setAccepting(false); status('accepted', { order: { pay_on_delivery: cod } }) }}>Create order</button></div>
         </Modal>
       )}
     </div>
+  )
+}
+
+/** Cash, card-machine slip or EFT on a proforma. The first payment makes the order and its tax
+ * invoice; a part payment (deposit) is fine. */
+function ProformaPayment({ q, onClose, onDone }: { q: any; onClose: () => void; onDone: (orderId: string) => void }) {
+  const [method, setMethod] = useState('eft')
+  const [amount, setAmount] = useState(String(q.total))
+  const [reference, setReference] = useState('')
+  const a = useAction()
+  const save = () => a.run(async () => {
+    const r = await api.post(`/api/p/quotes/${q._id}/payments`, { method, amount: Number(amount), reference: reference || undefined })
+    onDone(r.data.order_id)
+  }, errMsg)
+  return (
+    <Modal title={`Payment on ${q.quote_number}`} onClose={onClose}>
+      <div className="mb-3 flex flex-wrap gap-2">
+        {[['eft', 'EFT in the bank'], ['cash', 'Cash'], ['yoco_machine', 'Card machine']].map(([k, l]) => (
+          <button key={k} className={method === k ? 'btn-dark btn-sm' : 'btn-ghost btn-sm'} onClick={() => setMethod(k)}>{l}</button>
+        ))}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Amount" hint={Number(amount) < q.total ? `Part payment: ${money(q.total - Number(amount))} still owed` : undefined}>
+          <input type="number" step="0.01" className="input" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+        <Field label={method === 'yoco_machine' ? 'Slip reference' : 'Reference'}><input className="input" placeholder={method === 'yoco_machine' ? '' : q.quote_number} value={reference} onChange={(e) => setReference(e.target.value)} /></Field>
+      </div>
+      <p className="mt-3 text-xs text-gray-500">This makes the order and its tax invoice, with the payment on it.</p>
+      <ErrorBox msg={a.error} />
+      <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Back</button>
+        <button className="btn-primary" disabled={a.busy || !(Number(amount) > 0) || (method === 'yoco_machine' && !reference)} onClick={save}>Save payment</button></div>
+    </Modal>
   )
 }

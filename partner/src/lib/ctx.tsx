@@ -20,6 +20,7 @@ export interface Config {
   powder_products: { code: string; colour: string; is_black: boolean }[]
   vat_rate: number
   quote_validity_days: number
+  proforma?: boolean
   cash_banking_days: number
   payment_terms_days: number
   track_colour_stock: boolean
