@@ -17,6 +17,7 @@ import hmac
 import json
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import quote as urlquote
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -463,45 +464,34 @@ async def quote_status(quote_id: str, payload: dict, user: dict = Depends(curren
     return wall(out)
 
 
-async def _quote_link(node: dict, q: dict) -> str | None:
-    """The proforma's open card link, if one was made (printed on the PDF)."""
-    pl = await db.pay_links().find_one({"quote_id": q["_id"], "status": {"$in": ["open", "sent"]}})
-    return yoco.public_url(node, pl["token"]) if pl and q["status"] in ("draft", "sent") else None
-
-
-@router.post("/quotes/{quote_id}/pay-link")
-async def proforma_pay_link(quote_id: str, user: dict = Depends(current_partner)):
-    node, _ = await ctx(user)
-    q = await quote_or_404(node["node_id"], quote_id)
-    pl = await yoco.proforma_pay_link(node, q, user, mark_sent=True)
-    cust = await db.customers().find_one({"_id": q["customer_id"]})
-    msg = f"{_greeting(cust)} you can pay proforma {q['quote_number']} ({partner_pdf.money(q['total'])}) by card here: {pl['url']}"
-    return {"url": pl["url"], "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg)}
-
-
-@router.post("/quotes/{quote_id}/payments")
-async def pay_proforma(quote_id: str, payload: dict, user: dict = Depends(current_partner)):
-    """Cash, card-machine slip or EFT on a proforma: the first payment makes the order and its
-    tax invoice. Part payments are fine."""
+@router.post("/quotes/{quote_id}/invoice")
+async def invoice_proforma(quote_id: str, payload: dict, user: dict = Depends(current_partner)):
+    """Steven decides when the tax invoice is made: the proforma becomes the order and its tax
+    invoice, with the payment received so far if there is one (cash, card-machine slip, EFT).
+    The invoice is then shared like any other."""
     node, cfg = await ctx(user)
     q = await quote_or_404(node["node_id"], quote_id)
-    method = payload.get("method")
-    if method not in ("cash", "yoco_machine", "eft"):
-        raise HTTPException(400, "Method is cash, yoco_machine or eft")
-    if method == "yoco_machine" and not payload.get("reference"):
-        raise HTTPException(400, "Enter the card-machine slip reference")
-    try:
-        amount = float(payload.get("amount") or 0)
-    except (TypeError, ValueError):
-        raise HTTPException(400, "Amount must be a number")
-    raw = {"amount": amount, "method": "yoco" if method == "yoco_machine" else method,
-           "source": "machine" if method == "yoco_machine" else None,
-           "reference": payload.get("reference") or q["quote_number"], "date": payload.get("date"),
-           "holder": {"type": "staff", "name": user.get("name") or user["email"]} if method == "cash" else None}
-    out = await commerce.pay_proforma(node, q, raw, user)
+    pay = payload.get("payment") or None
+    raw = None
+    if pay:
+        method = pay.get("method")
+        if method not in ("cash", "yoco_machine", "eft"):
+            raise HTTPException(400, "Method is cash, yoco_machine or eft")
+        if method == "yoco_machine" and not pay.get("reference"):
+            raise HTTPException(400, "Enter the card-machine slip reference")
+        try:
+            amount = float(pay.get("amount") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Amount must be a number")
+        raw = {"amount": amount, "method": "yoco" if method == "yoco_machine" else method,
+               "source": "machine" if method == "yoco_machine" else None,
+               "reference": pay.get("reference") or q["quote_number"], "date": pay.get("date"),
+               "holder": {"type": "staff", "name": user.get("name") or user["email"]} if method == "cash" else None}
+    out = await commerce.invoice_proforma(node, q, user, raw, {"pay_on_delivery": bool(payload.get("pay_on_delivery"))})
     await _xero_invoice(out["invoice_id"])
-    await _xero_payment(node["node_id"], out["payment"]["_id"])
-    return wall({**out, "quote": await quote_or_404(node["node_id"], quote_id)}, cfg, user["role"])
+    if out.get("payment"):
+        await _xero_payment(node["node_id"], out["payment"]["_id"])
+    return wall(out, cfg, user["role"])
 
 
 @router.get("/quotes/{quote_id}/pdf")
@@ -509,7 +499,7 @@ async def quote_pdf(quote_id: str, user: dict = Depends(current_partner)):
     node, cfg = await ctx(user)
     q = await quote_or_404(node["node_id"], quote_id)
     cust = await db.customers().find_one({"_id": q["customer_id"]})
-    return pdf_response(partner_pdf.quote(await node_for_pdf(node), cfg, q, cust, await _quote_link(node, q)), q["quote_number"])
+    return pdf_response(partner_pdf.quote(await node_for_pdf(node), cfg, q, cust), q["quote_number"])
 
 
 # ---------- share links (signed, read-only, expiring) ---------- #
@@ -549,15 +539,19 @@ async def share_quote(quote_id: str, user: dict = Depends(current_partner)):
     if proforma:
         msg = (f"{_greeting(cust)} here is your proforma {q['quote_number']} from {biz} for "
                f"{partner_pdf.money(q['total'])}. Please use {q['quote_number']} as your payment reference.\n{url}")
-        if await yoco.configured(node["node_id"]) and q["status"] in ("draft", "sent"):
-            pl = await yoco.proforma_pay_link(node, q, user, mark_sent=True)
-            msg += f"\nPay by card: {pl['url']}"
     else:
         msg = (f"{_greeting(cust)} here is your quote {q['quote_number']} from {biz} for "
                f"{partner_pdf.money(q['total'])}, valid until {q['valid_until']}.\n{url}")
     if q["status"] == "draft":
         await commerce.set_quote_status(node, q, "sent", user)
-    return {"url": url, "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg)}
+    return {"url": url, "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg),
+            **_email(cust, f"{'Proforma' if proforma else 'Quote'} {q['quote_number']} from {biz}", msg)}
+
+
+def _email(cust: dict | None, subject: str, body: str) -> dict:
+    """mailto: for the share bar (opens the phone's or computer's mail app, nothing is sent from here)."""
+    to = ((cust or {}).get("email") or "").strip()
+    return {"email": f"mailto:{urlquote(to)}?subject={urlquote(subject)}&body={urlquote(body)}", "email_to": to}
 
 
 @router.get("/share/{kind}/{token}.pdf")
@@ -579,7 +573,7 @@ async def shared_pdf(kind: str, token: str):
     cfg = await commerce.get_cfg(doc["node_id"])
     cust = await db.customers().find_one({"_id": doc.get("customer_id")})
     if kind == "q":
-        return pdf_response(partner_pdf.quote(node, cfg, doc, cust, await _quote_link(node, doc)), doc["quote_number"])
+        return pdf_response(partner_pdf.quote(node, cfg, doc, cust), doc["quote_number"])
     link = await _existing_pay_link(node, doc)
     return pdf_response(partner_pdf.invoice(node, cfg, doc, cust, link), doc["display_number"])
 
@@ -919,7 +913,8 @@ async def share_invoice(invoice_id: str, user: dict = Depends(current_partner)):
     link = await _existing_pay_link(node, inv)
     msg = (f"{_greeting(cust)} here is invoice {inv['display_number']} from {biz}. Amount due "
            f"{partner_pdf.money(inv.get('balance', inv['total']))}.\n{url}" + (f"\nPay by card: {link}" if link else ""))
-    return {"url": url, "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg)}
+    return {"url": url, "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg),
+            **_email(cust, f"Tax invoice {inv['display_number']} from {biz}", msg)}
 
 
 @router.post("/invoices/{invoice_id}/pay-link")

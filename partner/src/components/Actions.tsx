@@ -1,4 +1,4 @@
-import { Copy, MessageCircle, Share2 } from 'lucide-react'
+import { Copy, Mail, MessageCircle, Share2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api, errMsg } from '../api'
 import { lineLabel, useApp } from '../lib/ctx'
@@ -6,8 +6,8 @@ import { money, today } from '../lib/format'
 import { ErrorBox, Field, Modal, useAction } from './ui'
 
 /** WhatsApp, the device share sheet, and copy: the three ways a link leaves the app. */
-export function ShareBar({ whatsapp, message, url, pdfPath, filename }: {
-  whatsapp?: string; message: string; url?: string; pdfPath?: string; filename?: string
+export function ShareBar({ whatsapp, email, message, url, pdfPath, filename }: {
+  whatsapp?: string; email?: string; message: string; url?: string; pdfPath?: string; filename?: string
 }) {
   const [copied, setCopied] = useState(false)
   const share = async () => {
@@ -26,6 +26,7 @@ export function ShareBar({ whatsapp, message, url, pdfPath, filename }: {
   return (
     <div className="flex flex-wrap gap-2">
       {whatsapp && <a className="btn-primary" href={whatsapp} target="_blank" rel="noreferrer"><MessageCircle size={16} /> WhatsApp</a>}
+      {email && <a className="btn-ghost" href={email}><Mail size={16} /> Email</a>}
       {typeof navigator !== 'undefined' && 'share' in navigator && <button className="btn-ghost" onClick={share}><Share2 size={16} /> Share</button>}
       <button className="btn-ghost" onClick={async () => { await navigator.clipboard.writeText(message); setCopied(true); setTimeout(() => setCopied(false), 1500) }}>
         <Copy size={16} /> {copied ? 'Copied' : url ? 'Copy message' : 'Copy'}

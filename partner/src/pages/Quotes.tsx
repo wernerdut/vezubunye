@@ -11,7 +11,7 @@ const TABS = [
   { key: 'open', label: 'Open' }, { key: 'accepted', label: 'Accepted' }, { key: 'declined,expired,cancelled', label: 'Lost' }, { key: '', label: 'All' },
 ] as const
 const PF_TABS = [
-  { key: 'open', label: 'Waiting for payment' }, { key: 'accepted', label: 'Paid → order' }, { key: 'cancelled,declined,expired', label: 'Cancelled' }, { key: '', label: 'All' },
+  { key: 'open', label: 'Open' }, { key: 'accepted', label: 'Invoiced' }, { key: 'cancelled,declined,expired', label: 'Cancelled' }, { key: '', label: 'All' },
 ]
 
 export default function Quotes() {

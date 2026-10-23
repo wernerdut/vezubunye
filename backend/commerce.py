@@ -946,8 +946,8 @@ async def refresh_order_status(order_id: str, session=None):
 
 def is_proforma(cfg: dict) -> bool:
     """Proforma nodes (Makulu): the quote is a pro forma invoice. It does not lapse (it is
-    cancelled by hand), it can be paid by card link, cash, card machine or EFT, and the first
-    payment turns it into the order and its tax invoice."""
+    cancelled by hand), and it becomes the order and its tax invoice when Steven says so
+    ("Create tax invoice"), with any payment received so far."""
     return bool(cfg.get("proforma"))
 
 
@@ -1012,8 +1012,6 @@ async def set_quote_status(node: dict, quote: dict, status: str, user: dict, rea
             raise HTTPException(400, "Give a reason for cancelling")
         upd[f"{status}_reason"] = reason
         upd[f"{status}_by"] = user["email"]
-        await db.pay_links().update_many({"quote_id": quote["_id"], "status": {"$in": ["open", "sent"]}},
-                                         {"$set": {"status": "cancelled"}})
     if status == "accepted":
         cfg = await get_cfg(node_id)
         customer = await get_customer(node_id, quote["customer_id"])
@@ -1029,22 +1027,26 @@ async def set_quote_status(node: dict, quote: dict, status: str, user: dict, rea
     return {**quote, **upd, "order": order}
 
 
-async def pay_proforma(node: dict, quote: dict, raw: dict, user: dict) -> dict:
-    """A payment on a proforma: the first one turns it into the order and its tax invoice, then
-    the payment is allocated to that invoice. Later ones go to the same invoice."""
-    if quote["status"] in ("cancelled", "declined", "expired"):
+async def invoice_proforma(node: dict, quote: dict, user: dict, payment: dict | None = None,
+                           order_raw: dict | None = None) -> dict:
+    """Steven's "Create tax invoice": the proforma becomes the order and its tax invoice, with
+    the payment received so far (if any) allocated to it."""
+    if quote["status"] not in ("draft", "sent"):
         raise HTTPException(400, f"This proforma is {quote['status']}")
-    if quote["status"] != "accepted":
-        quote = await set_quote_status(node, quote, "accepted", user)
-    order = await db.orders().find_one({"_id": quote["order_id"]})
+    quote = await set_quote_status(node, quote, "accepted", user, order_raw=order_raw)
+    order = quote["order"]
     inv = await db.invoices().find_one({"order_id": order["_id"], "dn_id": None, **ACTIVE})
     if not inv:
-        raise HTTPException(400, "The order for this proforma has no open invoice")
-    amount = float(raw["amount"])
-    alloc = [{"invoice_id": inv["_id"], "amount": r2(min(amount, max(inv.get("balance", inv["total"]), 0)))}]
-    p = await record_payment(node["node_id"], {**raw, "customer_id": quote["customer_id"]}, user, allocations=alloc)
-    await refresh_order_status(order["_id"])
-    return {"payment": p, "order_id": order["_id"], "order_number": order.get("order_number"), "invoice_id": inv["_id"]}
+        raise HTTPException(400, "The order has no invoice")
+    p = None
+    if payment:
+        amount = r2(float(payment["amount"]))
+        alloc = [{"invoice_id": inv["_id"], "amount": r2(min(amount, max(inv.get("balance", inv["total"]), 0)))}]
+        p = await record_payment(node["node_id"], {**payment, "customer_id": quote["customer_id"]}, user,
+                                 allocations=alloc)
+        await refresh_order_status(order["_id"])
+    return {"payment": p, "order_id": order["_id"], "order_number": order.get("order_number"),
+            "invoice_id": inv["_id"], "invoice_number": inv.get("display_number")}
 
 
 async def sweep_quotes(node_id: str) -> list[str]:

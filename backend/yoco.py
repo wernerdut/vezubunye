@@ -116,55 +116,18 @@ async def pay_link(node: dict, invoice: dict, user: dict, dn_id: str | None = No
     return {**pl, "url": public_url(node, pl["token"])}
 
 
-async def proforma_pay_link(node: dict, quote: dict, user: dict, mark_sent: bool = False) -> dict:
-    """The stable card link for a proforma, before it is an order. Paying it makes the order."""
-    if not await configured(node["node_id"]):
-        raise HTTPException(400, "Yoco is not connected for this business")
-    if quote["status"] not in ("draft", "sent"):
-        raise HTTPException(400, f"This proforma is {quote['status']}")
-    pl = await db.pay_links().find_one({"quote_id": quote["_id"], "status": {"$in": ["open", "sent"]}})
-    if not pl:
-        pl = {"_id": uuid4().hex, "node_id": node["node_id"], "invoice_id": None, "quote_id": quote["_id"],
-              "dn_id": None, "token": commerce.driver_token(), "amount": quote["total"], "status": "open",
-              "sent_at": None, "checkouts": [], "created_by": user["email"], "created_at": datetime.utcnow(),
-              "date": commerce.today()}
-        await db.pay_links().insert_one(pl)
-    upd = {"amount": quote["total"]}
-    if mark_sent:
-        upd.update(status="sent", sent_at=pl.get("sent_at") or datetime.utcnow())
-    await db.pay_links().update_one({"_id": pl["_id"]}, {"$set": upd})
-    pl.update(upd)
-    return {**pl, "url": public_url(node, pl["token"])}
-
-
-async def _link_target(pl: dict) -> tuple[dict | None, str, float | None, float]:
-    """(invoice or None, number shown, total, balance due now) for a link on an invoice or a
-    proforma. A proforma already turned into an order is paid against its invoice."""
-    if pl.get("quote_id") and not pl.get("invoice_id"):
-        q = await db.quotes().find_one({"_id": pl["quote_id"]})
-        if not q or q["status"] in ("cancelled", "declined", "expired"):
-            return None, (q or {}).get("quote_number", ""), None, 0.0
-        if q["status"] != "accepted":
-            return None, q["quote_number"], q["total"], q["total"]
-        inv = await db.invoices().find_one({"order_id": q.get("order_id"), "dn_id": None, **ACTIVE})
-    else:
-        inv = await db.invoices().find_one({"_id": pl["invoice_id"]})
-    if not inv or inv.get("void"):
-        return None, (inv or {}).get("display_number", ""), None, 0.0
-    return inv, inv["display_number"], inv["total"], inv.get("balance", inv["total"])
-
-
 async def open_link(token: str) -> dict:
     """Customer tapped the link: create a checkout for the balance due now, return where to go."""
     pl = await db.pay_links().find_one({"token": token})
     if not pl:
         raise HTTPException(404, "This payment link is not valid")
-    inv, shown, total, balance = await _link_target(pl)
+    inv = await db.invoices().find_one({"_id": pl["invoice_id"]})
     node = await commerce.get_node(pl["node_id"])
     base = {"business": (node.get("branding") or {}).get("display_name") or node["name"],
-            "invoice": shown, "total": total}
-    if total is None or pl["status"] in ("paid", "cancelled"):
+            "invoice": inv["display_number"] if inv else "", "total": (inv or {}).get("total")}
+    if not inv or inv.get("void") or pl["status"] in ("paid", "cancelled"):
         return {**base, "state": "closed", "amount": 0.0}
+    balance = inv.get("balance", inv["total"])
     if balance <= commerce.PAY_TOL:
         await db.pay_links().update_one({"_id": pl["_id"]}, {"$set": {"status": "paid"}})
         return {**base, "state": "paid", "amount": 0.0}
@@ -182,9 +145,8 @@ async def open_link(token: str) -> dict:
             "Idempotency-Key": f"{pl['_id']}-{int(balance * 100)}-{int(time.time() // 600)}"},
             json={"amount": int(round(balance * 100)), "currency": "ZAR",
                   "successUrl": done, "cancelUrl": public_url(node, token), "failureUrl": public_url(node, token),
-                  "externalId": shown,
-                  "metadata": {"node_id": pl["node_id"], "invoice_id": inv["_id"] if inv else "",
-                               "quote_id": pl.get("quote_id") or "", "pay_link_id": pl["_id"],
+                  "externalId": inv["display_number"],
+                  "metadata": {"node_id": pl["node_id"], "invoice_id": inv["_id"], "pay_link_id": pl["_id"],
                                "dn_id": pl.get("dn_id") or ""}})
     if r.status_code >= 300:
         raise HTTPException(502, "Could not start the card payment. Try again in a moment.")
@@ -240,8 +202,6 @@ async def record_yoco_payment(node_id: str, yoco_payment_id: str, amount: float,
     existing = await db.payments().find_one({"node_id": node_id, "external_id": yoco_payment_id})
     if existing:
         return {"duplicate": True, "payment_id": existing["_id"]}
-    if meta.get("quote_id") and not meta.get("invoice_id"):
-        return await _pay_proforma(node_id, yoco_payment_id, amount, meta)
     inv = await db.invoices().find_one({"_id": meta.get("invoice_id"), "node_id": node_id})
     if not inv:
         raise HTTPException(400, "Invoice in metadata not on this node")
@@ -270,36 +230,6 @@ async def record_yoco_payment(node_id: str, yoco_payment_id: str, amount: float,
     return {"payment_id": p["_id"], "allocated": alloc}
 
 
-async def _pay_proforma(node_id: str, yoco_payment_id: str, amount: float, meta: dict) -> dict:
-    """Card payment on a proforma: it becomes the order and its tax invoice, and the payment goes
-    to that invoice. A proforma cancelled meanwhile keeps the money as customer credit (flagged)."""
-    q = await db.quotes().find_one({"_id": meta["quote_id"], "node_id": node_id})
-    if not q:
-        raise HTTPException(400, "Proforma in metadata not on this node")
-    raw = {"amount": amount, "method": "yoco", "source": "link", "reference": yoco_payment_id,
-           "external_id": yoco_payment_id, "date": commerce.today()}
-    if q["status"] in ("cancelled", "declined", "expired"):
-        p = await commerce.record_payment(node_id, {**raw, "customer_id": q["customer_id"]}, YOCO_ACTOR,
-                                          allocations=[])
-        out = {"payment": p}
-    else:
-        node = await commerce.get_node(node_id)
-        out = await commerce.pay_proforma(node, q, raw, YOCO_ACTOR)
-        p = out["payment"]
-        q2 = await db.quotes().find_one({"_id": q["_id"]})
-        inv = await db.invoices().find_one({"_id": out["invoice_id"]})
-        if inv and inv.get("balance", 0) <= commerce.PAY_TOL:
-            await db.pay_links().update_many({"quote_id": q["_id"], "status": {"$in": ["open", "sent"]}},
-                                             {"$set": {"status": "paid", "paid_at": datetime.utcnow(),
-                                                       "order_id": q2.get("order_id")}})
-    try:
-        import xero_mt
-        await xero_mt.queue_payment(node_id, p["_id"])
-    except Exception:  # noqa: BLE001  (posting retries from the queue; never lose the payment)
-        pass
-    return {"payment_id": p["_id"], "allocated": p["allocations"]}
-
-
 async def sweep_links(node_id: str) -> list[str]:
     """Catch up on missed webhooks: ask Yoco about every open link's checkouts."""
     s = await _secret(node_id)
@@ -316,8 +246,7 @@ async def sweep_links(node_id: str) -> list[str]:
                 body = r.json()
                 if body.get("status") == "completed" and body.get("paymentId"):
                     res = await record_yoco_payment(node_id, body["paymentId"], co["amount"],
-                                                    {"invoice_id": pl.get("invoice_id"), "quote_id": pl.get("quote_id"),
-                                                     "dn_id": pl.get("dn_id")})
+                                                    {"invoice_id": pl["invoice_id"], "dn_id": pl.get("dn_id")})
                     if not res.get("duplicate"):
                         caught.append(res["payment_id"])
     return caught

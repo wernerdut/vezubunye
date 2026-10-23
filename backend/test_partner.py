@@ -618,13 +618,11 @@ async def test_yoco_sweep_catches_missed_webhook(client):
 
 
 
-async def test_proforma_paid_becomes_order(client):
-    """Makulu: the quote is a proforma. It never lapses, is cancelled with a reason, and the first
-    payment (card link, cash, card machine or EFT) makes the order and its tax invoice."""
+async def test_proforma_then_tax_invoice_when_steven_says(client):
+    """Makulu: the quote is a proforma. It never lapses, is cancelled with a reason, and becomes
+    the order and its tax invoice only when Steven presses Create tax invoice (with the payment
+    received so far, if any). The invoice is then shared by WhatsApp or email."""
     c = client
-    import yoco
-    mock = Yoco()
-    yoco.transport = httpx.MockTransport(mock.handler)
     def new_pf():
         return c.post("/api/p/quotes", headers=S["mx"], json={
             "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1},
@@ -632,37 +630,34 @@ async def test_proforma_paid_becomes_order(client):
     pf = await ok(await new_pf())
     assert "-PF-" in pf["quote_number"]
     total = pf["total"]
-    pdf = await c.get(f"/api/p/quotes/{pf['_id']}/pdf", headers=S["mx"])
-    assert pdf.status_code == 200
+    assert (await c.get(f"/api/p/quotes/{pf['_id']}/pdf", headers=S["mx"])).status_code == 200
     sh = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/share", headers=S["mx"]))
-    assert "proforma" in sh["message"] and pf["quote_number"] in sh["message"] and "Pay by card" in sh["message"]
-    # card link: paying it makes the order, invoice and payment in one go
-    link = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/pay-link", headers=S["mx"]))
-    opened = await ok(await c.get(f"/api/p/pay/{link['url'].rsplit('/', 1)[1]}"))
-    assert opened["amount"] == total and opened["invoice"] == pf["quote_number"]
-    await ok(await webhook(c, "makulu", "pay_pf1", total, {"quote_id": pf["_id"], "invoice_id": ""}))
-    q = await db.quotes().find_one({"_id": pf["_id"]})
-    assert q["status"] == "accepted" and q["order_id"]
-    inv = await db.invoices().find_one({"order_id": q["order_id"], "void": {"$exists": False}})
-    assert inv["status"] == "paid"
-    assert (await db.pay_links().find_one({"quote_id": pf["_id"]}))["status"] == "paid"
-    await ok(await webhook(c, "makulu", "pay_pf1", total, {"quote_id": pf["_id"], "invoice_id": ""}))   # replay: no double
-    assert await db.payments().count_documents({"external_id": "pay_pf1"}) == 1
-    # cash deposit then EFT balance on a second proforma: one order, one invoice
+    assert "proforma" in sh["message"] and pf["quote_number"] in sh["message"] and sh["email"].startswith("mailto:")
+    assert not (await db.quotes().find_one({"_id": pf["_id"]})).get("order_id")       # no invoice until Steven says
+    # paid by EFT: Steven creates the tax invoice with the payment on it
+    r = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/invoice", headers=S["mx"], json={
+        "payment": {"method": "eft", "amount": total}}))
+    inv = await db.invoices().find_one({"_id": r["invoice_id"]})
+    assert inv["status"] == "paid" and inv["total"] == total
+    assert (await db.payments().find_one({"_id": r["payment"]["_id"]}))["reference"] == pf["quote_number"]
+    assert (await db.quotes().find_one({"_id": pf["_id"]}))["order_id"] == r["order_id"]
+    shi = await ok(await c.post(f"/api/p/invoices/{r['invoice_id']}/share", headers=S["mx"]))
+    assert shi["whatsapp"].startswith("https://wa.me/") and "Tax%20invoice" in shi["email"]
+    assert (await c.post(f"/api/p/quotes/{pf['_id']}/invoice", headers=S["mx"], json={})).status_code == 400   # once
+    # deposit only: invoice with the balance still owed
     pf2 = await ok(await new_pf())
-    r = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/payments", headers=S["mx"], json={"method": "cash", "amount": 1000}))
-    order_id = r["order_id"]
-    r2 = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/payments", headers=S["mx"], json={"method": "eft", "amount": total - 1000}))
-    assert r2["order_id"] == order_id and r2["invoice_id"] == r["invoice_id"]
-    assert (await db.invoices().find_one({"_id": r["invoice_id"]}))["status"] == "paid"
-    assert (await db.payments().find_one({"_id": r2["payment"]["_id"]}))["reference"] == pf2["quote_number"]
-    # unpaid: cancelled by hand with a reason, and its card link stops working
+    r2 = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/invoice", headers=S["mx"], json={
+        "payment": {"method": "cash", "amount": 1000}}))
+    assert (await db.invoices().find_one({"_id": r2["invoice_id"]}))["status"] == "part_paid"
+    # no payment yet (trade, pay on delivery): invoice on its own
     pf3 = await ok(await new_pf())
-    link3 = await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/pay-link", headers=S["mx"]))
-    assert (await c.post(f"/api/p/quotes/{pf3['_id']}/status", headers=S["mx"], json={"status": "cancelled"})).status_code == 400
-    await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/status", headers=S["mx"], json={"status": "cancelled", "reason": "Bought elsewhere"}))
-    assert (await ok(await c.get(f"/api/p/pay/{link3['url'].rsplit('/', 1)[1]}")))["state"] == "closed"
-    assert (await c.post(f"/api/p/quotes/{pf3['_id']}/payments", headers=S["mx"], json={"method": "cash", "amount": 5})).status_code == 400
+    r3 = await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/invoice", headers=S["mx"], json={}))
+    assert r3["payment"] is None and (await db.invoices().find_one({"_id": r3["invoice_id"]}))["status"] == "unpaid"
+    # unpaid: cancelled by hand with a reason; never lapses
+    pf4 = await ok(await new_pf())
+    assert (await c.post(f"/api/p/quotes/{pf4['_id']}/status", headers=S["mx"], json={"status": "cancelled"})).status_code == 400
+    await ok(await c.post(f"/api/p/quotes/{pf4['_id']}/status", headers=S["mx"], json={"status": "cancelled", "reason": "Bought elsewhere"}))
+    assert (await c.post(f"/api/p/quotes/{pf4['_id']}/invoice", headers=S["mx"], json={})).status_code == 400
 
 
 async def test_cash_control(client):
