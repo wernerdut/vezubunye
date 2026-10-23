@@ -104,10 +104,12 @@ function CreateTaxInvoice({ q, onClose, onOpenOrder }: { q: any; onClose: () => 
   const [cod, setCod] = useState(false)
   const [done, setDone] = useState<any>(null)
   const a = useAction()
+  const [codMethod, setCodMethod] = useState('either')
   const paid = method !== 'none'
+  const owed = paid ? q.total - (Number(amount) || 0) : q.total
   const save = () => a.run(async () => {
     const r = await api.post(`/api/p/quotes/${q._id}/invoice`, {
-      payment: paid ? { method, amount: Number(amount), reference: reference || undefined } : null, pay_on_delivery: !paid && cod })
+      payment: paid ? { method, amount: Number(amount), reference: reference || undefined } : null, pay_on_delivery: cod && owed > 0.004, cod_method: codMethod })
     const share = (await api.post(`/api/p/invoices/${r.data.invoice_id}/share`)).data
     setDone({ ...r.data, share })
   }, errMsg)
@@ -129,11 +131,18 @@ function CreateTaxInvoice({ q, onClose, onOpenOrder }: { q: any; onClose: () => 
           <button key={k} className={method === k ? 'btn-dark btn-sm' : 'btn-ghost btn-sm'} onClick={() => setMethod(k)}>{l}</button>
         ))}
       </div>
-      {paid ? <div className="grid gap-3 sm:grid-cols-2">
+      {paid && <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Amount" hint={Number(amount) < q.total ? `Part payment: ${money(q.total - Number(amount))} still owed` : undefined}>
           <input type="number" step="0.01" className="input" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
         <Field label={method === 'yoco_machine' ? 'Slip reference' : 'Reference'}><input className="input" placeholder={method === 'yoco_machine' ? '' : q.quote_number} value={reference} onChange={(e) => setReference(e.target.value)} /></Field>
-      </div> : <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={cod} onChange={(e) => setCod(e.target.checked)} /> Pay on delivery (cash or card at the site)</label>}
+      </div>}
+      {owed > 0.004 && <div className="mt-3 rounded-lg bg-gray-50 p-3">
+        <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={cod} onChange={(e) => setCod(e.target.checked)} />
+          {paid ? `Balance of ${money(owed)} paid on delivery` : 'Pay on delivery'}</label>
+        {cod ? <div className="mt-2 flex gap-2">
+          {['cash', 'yoco', 'either'].map((m) => <button key={m} className={codMethod === m ? 'btn-dark btn-sm' : 'btn-ghost btn-sm'} onClick={() => setCodMethod(m)}>{m === 'yoco' ? 'Card (Yoco)' : m === 'either' ? 'Cash or card' : 'Cash'}</button>)}
+        </div> : <p className="mt-1 text-xs text-gray-500">Not ticked: the tanks only leave once paid.</p>}
+      </div>}
       <p className="mt-3 text-xs text-gray-500">This makes the order and its tax invoice, same lines and prices as the proforma.</p>
       <ErrorBox msg={a.error} />
       <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Back</button>

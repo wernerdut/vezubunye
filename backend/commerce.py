@@ -1111,7 +1111,7 @@ async def nothing_dispatched(order: dict, what: str) -> None:
 
 
 async def update_order_details(order: dict, raw: dict, user: dict) -> dict:
-    """Delivery address, requested date and notes, before anything is scheduled."""
+    """Delivery address, requested date, notes and pay on delivery, before anything is scheduled."""
     await nothing_dispatched(order, "change the order")
     upd: dict = {}
     if "site_id" in raw:
@@ -1120,6 +1120,9 @@ async def update_order_details(order: dict, raw: dict, user: dict) -> dict:
     for k in ("requested_date", "notes"):
         if k in raw:
             upd[k] = raw[k] or ("" if k == "notes" else None)
+    if "pay_on_delivery" in raw and order["payment_basis"] == "upfront":
+        upd["pay_on_delivery"] = bool(raw["pay_on_delivery"])
+        upd["cod_method"] = (raw.get("cod_method") or order.get("cod_method") or "either") if upd["pay_on_delivery"] else None
     if upd:
         await db.orders().update_one({"_id": order["_id"]}, {"$set": upd})
         await audit.log(user, order["node_id"], "edit", "orders", order["_id"],

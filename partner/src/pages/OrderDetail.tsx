@@ -123,6 +123,8 @@ function EditOrder({ order, untouched, onClose }: { order: any; untouched: boole
   const [newSite, setNewSite] = useState<any>(null)
   const [requested, setRequested] = useState(order.requested_date || '')
   const [notes, setNotes] = useState(order.notes || '')
+  const [cod, setCod] = useState(!!order.pay_on_delivery)
+  const [codMethod, setCodMethod] = useState(order.cod_method || 'either')
   const [reason, setReason] = useState('')
   const a = useAction()
   useEffect(() => { api.get(`/api/p/customers/${order.customer_id}`, { params: { brief: true } }).then((r) => setCustomer(r.data)) }, [order.customer_id])
@@ -130,7 +132,7 @@ function EditOrder({ order, untouched, onClose }: { order: any; untouched: boole
   const save = () => a.run(async () => {
     if (untouched && customer) {
       const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
-      await api.put(`/api/p/orders/${order._id}`, { site_id: site_id || null, requested_date: requested || null, notes })
+      await api.put(`/api/p/orders/${order._id}`, { site_id: site_id || null, requested_date: requested || null, notes, ...(order.payment_basis === 'upfront' ? { pay_on_delivery: cod, cod_method: codMethod } : {}) })
     }
     if (linesChanged) await api.put(`/api/p/orders/${order._id}/lines`, { lines: cleanLines(lines), reason })
     onClose()
@@ -142,6 +144,10 @@ function EditOrder({ order, untouched, onClose }: { order: any; untouched: boole
         <DeliverTo customer={customer} siteId={siteId} setSiteId={setSiteId} site={newSite} setSite={setNewSite} />
         <Field label="Requested date"><input type="date" className="input" value={requested} onChange={(e) => setRequested(e.target.value)} /></Field>
         <Field label="Notes"><input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
+        {order.payment_basis === 'upfront' && <div className="rounded-lg bg-gray-50 p-3 sm:col-span-2">
+          <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={cod} onChange={(e) => setCod(e.target.checked)} /> Pay on delivery (driver collects what is still owed)</label>
+          {cod && <div className="mt-2 flex gap-2">{['cash', 'yoco', 'either'].map((m) => <button key={m} className={codMethod === m ? 'btn-dark btn-sm' : 'btn-ghost btn-sm'} onClick={() => setCodMethod(m)}>{m === 'yoco' ? 'Card (Yoco)' : m === 'either' ? 'Cash or card' : 'Cash'}</button>)}</div>}
+        </div>}
       </div> : <p className="mt-3 text-sm text-gray-500">A delivery is scheduled or out, so only the lines can change, and not below what has gone out.</p>}
       {linesChanged && <div className="mt-3"><Field label="Reason for changing the lines" hint="If the value changes, the invoice is reissued and payments move to it."><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field></div>}
       <ErrorBox msg={a.error} />

@@ -487,7 +487,8 @@ async def invoice_proforma(quote_id: str, payload: dict, user: dict = Depends(cu
                "source": "machine" if method == "yoco_machine" else None,
                "reference": pay.get("reference") or q["quote_number"], "date": pay.get("date"),
                "holder": {"type": "staff", "name": user.get("name") or user["email"]} if method == "cash" else None}
-    out = await commerce.invoice_proforma(node, q, user, raw, {"pay_on_delivery": bool(payload.get("pay_on_delivery"))})
+    out = await commerce.invoice_proforma(node, q, user, raw, {"pay_on_delivery": bool(payload.get("pay_on_delivery")),
+                                                               "cod_method": payload.get("cod_method") or "either"})
     await _xero_invoice(out["invoice_id"])
     if out.get("payment"):
         await _xero_payment(node["node_id"], out["payment"]["_id"])
@@ -624,7 +625,7 @@ async def edit_order(order_id: str, payload: dict, user: dict = Depends(current_
 
 @router.put("/orders/{order_id}")
 async def edit_order_details(order_id: str, payload: dict, user: dict = Depends(current_partner)):
-    """Address, requested date, notes: until a delivery is scheduled."""
+    """Address, requested date, notes, pay on delivery: until a delivery is scheduled."""
     node, cfg = await ctx(user)
     o = await commerce.order_or_404(node["node_id"], order_id)
     if o.get("status") != "open":

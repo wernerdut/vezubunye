@@ -649,6 +649,15 @@ async def test_proforma_then_tax_invoice_when_steven_says(client):
     r2 = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/invoice", headers=S["mx"], json={
         "payment": {"method": "cash", "amount": 1000}}))
     assert (await db.invoices().find_one({"_id": r2["invoice_id"]}))["status"] == "part_paid"
+    o2 = await db.orders().find_one({"_id": r2["order_id"]})
+    assert not o2["pay_on_delivery"]
+    e = await ok(await c.put(f"/api/p/orders/{r2['order_id']}", headers=S["mx"], json={"pay_on_delivery": True, "cod_method": "yoco"}))
+    assert e["pay_on_delivery"] and (await db.orders().find_one({"_id": r2["order_id"]}))["cod_method"] == "yoco"
+    # deposit now, balance on delivery
+    pf5 = await ok(await new_pf())
+    r5 = await ok(await c.post(f"/api/p/quotes/{pf5['_id']}/invoice", headers=S["mx"], json={
+        "payment": {"method": "cash", "amount": 500}, "pay_on_delivery": True}))
+    assert (await db.orders().find_one({"_id": r5["order_id"]}))["pay_on_delivery"]
     # no payment yet (trade, pay on delivery): invoice on its own
     pf3 = await ok(await new_pf())
     r3 = await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/invoice", headers=S["mx"], json={}))
