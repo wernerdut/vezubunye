@@ -3,7 +3,7 @@ import { ReactNode, useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, errMsg, openPdf } from '../api'
 import { PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from '../components/Actions'
-import { cleanLines, Line, LineEditor } from '../components/Forms'
+import { cleanLines, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { Chip, ErrorBox, Field, Modal, PageTitle, Spinner, Status, useAction } from '../components/ui'
 import { colourOf, lineLabel, useApp } from '../lib/ctx'
 import { date, label, money } from '../lib/format'
@@ -21,6 +21,8 @@ export default function OrderDetail() {
   const close = () => { setModal(null); load() }
   const inv = o.invoices.find((i: any) => !i.void && i.status !== 'paid')
   const sched = o.delivery_notes.find((d: any) => !d.void && d.delivery_status === 'scheduled')
+  // nothing scheduled or dispatched yet: the whole order can still be changed or cancelled
+  const untouched = !o.delivery_notes.some((d: any) => !d.void)
   const nextBtn = () => {
     switch (o.next_action.code) {
       case 'send_pay_link': return inv && me.features.yoco ? <button className="btn-primary" onClick={() => setModal(<PayLinkModal invoiceId={inv._id} onClose={close} />)}>Send pay link</button> : null
@@ -50,8 +52,10 @@ export default function OrderDetail() {
       <div className="card mb-4 overflow-x-auto">
         <div className="flex items-center justify-between border-b p-3"><h2 className="font-bold">Lines</h2>
           {o.order_status === 'open' && <div className="flex gap-2">
-            <button className="btn-ghost btn-sm" onClick={() => setModal(<EditLines order={o} onClose={close} />)}>Edit</button>
-            {isAdmin && <button className="btn-danger btn-sm" onClick={() => setModal(<Reason title="Cancel remainder" onClose={() => setModal(null)} onSave={(reason) => api.post(`/api/p/orders/${id}/cancel-remainder`, { reason }).then(close)} />)}>Cancel remainder</button>}
+            <button className="btn-ghost btn-sm" onClick={() => setModal(<EditOrder order={o} untouched={untouched} onClose={close} />)}>Edit</button>
+            {untouched
+              ? <button className="btn-danger btn-sm" onClick={() => setModal(<Reason title="Cancel order" cta="Cancel order" note={o.paid > 0 ? `${money(o.paid)} already paid stays with the customer as credit, to refund or use on another order.` : 'The invoice is voided. Nothing has been paid.'} onClose={() => setModal(null)} onSave={(reason) => api.post(`/api/p/orders/${id}/cancel`, { reason }).then(close)} />)}>Cancel order</button>
+              : isAdmin && <button className="btn-danger btn-sm" onClick={() => setModal(<Reason title="Cancel remainder" onClose={() => setModal(null)} onSave={(reason) => api.post(`/api/p/orders/${id}/cancel-remainder`, { reason }).then(close)} />)}>Cancel remainder</button>}
           </div>}
         </div>
         <table className="min-w-full">
@@ -110,27 +114,49 @@ export default function OrderDetail() {
   )
 }
 
-function EditLines({ order, onClose }: { order: any; onClose: () => void }) {
+/** Lines always (not below what has gone out); address, date and notes until a delivery is
+ * scheduled. A change in value reissues the invoice and moves payments to it. */
+function EditOrder({ order, untouched, onClose }: { order: any; untouched: boolean; onClose: () => void }) {
   const [lines, setLines] = useState<Line[]>(order.order_lines.map((l: any) => ({ ...l })))
+  const [customer, setCustomer] = useState<any>(null)
+  const [siteId, setSiteId] = useState(order.site?.site_id || '')
+  const [newSite, setNewSite] = useState<any>(null)
+  const [requested, setRequested] = useState(order.requested_date || '')
+  const [notes, setNotes] = useState(order.notes || '')
   const [reason, setReason] = useState('')
   const a = useAction()
+  useEffect(() => { api.get(`/api/p/customers/${order.customer_id}`, { params: { brief: true } }).then((r) => setCustomer(r.data)) }, [order.customer_id])
+  const linesChanged = JSON.stringify(cleanLines(lines)) !== JSON.stringify(cleanLines(order.order_lines))
+  const save = () => a.run(async () => {
+    if (untouched && customer) {
+      const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
+      await api.put(`/api/p/orders/${order._id}`, { site_id: site_id || null, requested_date: requested || null, notes })
+    }
+    if (linesChanged) await api.put(`/api/p/orders/${order._id}/lines`, { lines: cleanLines(lines), reason })
+    onClose()
+  }, errMsg)
   return (
-    <Modal title="Edit order lines" onClose={onClose} wide>
-      <p className="mb-3 text-sm text-gray-500">Lines cannot go below what has been dispatched. If the value changes, the invoice is reissued and payments move to it.</p>
+    <Modal title={`Edit ${order.order_number || 'order'}`} onClose={onClose} wide>
       <LineEditor lines={lines} setLines={setLines} tier={order.price_tier} />
-      <div className="mt-3"><Field label="Reason"><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field></div>
+      {untouched ? customer && <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <DeliverTo customer={customer} siteId={siteId} setSiteId={setSiteId} site={newSite} setSite={setNewSite} />
+        <Field label="Requested date"><input type="date" className="input" value={requested} onChange={(e) => setRequested(e.target.value)} /></Field>
+        <Field label="Notes"><input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
+      </div> : <p className="mt-3 text-sm text-gray-500">A delivery is scheduled or out, so only the lines can change, and not below what has gone out.</p>}
+      {linesChanged && <div className="mt-3"><Field label="Reason for changing the lines" hint="If the value changes, the invoice is reissued and payments move to it."><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field></div>}
       <ErrorBox msg={a.error} />
-      <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn-primary" disabled={!reason || a.busy} onClick={() => a.run(async () => { await api.put(`/api/p/orders/${order._id}/lines`, { lines: cleanLines(lines), reason }); onClose() }, errMsg)}>Save</button></div>
+      <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Back</button>
+        <button className="btn-primary" disabled={(linesChanged && !reason.trim()) || a.busy} onClick={save}>Save</button></div>
     </Modal>
   )
 }
 
-export function Reason({ title, onClose, onSave, cta = 'Confirm' }: { title: string; onClose: () => void; onSave: (r: string) => Promise<unknown>; cta?: string }) {
+export function Reason({ title, onClose, onSave, cta = 'Confirm', note }: { title: string; onClose: () => void; onSave: (r: string) => Promise<unknown>; cta?: string; note?: string }) {
   const [reason, setReason] = useState('')
   const a = useAction()
   return (
     <Modal title={title} onClose={onClose}>
+      {note && <p className="mb-3 text-sm text-gray-600">{note}</p>}
       <Field label="Reason"><input className="input" autoFocus value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
       <ErrorBox msg={a.error} />
       <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Back</button>

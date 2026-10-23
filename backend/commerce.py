@@ -1068,6 +1068,66 @@ async def reissue_order_invoice(node: dict, cfg: dict, order: dict, user: dict, 
     return new
 
 
+async def nothing_dispatched(order: dict, what: str) -> None:
+    """Edits to the whole order and cancelling it are only before any delivery note exists
+    (scheduled counts: void the scheduled delivery first)."""
+    if await db.delivery_notes().find_one({"order_id": order["_id"], **ACTIVE}):
+        raise HTTPException(400, f"A delivery is already scheduled or dispatched: void it first to {what}, "
+                                 "or use Cancel remainder")
+
+
+async def update_order_details(order: dict, raw: dict, user: dict) -> dict:
+    """Delivery address, requested date and notes, before anything is scheduled."""
+    await nothing_dispatched(order, "change the order")
+    upd: dict = {}
+    if "site_id" in raw:
+        cust = await db.customers().find_one({"_id": order["customer_id"]})
+        upd["site"] = site_of(cust or {}, raw["site_id"]) if raw["site_id"] else None
+    for k in ("requested_date", "notes"):
+        if k in raw:
+            upd[k] = raw[k] or ("" if k == "notes" else None)
+    if upd:
+        await db.orders().update_one({"_id": order["_id"]}, {"$set": upd})
+        await audit.log(user, order["node_id"], "edit", "orders", order["_id"],
+                        before={k: order.get(k) for k in upd}, after=upd)
+    return {**order, **upd}
+
+
+async def cancel_order(node: dict, order: dict, user: dict, reason: str) -> dict:
+    """Undo an order before anything is scheduled. Its invoice is voided; money already paid
+    stays with the customer as credit (unallocated) and raises refund_due."""
+    node_id = node["node_id"]
+    await nothing_dispatched(order, "cancel the order")
+    if order.get("status") == "cancelled":
+        raise HTTPException(400, "Order is already cancelled")
+    lines = [{**ol, "qty_cancelled": ol["qty"]} for ol in order["lines"]]
+    upd = {"lines": lines, "status": "cancelled", "cancelled_reason": reason, "cancelled_by": user["email"],
+           "cancelled_at": now()}
+    voided, credit = [], 0.0
+    async with corrections.txn() as s:
+        async for inv in db.invoices().find({"order_id": order["_id"], **ACTIVE}, session=s):
+            async for p in db.payments().find({"allocations.invoice_id": inv["_id"], **ACTIVE}, session=s):
+                mine = [a for a in p["allocations"] if a["invoice_id"] == inv["_id"]]
+                credit += sum(a["amount"] for a in mine)
+                await db.payments().update_one({"_id": p["_id"]}, {"$set": {
+                    "allocations": [a for a in p["allocations"] if a["invoice_id"] != inv["_id"]],
+                    "unallocated_from_cancelled_order": order.get("order_number")}}, session=s)
+            await corrections.mark_void("invoices", inv["_id"], user, f"Order cancelled: {reason}", session=s,
+                                        extra={"status": "void"})
+            voided.append(inv["_id"])
+        if credit > PAY_TOL:
+            upd["refund_due"] = r2(credit)
+        await db.orders().update_one({"_id": order["_id"]}, {"$set": upd}, session=s)
+        await audit.log(user, node_id, "cancel", "orders", order["_id"],
+                        before={"record": order, "reason": reason}, after=upd, session=s)
+    if credit > PAY_TOL:
+        await recon.raise_flag(node_id, "refund_due",
+                               f"Order {order.get('order_number')} cancelled with R{credit:,.2f} already paid. "
+                               f"It is on the customer as credit: refund it or use it on another order.",
+                               {"order_id": order["_id"]}, today())
+    return {**order, **upd, "voided_invoices": voided}
+
+
 async def cancel_remainder(node: dict, order: dict, user: dict, reason: str) -> dict:
     """Cancel undelivered quantities. On an upfront order paid beyond the value now ordered,
     raise refund_due for Fenix; the refund itself is done in Xero by hand in v1."""

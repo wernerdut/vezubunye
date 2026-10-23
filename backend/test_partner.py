@@ -768,6 +768,42 @@ async def test_new_address_typed_on_order(client):
     assert any(ln["kind"] == "charge" and ln["unit_price"] == 300 for ln in o["lines"])
 
 
+
+async def test_edit_and_cancel_before_dispatch(client):
+    c = client
+    def mk():
+        return c.post("/api/p/orders", headers=S["mx"], json={
+            "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 2}]})
+    # edit address, date, notes before anything is scheduled
+    o = await ok(await mk())
+    site = (await db.customers().find_one({"_id": S["mx_cust"]["_id"]}))["sites"][-1]
+    e = await ok(await c.put(f"/api/p/orders/{o['_id']}", headers=S["mx"], json={
+        "site_id": site["site_id"], "requested_date": "2026-11-02", "notes": "Gate code 1234"}))
+    assert e["site"]["site_id"] == site["site_id"] and e["requested_date"] == "2026-11-02" and e["notes"] == "Gate code 1234"
+    # undo, unpaid: invoice voided, order cancelled
+    inv_id = o["invoices"][0]["_id"]
+    r = await ok(await c.post(f"/api/p/orders/{o['_id']}/cancel", headers=S["mx"], json={"reason": "Customer changed mind"}))
+    assert r["order_status"] == "cancelled"
+    assert (await db.invoices().find_one({"_id": inv_id}))["void"]
+    assert (await c.post(f"/api/p/orders/{o['_id']}/cancel", headers=S["mx"], json={"reason": "again"})).status_code == 400
+    # undo, part paid: money stays with the customer as credit, refund flagged
+    o2 = await ok(await mk())
+    pay = await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "cash", "amount": 500, "invoice_id": o2["invoices"][0]["_id"], "customer_id": S["mx_cust"]["_id"]}))
+    await ok(await c.post(f"/api/p/orders/{o2['_id']}/cancel", headers=S["mx"], json={"reason": "Wrong size"}))
+    p = await db.payments().find_one({"_id": pay["_id"]})
+    assert p["allocations"] == [] and not p.get("void")
+    assert await db.flags().find_one({"type": "refund_due", "references.order_id": o2["_id"]})
+    # once a delivery is scheduled: no cancel, no address change (Cancel remainder instead)
+    o3 = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_terms"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 2}]}))
+    await db.delivery_notes().insert_one({"_id": "dn-sched", "node_id": "makulu", "order_id": o3["_id"],
+                                          "lines": [{"order_line_id": o3["order_lines"][0]["line_id"], "quantity": 1}]})
+    assert (await c.post(f"/api/p/orders/{o3['_id']}/cancel", headers=S["mx"], json={"reason": "x"})).status_code == 400
+    assert (await c.put(f"/api/p/orders/{o3['_id']}", headers=S["mx"], json={"notes": "x"})).status_code == 400
+    await db.delivery_notes().delete_one({"_id": "dn-sched"})
+
+
 # ---------------------------------------------------------------- dashboard
 
 async def test_dashboard_board(client):

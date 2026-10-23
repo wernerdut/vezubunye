@@ -579,6 +579,28 @@ async def edit_order(order_id: str, payload: dict, user: dict = Depends(current_
     return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], order_id)), cfg, user["role"])
 
 
+@router.put("/orders/{order_id}")
+async def edit_order_details(order_id: str, payload: dict, user: dict = Depends(current_partner)):
+    """Address, requested date, notes: until a delivery is scheduled."""
+    node, cfg = await ctx(user)
+    o = await commerce.order_or_404(node["node_id"], order_id)
+    if o.get("status") != "open":
+        raise HTTPException(400, "Only an open order is edited")
+    await commerce.update_order_details(o, payload, user)
+    return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], order_id)), cfg, user["role"])
+
+
+@router.post("/orders/{order_id}/cancel")
+async def cancel_order(order_id: str, payload: dict, user: dict = Depends(current_partner)):
+    """Undo an order nothing has been scheduled on. Any partner user, with a reason."""
+    node, cfg = await ctx(user)
+    o = await commerce.order_or_404(node["node_id"], order_id)
+    out = await commerce.cancel_order(node, o, user, require_reason(payload))
+    for inv_id in out["voided_invoices"]:
+        await _xero_invoice(inv_id)
+    return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], order_id)), cfg, user["role"])
+
+
 @router.post("/orders/{order_id}/cancel-remainder")
 async def cancel_remainder(order_id: str, payload: dict, user: dict = Depends(partner_admin)):
     node, cfg = await ctx(user)
