@@ -459,13 +459,15 @@ async def record_payment(node_id: str, raw: dict, user: dict, session=None,
          "customer_id": customer_id, "allocations": allocations,
          "unallocated": r2(amount - alloc_total),
          "holder": raw.get("holder") if method == "cash" else None,
-         "deposit_id": None, "dn_id": raw.get("dn_id"),
+         "deposit_id": None, "dn_id": raw.get("dn_id"), "quote_id": raw.get("quote_id"),
          "external_id": raw.get("external_id"), "xero_payment_id": raw.get("xero_payment_id"),
          "posted_to_xero": False, "captured_by": user["email"], "created_at": now(),
          # Brief 1 compatibility: a single-invoice allocation reads as a matched delivery
          "matched_delivery_id": None, "status": "unmatched"}
     p["split"] = await payment_split(p, cfg, session)
     await _compat_fields(p, session)
+    if p["quote_id"] and not allocations:
+        p["status"] = "held"        # paid on a proforma, waiting for its tax invoice
     await db.payments().insert_one(p, session=session)
     for a in allocations:
         await refresh_invoice(a["invoice_id"], session)
@@ -1022,6 +1024,7 @@ async def set_quote_status(node: dict, quote: dict, status: str, user: dict, rea
             raise HTTPException(400, "Give a reason for cancelling")
         upd[f"{status}_reason"] = reason
         upd[f"{status}_by"] = user["email"]
+        await release_held(node_id, quote, status)
     if status == "accepted":
         cfg = await get_cfg(node_id)
         customer = await get_customer(node_id, quote["customer_id"])
@@ -1048,6 +1051,10 @@ async def invoice_proforma(node: dict, quote: dict, user: dict, payment: dict | 
     inv = await db.invoices().find_one({"order_id": order["_id"], "dn_id": None, **ACTIVE})
     if not inv:
         raise HTTPException(400, "The order has no invoice")
+    held_ids = await allocate_held(quote, inv, user)
+    # an open card link on the proforma now charges the invoice
+    await db.pay_links().update_many({"quote_id": quote["_id"], "status": {"$in": ["open", "sent"]}},
+                                     {"$set": {"invoice_id": inv["_id"]}})
     p = None
     if payment:
         amount = r2(float(payment["amount"]))
@@ -1055,8 +1062,76 @@ async def invoice_proforma(node: dict, quote: dict, user: dict, payment: dict | 
         p = await record_payment(node["node_id"], {**payment, "customer_id": quote["customer_id"]}, user,
                                  allocations=alloc)
         await refresh_order_status(order["_id"])
-    return {"payment": p, "order_id": order["_id"], "order_number": order.get("order_number"),
+    await refresh_order_status(order["_id"])
+    inv = await db.invoices().find_one({"_id": inv["_id"]})
+    if inv.get("balance", inv["total"]) <= PAY_TOL:
+        await db.pay_links().update_many({"invoice_id": inv["_id"], "status": {"$in": ["open", "sent"]}},
+                                         {"$set": {"status": "paid", "paid_at": now()}})
+    return {"payment": p, "held_payment_ids": held_ids, "order_id": order["_id"],
+            "order_number": order.get("order_number"),
             "invoice_id": inv["_id"], "invoice_number": inv.get("display_number")}
+
+
+# ---------- payments held on a proforma (card link paid before the tax invoice) ---------- #
+
+async def held_payments(quote_id: str) -> list[dict]:
+    return [p async for p in db.payments().find({"quote_id": quote_id, "status": "held", **ACTIVE}).sort("created_at", 1)]
+
+
+async def proforma_paid(quote_id: str) -> float:
+    """Everything paid on the proforma: still held, or already moved to its tax invoice."""
+    return r2(sum([p["amount"] async for p in db.payments().find({"quote_id": quote_id, **ACTIVE})]))
+
+
+async def proforma_balance(quote: dict) -> float:
+    return r2(quote["total"] - await proforma_paid(quote["_id"]))
+
+
+async def refresh_proforma(quote_id: str):
+    q = await db.quotes().find_one({"_id": quote_id})
+    if not q:
+        return
+    paid = await proforma_paid(quote_id)
+    status = "paid" if paid >= q["total"] - PAY_TOL else ("part_paid" if paid > PAY_TOL else "unpaid")
+    await db.quotes().update_one({"_id": quote_id}, {"$set": {"amount_paid": paid,
+                                                              "balance": r2(max(q["total"] - paid, 0)),
+                                                              "payment_status": status}})
+
+
+async def allocate_held(quote: dict, inv: dict, user: dict) -> list[str]:
+    """Move every payment held on the proforma onto its new tax invoice, oldest first."""
+    ids = []
+    for p in await held_payments(quote["_id"]):
+        cur = await db.invoices().find_one({"_id": inv["_id"]})
+        room = r2(max(cur.get("balance", cur["total"]), 0))
+        take = r2(min(p["amount"], room))
+        await reallocate(p["_id"], [{"invoice_id": inv["_id"], "amount": take}] if take > 0 else [], user,
+                         f"Paid on proforma {quote['quote_number']}, moved to {inv.get('display_number')}")
+        after = await db.payments().find_one({"_id": p["_id"]})
+        if after.get("unallocated", 0) > 0.004:
+            await recon.raise_flag(p["node_id"], "payment_unallocated",
+                                   f"Payment of R{p['amount']:,.2f} on proforma {quote['quote_number']} is more than "
+                                   f"its invoice: R{after['unallocated']:,.2f} stays on the customer as credit.",
+                                   {"payment_id": p["_id"]}, today())
+        ids.append(p["_id"])
+    await refresh_proforma(quote["_id"])
+    return ids
+
+
+async def release_held(node_id: str, quote: dict, status: str):
+    """A proforma cancelled or declined after card money came in: the money stays with the
+    customer as credit and Fenix sees refund_due."""
+    held = await held_payments(quote["_id"])
+    for p in held:
+        await db.payments().update_one({"_id": p["_id"]}, {"$set": {"status": "flagged"}})
+    if held:
+        total = r2(sum(p["amount"] for p in held))
+        await recon.raise_flag(node_id, "refund_due",
+                               f"Proforma {quote['quote_number']} {status} with R{total:,.2f} paid by the customer. "
+                               f"The money stays on the customer as credit: refund it or use it on a new order.",
+                               {"quote_id": quote["_id"], "payment_ids": [p["_id"] for p in held]}, today())
+    await db.pay_links().update_many({"quote_id": quote["_id"], "invoice_id": None,
+                                      "status": {"$in": ["open", "sent"]}}, {"$set": {"status": "cancelled"}})
 
 
 async def sweep_quotes(node_id: str) -> list[str]:

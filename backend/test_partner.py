@@ -95,7 +95,7 @@ class Yoco:
             return httpx.Response(200, json={"id": "wh_1", "secret": self.secret, "mode": "test"})
         if p.endswith("/checkouts") and request.method == "POST":
             body = json.loads(request.content)
-            cid = f"co_{(body['metadata']['invoice_id'] or body['metadata'].get('quote_id', ''))[:6]}_{body['amount']}"
+            cid = f"co_{(body['metadata'].get('invoice_id') or body['metadata'].get('quote_id', ''))[:6]}_{body['amount']}"
             return httpx.Response(200, json={"id": cid, "redirectUrl": f"https://pay.example/{cid}", "status": "created"})
         if "/checkouts/" in p:
             cid = p.rsplit("/", 1)[1]
@@ -647,6 +647,93 @@ async def test_yoco_sweep_catches_missed_webhook(client):
     assert (await db.invoices().find_one({"_id": inv["_id"]}))["status"] == "paid"
     assert await yoco.sweep_links("makulu") == []        # idempotent
 
+
+
+async def test_proforma_card_link_held_then_invoiced(client):
+    """Brief 2B: a proforma carries a Yoco card link (PDF text, QR and share message). Card money
+    is held on the proforma; paid in full, the proforma becomes its order and tax invoice at once.
+    A part payment waits for Steven's Create tax invoice and lands on the invoice first."""
+    c = client
+    import yoco
+    mock = Yoco()
+    yoco.transport = httpx.MockTransport(mock.handler)
+    assert await yoco.configured("makulu")
+
+    def new_pf():
+        return c.post("/api/p/quotes", headers=S["mx"], json={
+            "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]})
+
+    # shared: link in the message, link text and a QR on the PDF
+    pf = await ok(await new_pf())
+    sh = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/share", headers=S["mx"]))
+    assert sh["pay_link"] and "/pay/" in sh["pay_link"] and f"Pay by card: {sh['pay_link']}" in sh["message"]
+    pdf = await c.get(f"/api/p/quotes/{pf['_id']}/pdf", headers=S["mx"])
+    txt = pdf_text(pdf.content)
+    assert "Pay by card" in txt and sh["pay_link"].split("//")[1] in txt
+    shared = await c.get(sh["url"].split("vezubunye.com", 1)[1])
+    assert "Pay by card" in pdf_text(shared.content)
+    assert (await ok(await c.post(f"/api/p/quotes/{pf['_id']}/share", headers=S["mx"])))["pay_link"] == sh["pay_link"]  # reused
+
+    # paid in full by card: held, then the tax invoice is made at once with the money on it
+    tok = sh["pay_link"].rsplit("/", 1)[1]
+    opened = await ok(await c.get(f"/api/p/pay/{tok}"))
+    assert opened["state"] == "open" and opened["amount"] == pf["total"] and opened["invoice"] == pf["quote_number"]
+    r = await webhook(c, "makulu", "pay_pf_full", pf["total"], {"quote_id": pf["_id"], "node_id": "makulu"})
+    assert r.status_code == 200, r.text
+    q = await db.quotes().find_one({"_id": pf["_id"]})
+    assert q["status"] == "accepted" and q["order_id"] and q["payment_status"] == "paid"
+    inv = await db.invoices().find_one({"order_id": q["order_id"], "dn_id": None})
+    assert inv["status"] == "paid"
+    p = await db.payments().find_one({"external_id": "pay_pf_full"})
+    assert p["status"] == "matched" and p["allocations"][0]["invoice_id"] == inv["_id"] and p["quote_id"] == pf["_id"]
+    assert not await db.flags().find_one({"type": "payment_unallocated", "references.payment_id": p["_id"]})
+    assert (await ok(await c.get(f"/api/p/pay/{tok}")))["state"] in ("paid", "closed")
+    assert (await webhook(c, "makulu", "pay_pf_full", pf["total"], {"quote_id": pf["_id"]})).json()["duplicate"]
+
+    # part paid by card: held on the proforma, no flag, PDF shows the balance; Steven invoices with cash for the rest
+    pf2 = await ok(await new_pf())
+    sh2 = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/share", headers=S["mx"]))
+    await webhook(c, "makulu", "pay_pf_dep", 500, {"quote_id": pf2["_id"]})
+    p2 = await db.payments().find_one({"external_id": "pay_pf_dep"})
+    assert p2["status"] == "held" and p2["allocations"] == [] and p2["unallocated"] == 500
+    assert not await db.flags().find_one({"type": "payment_unallocated", "references.payment_id": p2["_id"]})
+    gq = await ok(await c.get(f"/api/p/quotes/{pf2['_id']}", headers=S["mx"]))
+    assert gq["status"] == "sent" and gq["payment_status"] == "part_paid" and gq["amount_paid"] == 500
+    assert gq["pay_link"] == sh2["pay_link"] and len(gq["payments"]) == 1
+    assert (await ok(await c.get(f"/api/p/pay/{sh2['pay_link'].rsplit('/', 1)[1]}")))["amount"] == round(pf2["total"] - 500, 2)
+    assert "Amount due" in pdf_text((await c.get(f"/api/p/quotes/{pf2['_id']}/pdf", headers=S["mx"])).content)
+    r2 = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/invoice", headers=S["mx"], json={
+        "payment": {"method": "cash", "amount": round(pf2["total"] - 500, 2)}}))
+    assert r2["held_payment_ids"] == [p2["_id"]]
+    inv2 = await db.invoices().find_one({"_id": r2["invoice_id"]})
+    assert inv2["status"] == "paid"
+    assert (await db.payments().find_one({"_id": p2["_id"]}))["allocations"][0] == {"invoice_id": inv2["_id"], "amount": 500}
+
+    # card money that lands after Steven made the invoice goes to the invoice
+    pf3 = await ok(await new_pf())
+    sh3 = await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/share", headers=S["mx"]))
+    r3 = await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/invoice", headers=S["mx"], json={}))
+    o3 = await ok(await c.get(f"/api/p/pay/{sh3['pay_link'].rsplit('/', 1)[1]}"))
+    assert o3["state"] == "open" and o3["invoice"].startswith("MX-INV")
+    await webhook(c, "makulu", "pay_pf_late", pf3["total"], {"quote_id": pf3["_id"]})
+    assert (await db.invoices().find_one({"_id": r3["invoice_id"]}))["status"] == "paid"
+
+    # cancelled with money held: credit on the customer, refund_due, link closed
+    pf4 = await ok(await new_pf())
+    sh4 = await ok(await c.post(f"/api/p/quotes/{pf4['_id']}/share", headers=S["mx"]))
+    await webhook(c, "makulu", "pay_pf_cxl", 300, {"quote_id": pf4["_id"]})
+    await ok(await c.post(f"/api/p/quotes/{pf4['_id']}/status", headers=S["mx"], json={"status": "cancelled", "reason": "Changed mind"}))
+    assert await db.flags().find_one({"type": "refund_due", "references.quote_id": pf4["_id"]})
+    assert (await db.payments().find_one({"external_id": "pay_pf_cxl"}))["status"] == "flagged"
+    assert (await ok(await c.get(f"/api/p/pay/{sh4['pay_link'].rsplit('/', 1)[1]}")))["state"] == "closed"
+
+    # missed webhook on a proforma link: the sweep catches it
+    pf5 = await ok(await new_pf())
+    sh5 = await ok(await c.post(f"/api/p/quotes/{pf5['_id']}/share", headers=S["mx"]))
+    op5 = await ok(await c.get(f"/api/p/pay/{sh5['pay_link'].rsplit('/', 1)[1]}"))
+    mock.completed[op5["redirect_url"].rsplit("/", 1)[1]] = "pay_pf_missed"
+    assert len(await yoco.sweep_links("makulu")) == 1
+    assert (await db.quotes().find_one({"_id": pf5["_id"]}))["status"] == "accepted"
 
 
 async def test_proforma_then_tax_invoice_when_steven_says(client):

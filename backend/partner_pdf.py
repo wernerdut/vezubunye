@@ -254,7 +254,7 @@ def _customer_lines(customer: dict | None, name: str) -> list[str]:
     c = customer or {}
     out = [name]
     for k in ("contact_person", "billing_address", "phone", "email"):
-        if c.get(k):
+        if c.get(k) and not (k == "contact_person" and c[k].strip().lower() == (name or "").strip().lower()):
             out.append(c[k])
     if c.get("vat_number"):
         out.append(f"VAT {c['vat_number']}")
@@ -298,13 +298,23 @@ def quote(node: dict, cfg: dict, q: dict, customer: dict | None, pay_link: str |
     d.y = min(yl, yr) - 4 * mm
     rows, sw = _priced_rows(q, cfg, True)
     d.table(PRICE_COLS, rows, sw)
+    paid = q.get("amount_paid") or 0
     d.totals([("Subtotal excl VAT", money(q["subtotal"]), False),
               (f"VAT {q.get('vat_rate', 15):g}%", money(q["vat"]), False),
-              ("Total incl VAT", money(q["total"]), True)])
+              ("Total incl VAT", money(q["total"]), True)]
+             + ([("Paid", money(paid), False), ("Amount due", money(max(q["total"] - paid, 0)), True)]
+                if proforma and paid > 0 else []))
     d.y -= 4 * mm
+    if proforma and paid >= q["total"] - 0.01:
+        d.text("Paid in full. Thank you.", 10, True, color=_brand(node)["dark"])
+        return d.done()
+    d.need(36 * mm)
+    top = d.y
     d.text("Payment options", 10, True, color=_brand(node)["dark"])
     if pay_link:
-        d.text(f"Pay by card: {pay_link}", 9)
+        d.text("Pay by card: scan the code or open", 9, True)
+        d.text(pay_link, 9)
+        d.qr(pay_link, W - MARGIN - 28 * mm, top - 30 * mm, 28 * mm)
     if q.get("pay_on_delivery_offered"):
         d.text("Pay on delivery: cash or card at the site.", 9)
     bank = _bank_lines(node, q["quote_number"])

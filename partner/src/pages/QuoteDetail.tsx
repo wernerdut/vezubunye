@@ -34,7 +34,7 @@ export default function QuoteDetail() {
   const open = q.status === 'draft' || q.status === 'sent'
   return (
     <div>
-      <PageTitle title={`${q.quote_number}${q.rev > 1 ? ` rev ${q.rev}` : ''}`} sub={<span className="flex items-center gap-2">{q.customer_name} <Status s={q.status} /></span>}
+      <PageTitle title={`${q.quote_number}${q.rev > 1 ? ` rev ${q.rev}` : ''}`} sub={<span className="flex items-center gap-2">{q.customer_name} <Status s={q.status} />{pf && open && q.payment_status && q.payment_status !== 'unpaid' && <Status s={q.payment_status} />}</span>}
         actions={<>
           <button className="btn-ghost" onClick={() => openPdf(`/api/p/quotes/${id}/pdf`)}><FileDown size={16} /> PDF</button>
           {open && <button className="btn-ghost" onClick={() => setEditing(true)}>Revise</button>}
@@ -56,6 +56,7 @@ export default function QuoteDetail() {
       </div>
       <p className="mb-4 text-sm text-gray-600">Dated {date(q.date)}{pf ? '' : ` · valid until ${date(q.valid_until)}`}{q.site ? ` · ${siteLine(q.site)}` : ''}</p>
       {q.status === 'cancelled' && <p className="mb-4 text-sm text-gray-600">Cancelled: {q.cancelled_reason}</p>}
+      {pf && (q.pay_link || (q.payments || []).length > 0) && <CardPayments q={q} />}
       {open && pf && (
         <div className="flex flex-wrap gap-2">
           <button className="btn-primary" disabled={a.busy} onClick={() => setPaying(true)}>Create tax invoice</button>
@@ -82,6 +83,7 @@ export default function QuoteDetail() {
       {cancelling && (
         <Modal title="Cancel proforma" onClose={() => setCancelling(false)}>
           <Field label="Reason"><input className="input" autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Bought elsewhere, no reply, duplicate…" /></Field>
+          {(q.amount_paid || 0) > 0 && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{money(q.amount_paid)} has been paid on this proforma. It stays on the customer as credit and Fenix is asked to check the refund.</p>}
           <div className="mt-4 flex justify-end"><button className="btn-danger" disabled={!reason.trim()} onClick={() => { setCancelling(false); status('cancelled', { reason }) }}>Cancel proforma</button></div>
         </Modal>
       )}
@@ -98,15 +100,17 @@ export default function QuoteDetail() {
 /** Steven decides when the tax invoice is made. Record what has been paid so far (or nothing:
  * trade on account, pay on delivery), then send the invoice by WhatsApp or email. */
 function CreateTaxInvoice({ q, onClose, onOpenOrder }: { q: any; onClose: () => void; onOpenOrder: (orderId: string) => void }) {
-  const [method, setMethod] = useState('eft')
-  const [amount, setAmount] = useState(String(q.total))
+  const byCard = q.amount_paid || 0
+  const due = Math.max(Math.round((q.total - byCard) * 100) / 100, 0)
+  const [method, setMethod] = useState(byCard > 0 ? 'none' : 'eft')
+  const [amount, setAmount] = useState(String(due))
   const [reference, setReference] = useState('')
   const [cod, setCod] = useState(false)
   const [done, setDone] = useState<any>(null)
   const a = useAction()
   const [codMethod, setCodMethod] = useState('either')
   const paid = method !== 'none'
-  const owed = paid ? q.total - (Number(amount) || 0) : q.total
+  const owed = paid ? due - (Number(amount) || 0) : due
   const save = () => a.run(async () => {
     const r = await api.post(`/api/p/quotes/${q._id}/invoice`, {
       payment: paid ? { method, amount: Number(amount), reference: reference || undefined } : null, pay_on_delivery: cod && owed > 0.004, cod_method: codMethod })
@@ -125,14 +129,15 @@ function CreateTaxInvoice({ q, onClose, onOpenOrder }: { q: any; onClose: () => 
   }
   return (
     <Modal title={`Tax invoice from ${q.quote_number}`} onClose={onClose}>
-      <div className="label">Paid so far</div>
+      {byCard > 0 && <p className="mb-3 rounded-lg bg-green-50 p-3 text-sm text-green-800">Already paid by card: {money(byCard)}. It goes onto the tax invoice.</p>}
+      <div className="label">{byCard > 0 ? 'Paid besides the card payment' : 'Paid so far'}</div>
       <div className="mb-3 flex flex-wrap gap-2">
         {[['eft', 'EFT in the bank'], ['cash', 'Cash'], ['yoco_machine', 'Card machine'], ['none', 'Nothing yet']].map(([k, l]) => (
           <button key={k} className={method === k ? 'btn-dark btn-sm' : 'btn-ghost btn-sm'} onClick={() => setMethod(k)}>{l}</button>
         ))}
       </div>
       {paid && <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Amount" hint={Number(amount) < q.total ? `Part payment: ${money(q.total - Number(amount))} still owed` : undefined}>
+        <Field label="Amount" hint={Number(amount) < due ? `Part payment: ${money(due - Number(amount))} still owed` : undefined}>
           <input type="number" step="0.01" className="input" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
         <Field label={method === 'yoco_machine' ? 'Slip reference' : 'Reference'}><input className="input" placeholder={method === 'yoco_machine' ? '' : q.quote_number} value={reference} onChange={(e) => setReference(e.target.value)} /></Field>
       </div>}
@@ -148,5 +153,30 @@ function CreateTaxInvoice({ q, onClose, onOpenOrder }: { q: any; onClose: () => 
       <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Back</button>
         <button className="btn-primary" disabled={a.busy || (paid && !(Number(amount) > 0)) || (method === 'yoco_machine' && !reference)} onClick={save}>Create tax invoice</button></div>
     </Modal>
+  )
+}
+
+/** Card payments on a proforma (Yoco link): held here until the tax invoice exists, then moved
+ * onto it. Paid in full, the tax invoice is made by itself. */
+function CardPayments({ q }: { q: any }) {
+  const [copied, setCopied] = useState(false)
+  const pays = q.payments || []
+  return (
+    <div className="card mb-4 p-4 text-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-semibold text-brand-dark">Card payments</span>
+        <span>Paid {money(q.amount_paid || 0)} · due {money(q.balance ?? q.total)}</span>
+      </div>
+      {pays.map((p: any) => (
+        <div key={p._id} className="flex justify-between border-t py-1.5 text-gray-700">
+          <span>{date(p.date)} · {p.method === 'yoco' ? 'Card' : p.method}{p.status === 'held' ? ' · waiting for the tax invoice' : ''}</span>
+          <span className="tabular-nums">{money(p.amount)}</span>
+        </div>
+      ))}
+      {q.pay_link && <div className="mt-2 flex items-center gap-2 border-t pt-2">
+        <span className="truncate text-gray-500">{q.pay_link}</span>
+        <button className="btn-ghost btn-sm" onClick={() => { navigator.clipboard?.writeText(q.pay_link); setCopied(true) }}>{copied ? 'Copied' : 'Copy link'}</button>
+      </div>}
+    </div>
   )
 }

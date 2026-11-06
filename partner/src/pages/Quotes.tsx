@@ -35,7 +35,7 @@ export default function Quotes() {
               <div className="font-semibold text-brand-dark">{q.quote_number}{q.rev > 1 ? ` rev ${q.rev}` : ''} · {q.customer_name}</div>
               <div className="text-xs text-gray-500">{date(q.date)}{pf ? (q.order_number ? ` · ${q.order_number}` : '') : ` · valid until ${date(q.valid_until)}`}</div>
             </div>
-            <div className="flex items-center gap-2"><span className="font-bold tabular-nums">{money(q.total)}</span><Status s={q.status} /></div>
+            <div className="flex items-center gap-2"><span className="font-bold tabular-nums">{money(q.total)}</span>{pf && (q.status === 'draft' || q.status === 'sent') && q.payment_status && q.payment_status !== 'unpaid' && <Status s={q.payment_status} />}<Status s={q.status} /></div>
           </button>
         ))}
       </div>

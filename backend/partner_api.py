@@ -446,7 +446,10 @@ async def quote_or_404(node_id: str, quote_id: str) -> dict:
 
 @router.get("/quotes/{quote_id}")
 async def get_quote(quote_id: str, user: dict = Depends(current_partner)):
-    return wall(await quote_or_404(user["node_id"], quote_id))
+    node, _ = await ctx(user)
+    q = await quote_or_404(node["node_id"], quote_id)
+    pays = [p async for p in db.payments().find({"quote_id": quote_id, **ACTIVE}).sort("created_at", 1)]
+    return wall({**q, "payments": pays, "pay_link": await yoco.existing_quote_link(node, q)})
 
 
 @router.put("/quotes/{quote_id}")
@@ -490,6 +493,8 @@ async def invoice_proforma(quote_id: str, payload: dict, user: dict = Depends(cu
     out = await commerce.invoice_proforma(node, q, user, raw, {"pay_on_delivery": bool(payload.get("pay_on_delivery")),
                                                                "cod_method": payload.get("cod_method") or "either"})
     await _xero_invoice(out["invoice_id"])
+    for pid in out.get("held_payment_ids") or []:
+        await _xero_payment(node["node_id"], pid)
     if out.get("payment"):
         await _xero_payment(node["node_id"], out["payment"]["_id"])
     return wall(out, cfg, user["role"])
@@ -500,7 +505,8 @@ async def quote_pdf(quote_id: str, user: dict = Depends(current_partner)):
     node, cfg = await ctx(user)
     q = await quote_or_404(node["node_id"], quote_id)
     cust = await db.customers().find_one({"_id": q["customer_id"]})
-    return pdf_response(partner_pdf.quote(await node_for_pdf(node), cfg, q, cust), q["quote_number"])
+    return pdf_response(partner_pdf.quote(await node_for_pdf(node), cfg, q, cust, await yoco.existing_quote_link(node, q)),
+                        q["quote_number"])
 
 
 # ---------- share links (signed, read-only, expiring) ---------- #
@@ -537,7 +543,12 @@ async def share_quote(quote_id: str, user: dict = Depends(current_partner)):
     url = share_url(node, "q", share_token("q", q, exp))
     cust = await db.customers().find_one({"_id": q["customer_id"]})
     biz = (node.get("branding") or {}).get("display_name") or node["name"]
-    if proforma:
+    link = await yoco.quote_pay_link(node, q, user, mark_sent=True) if proforma else None
+    if proforma and link:
+        msg = (f"{_greeting(cust)} here is your proforma {q['quote_number']} from {biz} for "
+               f"{partner_pdf.money(q['total'])}.\nPay by card: {link['url']}\n"
+               f"Or EFT using {q['quote_number']} as your payment reference.\n{url}")
+    elif proforma:
         msg = (f"{_greeting(cust)} here is your proforma {q['quote_number']} from {biz} for "
                f"{partner_pdf.money(q['total'])}. Please use {q['quote_number']} as your payment reference.\n{url}")
     else:
@@ -545,7 +556,8 @@ async def share_quote(quote_id: str, user: dict = Depends(current_partner)):
                f"{partner_pdf.money(q['total'])}, valid until {q['valid_until']}.\n{url}")
     if q["status"] == "draft":
         await commerce.set_quote_status(node, q, "sent", user)
-    return {"url": url, "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg),
+    return {"url": url, "message": msg, "pay_link": link["url"] if link else None,
+            "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg),
             **_email(cust, f"{'Proforma' if proforma else 'Quote'} {q['quote_number']} from {biz}", msg)}
 
 
@@ -574,7 +586,8 @@ async def shared_pdf(kind: str, token: str):
     cfg = await commerce.get_cfg(doc["node_id"])
     cust = await db.customers().find_one({"_id": doc.get("customer_id")})
     if kind == "q":
-        return pdf_response(partner_pdf.quote(node, cfg, doc, cust), doc["quote_number"])
+        qlink = await yoco.existing_quote_link(node, doc)
+        return pdf_response(partner_pdf.quote(node, cfg, doc, cust, qlink), doc["quote_number"])
     link = await _existing_pay_link(node, doc)
     return pdf_response(partner_pdf.invoice(node, cfg, doc, cust, link), doc["display_number"])
 
