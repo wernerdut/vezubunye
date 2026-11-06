@@ -28,6 +28,7 @@ export function label(s?: string | null): string {
     terms: 'Terms', cod: 'COD', flagged: 'Overpaid', void: 'Void', draft: 'Draft', sent: 'Sent',
     accepted: 'Accepted', declined: 'Declined', expired: 'Expired', eft: 'EFT', cash: 'Cash',
     yoco_link: 'Yoco link', yoco_machine: 'Yoco machine', yoco: 'Yoco', submitted: 'Submitted',
+    waiting_for_sign_off: 'Waiting for Fenix', returned: 'Sent back', withdrawn: 'Withdrawn', held: 'Held on proforma',
     queried: 'Queried', approved: 'Approved', posted: 'Posted', post_failed: 'Post failed',
     posted_attachment_pending: 'Attachment pending', retail: 'Retail', trade: 'Trade',
   }

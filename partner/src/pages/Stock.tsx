@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { PageTitle, Spinner } from '../components/ui'
 import { colourOf, tankName, useApp } from '../lib/ctx'
+import { StocktakeHistory } from './Stocktake'
 
 export default function Stock() {
   const { cfg } = useApp()
   const [s, setS] = useState<any>(null)
-  useEffect(() => { api.get('/api/p/stock').then((r) => setS(r.data)) }, [])
+  const load = () => api.get('/api/p/stock').then((r) => setS(r.data))
+  useEffect(() => { load() }, [])
   if (!s) return <Spinner />
   return (
     <div>
@@ -29,6 +31,7 @@ export default function Stock() {
         {s.fittings.length > 0 && <div className="card"><h2 className="border-b p-3 font-bold">Fittings</h2>
           {s.fittings.map((p: any) => <div key={p.fitting_type} className="flex justify-between border-b px-3 py-2 text-sm"><span>{p.fitting_type}</span><b>{p.qty}</b></div>)}</div>}
       </div>
+      <StocktakeHistory onChanged={load} />
     </div>
   )
 }

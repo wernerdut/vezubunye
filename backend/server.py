@@ -37,6 +37,7 @@ import pdf_gen
 import pricing
 import recon
 import reports
+import stocktake
 from corrections import ACTIVE
 from models import (
     CaptureEntriesIn, CorrectionIn, DeliveryNoteEditIn, DeliveryNoteIn,
@@ -1197,6 +1198,42 @@ async def create_count(node_id: str, payload: PhysicalCountIn,
         {"$set": {"references.count_id": doc["_id"]}})
     await audit.log(user, node_id, "create", "physical_counts", doc["_id"], after=doc)
     return {**doc, "flags_raised": flags_raised}
+
+
+# ---------- partner stocktakes: Fenix sign-off ---------- #
+
+@app.get("/api/nodes/{node_id}/stocktakes")
+async def node_stocktakes(node_id: str, user: dict = Depends(auth.current_user)):
+    """Partner-counted stocktakes. A count waiting for sign-off shows its variances against the
+    system as it stands now (what sign-off would post)."""
+    auth.check_node_access(user, node_id)
+    cfg = await _get_cfg(node_id)
+    out = []
+    async for st in stocktake.stocktakes().find({"node_id": node_id}).sort("submitted_at", -1):
+        if st["status"] == "submitted":
+            st["variances"] = await stocktake.variances(node_id, cfg, st)
+        else:
+            st["variances"] = st.get("approved_variances") or []
+        out.append(st)
+    return out
+
+
+@app.post("/api/stocktakes/{st_id}/approve")
+async def approve_stocktake(st_id: str, payload: dict, user: dict = Depends(auth.require_role("audit", "admin"))):
+    st = await stocktake.stocktakes().find_one({"_id": st_id})
+    if not st:
+        raise HTTPException(404, "Stocktake not found")
+    auth.check_node_access(user, st["node_id"])
+    return await stocktake.approve(st_id, payload.get("note", ""), user)
+
+
+@app.post("/api/stocktakes/{st_id}/return")
+async def return_stocktake(st_id: str, payload: dict, user: dict = Depends(auth.require_role("audit", "admin"))):
+    st = await stocktake.stocktakes().find_one({"_id": st_id})
+    if not st:
+        raise HTTPException(404, "Stocktake not found")
+    auth.check_node_access(user, st["node_id"])
+    return await stocktake.send_back(st_id, payload.get("note", ""), user)
 
 
 @app.get("/api/nodes/{node_id}/counts")

@@ -4,6 +4,7 @@ import { Empty, SectionTitle } from '../../components/ui'
 import { RowMenu, ShowVoided, canCorrect, useCorrection, voidRow, voidedQuery } from '../../components/corrections'
 import type { PhysicalCount } from '../../types'
 import type { TabProps } from '../NodePage'
+import PartnerStocktakes from '../../components/PartnerStocktakes'
 
 export default function Counts({ nodeId, config, user }: TabProps) {
   const [counts, setCounts] = useState<PhysicalCount[]>([])
@@ -54,6 +55,8 @@ export default function Counts({ nodeId, config, user }: TabProps) {
   }
 
   return (
+    <>
+    <PartnerStocktakes nodeId={nodeId} user={user} onChanged={load} />
     <div className="grid xl:grid-cols-2 gap-6">
       {canCount && (
         <div>
@@ -166,5 +169,6 @@ export default function Counts({ nodeId, config, user }: TabProps) {
         </div>
       </div>
     </div>
+    </>
   )
 }

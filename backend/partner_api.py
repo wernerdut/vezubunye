@@ -37,6 +37,7 @@ import partner_auth
 import partner_pdf
 import pricing
 import recon
+import stocktake
 import xero_mt
 import yoco
 from corrections import ACTIVE
@@ -1112,6 +1113,35 @@ async def stock(user: dict = Depends(current_partner)):
               for k, v in sorted(wh.items())]
     fittings = [{"fitting_type": k, "qty": v} for k, v in sorted((await recon.fittings_warehouse(nid)).items())]
     return {"finished_goods": fg, "powder": powder, "fittings": fittings}
+
+
+# ---------- stocktakes (counted here, signed off by Fenix in the internal app) ---------- #
+
+def _stocktake_view(st: dict) -> dict:
+    """Partners never see system figures before sign-off (the count is blind)."""
+    out = {k: v for k, v in st.items() if k not in ("approved_variances",)}
+    if st.get("status") == "approved":
+        out["changes"] = [{k: r[k] for k in ("kind", "label", "counted", "variance")}
+                          for r in st.get("approved_variances") or [] if r["variance"]]
+    return out
+
+
+@router.get("/stocktakes")
+async def list_stocktakes(user: dict = Depends(current_partner)):
+    node, cfg = await ctx(user)
+    rows = [_stocktake_view(s) async for s in stocktake.stocktakes().find({"node_id": node["node_id"]}).sort("submitted_at", -1)]
+    return {"stocktakes": rows, "positions": await stocktake.positions(node["node_id"], cfg)}
+
+
+@router.post("/stocktakes")
+async def submit_stocktake(payload: dict, user: dict = Depends(current_partner)):
+    node, cfg = await ctx(user)
+    return _stocktake_view(await stocktake.submit(node["node_id"], cfg, payload, user))
+
+
+@router.post("/stocktakes/{st_id}/withdraw")
+async def withdraw_stocktake(st_id: str, user: dict = Depends(current_partner)):
+    return _stocktake_view(await stocktake.withdraw(user["node_id"], st_id, user))
 
 
 @router.get("/production/captures")

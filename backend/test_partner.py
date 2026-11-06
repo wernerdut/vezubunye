@@ -980,6 +980,69 @@ async def test_edit_and_cancel_before_dispatch(client):
 
 # ---------------------------------------------------------------- dashboard
 
+async def test_partner_stocktake_signed_off_by_fenix(client):
+    """Steven counts in the Makx app (blind); Fenix audit or admin signs it off in the internal
+    app, which sets stock to the count with one adjustment per difference. Sent back changes nothing."""
+    c = client
+    import recon
+    cfg = await db.node_config().find_one({"node_id": "makulu"})
+    blacks = sorted(recon.black_codes(cfg))
+    colour_powder = next(p["code"] for p in cfg["powder_products"] if not p.get("is_black"))
+    lst = await ok(await c.get("/api/p/stocktakes", headers=S["mxs"]))
+    assert "powder" in lst["positions"] and lst["positions"]["track_colour"]
+    store_before = await recon.fg_warehouse("makulu", today(), cfg)
+    k = ("W2300", "GREY", "A")
+    body = {"date": today(), "notes": "Opening count",
+            "tanks": [{"tank_type": "W2300", "colour": "GREY", "grade": "A", "store": store_before.get(k, 0) + 7, "floor": 0}],
+            "powder": [{"powder_type": colour_powder, "warehouse_kg": 400, "floor_kg": 0},
+                       {"powder_type": blacks[0], "warehouse_kg": 250, "floor_kg": 0}]}
+    # validation
+    bad = await c.post("/api/p/stocktakes", headers=S["mxs"], json={**body, "tanks": [{"tank_type": "W2300", "grade": "A", "store": 1}]})
+    assert bad.status_code == 400 and "colour" in bad.text
+    assert (await c.post("/api/p/stocktakes", headers=S["mxs"], json={**body, "date": days(1)})).status_code == 400
+    st = await ok(await c.post("/api/p/stocktakes", headers=S["mxs"], json=body))
+    assert st["status"] == "submitted" and "approved_variances" not in st and "variances" not in st
+    assert (await c.post("/api/p/stocktakes", headers=S["mxs"], json=body)).status_code == 400     # one at a time
+    # Fenix sees what sign-off would post; operations cannot sign off
+    w = await internal(c)
+    rows = await ok(await c.get("/api/nodes/makulu/stocktakes", headers=w))
+    v = {r["label"]: r for r in rows[0]["variances"] if r["kind"] == "tank_store"}
+    grey = next(r for r in rows[0]["variances"] if r["kind"] == "tank_store" and r["colour"] == "GREY")
+    assert grey["variance"] == 7 and v
+    ops = await internal(c, "steven@fenixrising.co.za", "changeme-steven")
+    assert (await c.post(f"/api/stocktakes/{st['_id']}/approve", headers=ops, json={})).status_code == 403
+    # sent back: nothing moves, Steven counts again
+    assert (await c.post(f"/api/stocktakes/{st['_id']}/return", headers=w, json={})).status_code == 400
+    await ok(await c.post(f"/api/stocktakes/{st['_id']}/return", headers=w, json={"note": "Recount the grey 2300s"}))
+    assert await recon.fg_warehouse("makulu", today(), cfg) == store_before
+    st2 = await ok(await c.post("/api/p/stocktakes", headers=S["mxs"], json=body))
+    wh_before = await recon.powder_warehouse("makulu", today())
+    out = await ok(await c.post(f"/api/stocktakes/{st2['_id']}/approve", headers=w, json={"note": "OK"}))
+    assert out["status"] == "approved" and out["adjustment_ids"]
+    after = await recon.fg_warehouse("makulu", today(), cfg)
+    assert after[k] == store_before.get(k, 0) + 7
+    # positions not counted are counted as zero
+    assert all(q == 0 for kk, q in after.items() if kk != k)
+    wh = await recon.powder_warehouse("makulu", today())
+    assert wh[colour_powder] == 400 and wh[blacks[0]] == 250 and all(v2 == 0 for p2, v2 in wh.items() if p2 not in (colour_powder, blacks[0]))
+    assert wh_before != wh
+    pc = await db.physical_counts().find_one({"_id": out["physical_count_id"]})
+    assert pc["stocktake_id"] == st2["_id"] and pc["date"] == today()
+    adj = await db.finished_goods().find_one({"stocktake_id": st2["_id"], "tank_type": "W2300", "colour": "GREY"})
+    assert adj["type"] == "count_adjustment" and adj["quantity"] == 7 and adj["scope"] == "fg_warehouse"
+    # partner sees the result after sign-off, never the system figures
+    mine = (await ok(await c.get("/api/p/stocktakes", headers=S["mxs"])))["stocktakes"]
+    done = next(s for s in mine if s["_id"] == st2["_id"])
+    assert done["status"] == "approved" and all("system" not in ch for ch in done["changes"])
+    assert (await c.post(f"/api/stocktakes/{st2['_id']}/approve", headers=w, json={})).status_code == 400      # once
+    # a second count that matches posts nothing
+    same = {**body, "tanks": [{"tank_type": "W2300", "colour": "GREY", "grade": "A", "store": after[k], "floor": 0}]}
+    st3 = await ok(await c.post("/api/p/stocktakes", headers=S["mxs"], json=same))
+    assert not st3["opening"]
+    out3 = await ok(await c.post(f"/api/stocktakes/{st3['_id']}/approve", headers=w, json={}))
+    assert out3["adjustment_ids"] == []
+
+
 async def test_dashboard_board(client):
     c = client
     h = S["nb"]

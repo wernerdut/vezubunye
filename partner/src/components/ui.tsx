@@ -16,7 +16,7 @@ const STATUS_TONE: Record<string, string> = {
   part_paid: 'amber', part_delivered: 'amber', scheduled: 'blue', out_for_delivery: 'violet', sent: 'blue',
   unpaid: 'amber', not_invoiced: 'grey', not_delivered: 'grey', draft: 'grey', open: 'blue', submitted: 'blue',
   overdue: 'red', failed: 'red', flagged: 'red', declined: 'grey', expired: 'grey', cancelled: 'grey', void: 'grey',
-  cod_outstanding: 'violet', queried: 'amber', post_failed: 'red',
+  cod_outstanding: 'violet', queried: 'amber', post_failed: 'red', returned: 'amber', withdrawn: 'grey', waiting_for_sign_off: 'blue',
 }
 
 export function Chip({ children, tone = 'grey' }: { children: ReactNode; tone?: string }) {
