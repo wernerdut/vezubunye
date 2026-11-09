@@ -2,7 +2,7 @@ import { FileDown, Truck } from 'lucide-react'
 import { ReactNode, useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, errMsg, openPdf } from '../api'
-import { PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from '../components/Actions'
+import { MarkDelivered, PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from '../components/Actions'
 import { cleanLines, COLLECT, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { Chip, ErrorBox, Field, Modal, PageTitle, SiteText, Spinner, Status, useAction } from '../components/ui'
 import { colourOf, lineLabel, useApp } from '../lib/ctx'
@@ -21,14 +21,21 @@ export default function OrderDetail() {
   const close = () => { setModal(null); load() }
   const inv = o.invoices.find((i: any) => !i.void && i.status !== 'paid')
   const sched = o.delivery_notes.find((d: any) => !d.void && d.delivery_status === 'scheduled')
+  const onRoad = o.delivery_notes.filter((d: any) => !d.void && (d.delivery_status === 'scheduled' || d.delivery_status === 'out_for_delivery'))
+  const markBtn = (d: any) => <button key={d._id} className="btn-primary" onClick={() => setModal(
+    <MarkDelivered dn={{ _id: d._id, dn_number: d.dn_number, collect_amount: d.collect_amount, collected: !!d.collection }} onClose={() => setModal(null)} onDone={close} />)}>
+    Mark delivered{onRoad.length > 1 ? ` ${d.dn_number}` : ''}</button>
   // nothing scheduled or dispatched yet: the whole order can still be changed or cancelled
   const untouched = !o.delivery_notes.some((d: any) => !d.void)
   const nextBtn = () => {
     switch (o.next_action.code) {
       case 'send_pay_link': return inv && me.features.yoco ? <button className="btn-primary" onClick={() => setModal(<PayLinkModal invoiceId={inv._id} onClose={close} />)}>Send pay link</button> : null
       case 'schedule_delivery': return <button className="btn-primary" onClick={() => setModal(<ScheduleDelivery orderId={o._id} onClose={() => setModal(null)} onDone={close} />)}><Truck size={16} /> Schedule delivery</button>
-      case 'dispatch': return sched ? <button className="btn-primary" onClick={async () => setModal(<ShareModal title="Send to driver" data={await sendToDriver(sched._id)} onClose={close} />)}>Send to driver</button> : null
-      default: return null
+      case 'dispatch': return sched ? <>
+        <button className="btn-ghost" onClick={async () => setModal(<ShareModal title="Send to driver" data={await sendToDriver(sched._id)} onClose={close} />)}>Send to driver</button>
+        {onRoad.map(markBtn)}</> : null
+      case 'out_for_delivery': case 'collect_on_delivery': return <>{onRoad.map(markBtn)}</>
+      default: return onRoad.length ? <>{onRoad.map(markBtn)}</> : null
     }
   }
   return (

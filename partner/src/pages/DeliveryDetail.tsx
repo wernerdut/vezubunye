@@ -2,7 +2,7 @@ import { Camera, FileDown, MapPin, Navigation } from 'lucide-react'
 import { ReactNode, useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, errMsg, openPdf } from '../api'
-import { sendToDriver, ShareModal } from '../components/Actions'
+import { MarkDelivered, sendToDriver, ShareModal } from '../components/Actions'
 import { ErrorBox, Field, Modal, PageTitle, Spinner, Status, useAction } from '../components/ui'
 import { lineLabel, useApp } from '../lib/ctx'
 import { date, money, today } from '../lib/format'
@@ -65,7 +65,7 @@ export default function DeliveryDetail() {
         <div className="mt-4 flex flex-wrap gap-2">
           {d.delivery_status === 'scheduled' && <button className="btn-ghost" onClick={() => status('out_for_delivery')}>Mark out for delivery</button>}
           {d.collect_amount != null && !d.collection && <button className="btn-ghost" onClick={() => setModal(<Collect dnId={d._id} amount={d.collect_amount} onClose={close} />)}>Record collection</button>}
-          {d.delivery_status !== 'failed' && <button className="btn-primary" onClick={() => setModal(<Pod dnId={d._id} onClose={close} />)}><Camera size={16} /> Proof of delivery</button>}
+          {d.delivery_status !== 'failed' && <button className="btn-primary" onClick={() => setModal(<MarkDelivered dn={{ _id: d._id, dn_number: d.dn_number, collect_amount: d.collect_amount, collected: !!d.collection }} onClose={() => setModal(null)} onDone={close} />)}><Camera size={16} /> Mark delivered</button>}
           {d.delivery_status !== 'failed' && <button className="btn-danger" onClick={() => setModal(<Reason title="Couldn't deliver" onClose={() => setModal(null)} cta="Mark failed" onSave={(reason) => api.post(`/api/p/deliveries/${id}/status`, { status: 'failed', reason }).then(close)} />)}>Couldn't deliver</button>}
           {d.delivery_status === 'failed' && <button className="btn-primary" onClick={() => setModal(<Reschedule dnId={d._id} onClose={close} />)}>Reschedule</button>}
           {(d.delivery_status === 'scheduled' || d.delivery_status === 'failed' || isAdmin) && !d.legacy &&

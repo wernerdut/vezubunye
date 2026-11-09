@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { api, downloadCsv, errMsg } from '../api'
 import { lineLabel, useApp } from '../lib/ctx'
 import { date, label, money, money0, today } from '../lib/format'
-import { PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from './Actions'
+import { MarkDelivered, PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from './Actions'
 import { Chip, Empty, ErrorBox, SiteText, Spinner, Status } from './ui'
 
 export type Kind = 'orders' | 'deliveries' | 'invoices'
@@ -79,6 +79,26 @@ const FILTERS: Record<Kind, { key: string; label: string; options: string[] }[]>
   invoices: [{ key: 'status', label: 'Status', options: ['unpaid', 'part_paid', 'paid', 'overdue', 'flagged', 'void'] }],
 }
 
+// Live: still needs something done. Completed: an order delivered and paid, a delivery done.
+// A delivered order with money still owing stays live until it is paid.
+const LIVE_DN = ['scheduled', 'out_for_delivery', 'failed']
+function stageFilter(kind: Kind, m: 'live' | 'completed'): Record<string, any> {
+  if (kind === 'deliveries') return { delivery_status: m === 'live' ? LIVE_DN : ['delivered'] }
+  return m === 'live' ? {} : { order_status: ['complete'] }
+}
+function stageOf(kind: Kind, f: Record<string, any>): 'live' | 'completed' | null {
+  if (kind === 'deliveries') {
+    const s = JSON.stringify(f.delivery_status || [])
+    return s === JSON.stringify(['delivered']) ? 'completed' : s === JSON.stringify(LIVE_DN) ? 'live' : null
+  }
+  if (kind === 'orders') {
+    const o = f.order_status
+    if (o === undefined) return 'live'
+    return JSON.stringify(o) === JSON.stringify(['complete']) ? 'completed' : JSON.stringify(o) === JSON.stringify(['open']) ? 'live' : null
+  }
+  return null
+}
+
 export default function Board({ kind, filters, setFilters, sort, setSort, onKind, readOnlyBase }: {
   kind: Kind; filters: Record<string, any>; setFilters: (f: Record<string, any>) => void
   sort: Sort; setSort: (s: Sort) => void; onKind: (k: Kind) => void; readOnlyBase?: string
@@ -113,6 +133,7 @@ export default function Board({ kind, filters, setFilters, sort, setSort, onKind
     return () => clearTimeout(t)
   }, [q]) // eslint-disable-line
 
+  const stage = stageOf(kind, filters)
   const cols = COLS[kind].filter((c) => c.always || !hidden.includes(c.key))
   const toggleSort = (key: string) => setSort(sort.key === key ? { key, dir: sort.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })
   const toggleFilter = (key: string, opt: string) => {
@@ -145,6 +166,7 @@ export default function Board({ kind, filters, setFilters, sort, setSort, onKind
     const inv = (r.timeline?.invoices || []).find((i: any) => i.status !== 'void' && i.status !== 'paid')
     const sched = (r.timeline?.dns || []).find((d: any) => !d.void && d.delivery_status === 'scheduled')
     const toInvoice = (r.timeline?.dns || []).find((d: any) => !d.void && !d.invoiced)
+    const onRoad = (r.timeline?.dns || []).filter((d: any) => !d.void && (d.delivery_status === 'scheduled' || d.delivery_status === 'out_for_delivery'))
     const btn = 'btn-ghost btn-sm'
     return (
       <div className="flex flex-wrap gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -154,6 +176,9 @@ export default function Board({ kind, filters, setFilters, sort, setSort, onKind
         {sched && <button className={btn} onClick={async () => {
           try { const d = await sendToDriver(sched._id); setModal(<ShareModal title="Send to driver" data={d} onClose={() => { setModal(null); load() }} />) } catch (e) { setErr(errMsg(e)) }
         }}>Send to driver</button>}
+        {onRoad.map((d: any) => <button key={d._id} className="btn-primary btn-sm" onClick={() => setModal(
+          <MarkDelivered dn={{ _id: d._id, dn_number: d.dn_number, collect_amount: d.collect_amount, collected: !!d.collection_done }}
+            onClose={() => setModal(null)} onDone={() => { setModal(null); load() }} />)}>Mark delivered{onRoad.length > 1 ? ` ${d.dn_number}` : ''}</button>)}
         {toInvoice && r.basis === 'terms' && <button className={btn} onClick={async () => {
           try { await api.post(`/api/p/deliveries/${toInvoice._id}/invoice`); load() } catch (e) { setErr(errMsg(e)) }
         }}>Invoice {toInvoice.dn_number}</button>}
@@ -200,12 +225,22 @@ export default function Board({ kind, filters, setFilters, sort, setSort, onKind
       <div className="flex flex-wrap items-center gap-2 border-b p-3">
         <div className="flex gap-1 rounded-lg bg-gray-100 p-1">
           {(['orders', 'deliveries', 'invoices'] as Kind[]).map((k) => (
-            <button key={k} onClick={() => { onKind(k); setFilters({}); setSort({}) }}
+            <button key={k} onClick={() => { onKind(k); setFilters(k === 'deliveries' ? stageFilter(k, 'live') : {}); setSort({}) }}
               className={`rounded-md px-3 py-1.5 text-sm font-semibold ${kind === k ? 'bg-white text-brand-dark shadow-sm' : 'text-gray-600'}`}>
               {label(k)}
             </button>
           ))}
         </div>
+        {kind !== 'invoices' && !readOnlyBase && (
+          <div className="flex gap-1 rounded-lg bg-gray-100 p-1">
+            {(['live', 'completed'] as const).map((m) => (
+              <button key={m} onClick={() => setFilters(stageFilter(kind, m))}
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold ${stage === m ? 'bg-white text-brand-dark shadow-sm' : 'text-gray-600'}`}>
+                {m === 'live' ? 'Live' : 'Completed'}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="relative min-w-[180px] flex-1">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input className="input pl-9" placeholder="Search number, customer, site" value={q} onChange={(e) => setQ(e.target.value)} />

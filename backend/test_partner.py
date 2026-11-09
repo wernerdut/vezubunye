@@ -1081,6 +1081,14 @@ async def test_dashboard_board(client):
     h = S["nb"]
     allrows = (await ok(await c.get('/api/p/dashboard/board/orders?filters={"order_status":[]}', headers=h)))["rows"]
     assert allrows
+    # Live / Completed: completed orders (delivered and paid) leave the default (live) board
+    live = (await ok(await c.get('/api/p/dashboard/board/orders?filters={}', headers=h)))["rows"]
+    done = (await ok(await c.get('/api/p/dashboard/board/orders?filters={"order_status":["complete"]}', headers=h)))["rows"]
+    assert all(r["order_status"] == "open" for r in live) and all(r["order_status"] == "complete" for r in done)
+    assert done and not {r["_id"] for r in live} & {r["_id"] for r in done}
+    assert all("collection_done" in d for r in allrows for d in r["timeline"]["dns"])
+    dl = (await ok(await c.get('/api/p/dashboard/board/deliveries?filters={"delivery_status":["scheduled","out_for_delivery","failed"]}', headers=h)))["rows"]
+    assert all(r["delivery_status"] in ("scheduled", "out_for_delivery", "failed") for r in dl)
     for f, check in (({"payment_status": ["paid"]}, lambda r: r["payment_status"] == "paid"),
                      ({"payment_status": ["overdue"]}, lambda r: r["overdue"]),
                      ({"delivery_status": ["delivered"]}, lambda r: r["delivery_status"] == "delivered"),

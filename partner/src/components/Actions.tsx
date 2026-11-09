@@ -228,3 +228,48 @@ export async function sendToDriver(dnId: string): Promise<any> {
   const r = await api.post(`/api/p/deliveries/${dnId}/send-to-driver`, {})
   return r.data
 }
+
+/** Mark a delivery as done from the dashboard, the order or the delivery: who received it and,
+ * when the driver did not use the driver link, an optional photo of the signed note. On a pay on
+ * delivery note what was collected is recorded first (the server will not complete it before). */
+export function MarkDelivered({ dn, onClose, onDone }: {
+  dn: { _id: string; dn_number?: string; collect_amount?: number | null; collected?: boolean }
+  onClose: () => void; onDone: () => void
+}) {
+  const needsCollection = dn.collect_amount != null && !dn.collected
+  const [name, setName] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [method, setMethod] = useState('cash')
+  const [amt, setAmt] = useState<number>(dn.collect_amount || 0)
+  const [ref, setRef] = useState('')
+  const [reason, setReason] = useState('')
+  const a = useAction()
+  const save = () => a.run(async () => {
+    if (needsCollection) {
+      await api.post(`/api/p/deliveries/${dn._id}/collection`, { method, amount: amt, reference: ref, reason })
+    }
+    const fd = new FormData()
+    fd.append('receiver_name', name)
+    if (file) fd.append('file', file)
+    await api.post(`/api/p/deliveries/${dn._id}/pod`, fd)
+    onDone()
+  }, errMsg)
+  return (
+    <Modal title={`Mark delivered${dn.dn_number ? ` · ${dn.dn_number}` : ''}`} onClose={onClose}>
+      <div className="space-y-3">
+        {needsCollection && <>
+          <div className="text-sm font-semibold">Collect {money(dn.collect_amount || 0)} on delivery: what happened?</div>
+          <div className="flex flex-wrap gap-2">{[['cash', 'Cash'], ['yoco_machine', 'Card machine'], ['not_collected', 'Not collected']].map(([k, l]) =>
+            <button key={k} className={method === k ? 'btn-dark btn-sm' : 'btn-ghost btn-sm'} onClick={() => setMethod(k)}>{l}</button>)}</div>
+          {(method === 'cash' || method === 'yoco_machine') && <Field label="Amount"><input type="number" className="input" value={amt} onChange={(e) => setAmt(Number(e.target.value))} /></Field>}
+          {method === 'yoco_machine' && <Field label="Slip reference"><input className="input" value={ref} onChange={(e) => setRef(e.target.value)} /></Field>}
+          {method === 'not_collected' && <Field label="Why"><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>}
+        </>}
+        <Field label="Received by"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Name of the person who took the tanks" /></Field>
+        <Field label="Photo of the signed delivery note (optional)"><input type="file" accept="image/*" capture="environment" className="input" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>
+        <ErrorBox msg={a.error} />
+        <div className="flex justify-end"><button className="btn-primary" disabled={a.busy} onClick={save}>Mark delivered</button></div>
+      </div>
+    </Modal>
+  )
+}
