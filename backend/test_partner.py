@@ -1046,6 +1046,36 @@ async def test_partner_stocktake_signed_off_by_fenix(client):
     assert out3["adjustment_ids"] == []
 
 
+async def test_stocktake_floor_tanks_are_deliverable(client):
+    """Steven's opening count (9 Nov 2026) put tanks "on the floor"; the board and deliveries
+    read the store only, so they showed short. A floor figure now lands in the store, and
+    counts signed off before the fix are moved across once."""
+    c = client
+    import recon
+    import stocktake
+    cfg = await db.node_config().find_one({"node_id": "makulu"})
+    k = ("W2300", "GREY", "A")
+    store0 = await recon.fg_warehouse("makulu", None, cfg)
+    body = {"date": today(), "tanks": [{"tank_type": "W2300", "colour": "GREY", "grade": "A",
+                                       "store": 0, "floor": store0.get(k, 0) + 5}]}
+    st = await ok(await c.post("/api/p/stocktakes", headers=S["mxs"], json=body))
+    w = await internal(c)
+    await ok(await c.post(f"/api/stocktakes/{st['_id']}/approve", headers=w, json={}))
+    assert (await recon.fg_warehouse("makulu", None, cfg))[k] == store0.get(k, 0) + 5
+    assert (await recon.tank_floor("makulu", None, cfg)).get(k, 0) == 0
+    # an old-style sign-off that wrote the floor: moved into the store once, never twice
+    old = {"_id": "old-st", "node_id": "makulu", "status": "approved", "date": today(), "tanks": [], "powder": [], "fittings": []}
+    await stocktake.stocktakes().insert_one(old)
+    await db.finished_goods().insert_one({"_id": "old-adj", "node_id": "makulu", "date": today(), "type": "count_adjustment",
+                                          "stocktake_id": "old-st", "scope": "tank_floor", "tank_type": "W2300",
+                                          "colour": "GREY", "grade": "A", "quantity": 3, "reference": None})
+    before = await recon.fg_warehouse("makulu", None, cfg)
+    await stocktake.floor_to_store()
+    await stocktake.floor_to_store()
+    assert (await recon.fg_warehouse("makulu", None, cfg))[k] == before[k] + 3
+    assert (await recon.tank_floor("makulu", None, cfg)).get(k, 0) == 0
+
+
 async def test_dashboard_board(client):
     c = client
     h = S["nb"]

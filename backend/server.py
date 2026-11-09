@@ -81,6 +81,11 @@ async def on_startup():
         print(f"brief 2 migration: {out}")
     except Exception as exc:  # noqa: BLE001
         print(f"brief 2 migration skipped: {exc}")
+    try:
+        import stocktake
+        print(f"stocktake floor to store: {await stocktake.floor_to_store()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"stocktake floor to store skipped: {exc}")
     import scheduler
     scheduler.start()
 

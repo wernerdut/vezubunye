@@ -74,8 +74,8 @@ function CountForm({ positions, onClose, onSaved }: { positions: any; onClose: (
   const save = () => a.run(async () => {
     await api.post('/api/p/stocktakes', {
       date: day, notes,
-      tanks: tanks.filter((t) => t.tank_type && (Number(t.store) || Number(t.floor)))
-        .map((t) => ({ tank_type: t.tank_type, colour: t.colour, grade: t.grade, store: Number(t.store) || 0, floor: Number(t.floor) || 0 })),
+      tanks: tanks.filter((t) => t.tank_type && Number(t.store))
+        .map((t) => ({ tank_type: t.tank_type, colour: t.colour, grade: t.grade, store: Number(t.store) || 0, floor: 0 })),
       powder: positions.powder.map((p: string) => ({ powder_type: p, warehouse_kg: Number(powder[p]?.w) || 0, floor_kg: Number(powder[p]?.f) || 0 }))
         .filter((p: any) => p.warehouse_kg || p.floor_kg),
       fittings: positions.fittings.map((f: string) => ({ fitting_type: f, qty: Number(fits[f]) || 0 })).filter((f: any) => f.qty),
@@ -89,7 +89,7 @@ function CountForm({ positions, onClose, onSaved }: { positions: any; onClose: (
       <Field label="Count date"><input type="date" className="input w-44" value={day} max={today()} onChange={(e) => setDay(e.target.value)} /></Field>
 
       <h3 className="mb-1 mt-4 text-sm font-bold">Tanks</h3>
-      <p className="mb-2 text-xs text-gray-500">Store: finished and booked in. Floor: moulded but not booked in yet.</p>
+      <p className="mb-2 text-xs text-gray-500">Every finished tank on site, wherever it stands. These are the tanks you can deliver.</p>
       <div className="space-y-2">
         {tanks.map((t, i) => (
           <div key={i} className="flex flex-wrap items-center gap-2">
@@ -102,8 +102,7 @@ function CountForm({ positions, onClose, onSaved }: { positions: any; onClose: (
             </select>}
             {t.colour && <span className="inline-block h-4 w-4 rounded-sm" style={{ background: colourOf(cfg, t.colour)?.swatch_hex }} />}
             <select className="input w-20" value={t.grade} onChange={(e) => set(i, { grade: e.target.value as 'A' | 'B' })}><option>A</option><option>B</option></select>
-            <input className="input w-24" type="number" min="0" placeholder="Store" value={t.store} onChange={(e) => set(i, { store: e.target.value })} />
-            <input className="input w-24" type="number" min="0" placeholder="Floor" value={t.floor} onChange={(e) => set(i, { floor: e.target.value })} />
+            <input className="input w-24" type="number" min="0" placeholder="Count" value={t.store} onChange={(e) => set(i, { store: e.target.value })} />
             <button className="btn-ghost btn-sm" onClick={() => setTanks(tanks.filter((_, j) => j !== i))} aria-label="Remove line"><Trash2 size={14} /></button>
           </div>
         ))}

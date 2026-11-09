@@ -73,8 +73,9 @@ def clean(cfg: dict, raw: dict) -> dict:
             c = ""
         k = (t, c, g)
         e = tanks.setdefault(k, {"tank_type": t, "colour": c, "grade": g, "store": 0, "floor": 0})
-        e["store"] += _int(l.get("store"), "Tanks in the store")
-        e["floor"] += _int(l.get("floor"), "Tanks on the floor")
+        # Capture books every moulded tank straight into the store, so a counted tank is a
+        # store tank wherever it stands. A floor figure (older forms) is added to the store.
+        e["store"] += _int(l.get("store"), "Tanks") + _int(l.get("floor"), "Tanks")
     powder: dict = {}
     for l in raw.get("powder") or []:
         p = l.get("powder_type")
@@ -271,6 +272,33 @@ def _physical_count(st: dict, rows: list[dict], user: dict, now: datetime) -> di
                                         "variance": r["variance"]} for r in rows if r["kind"] == "fittings"]},
             "stocktake_id": st["_id"], "opening": st["opening"], "adjusted_to_count": True,
             "counted_by": st["submitted_by"], "approved_by": user["email"], "created_at": now}
+
+
+async def floor_to_store() -> dict:
+    """One-off, idempotent (9 Nov 2026). Signed-off counts before the fix wrote tanks counted
+    "on the floor" to tank_floor. Nothing books floor tanks into the store (capture books
+    straight in), so they could never be delivered. Each such row gets a pair on the count date:
+    tank_floor -q and fg_warehouse +q, tagged with the stocktake, and the stocktake is marked."""
+    moved = 0
+    sys_user = {"email": "system:migration", "role": "system"}
+    async for st in stocktakes().find({"status": "approved", "floor_moved": {"$ne": True}}):
+        now = datetime.utcnow()
+        async with corrections.txn() as s:
+            rows = await db.finished_goods().find({"stocktake_id": st["_id"], "type": "count_adjustment",
+                                                   "scope": "tank_floor", "moved_from": {"$exists": False},
+                                                   **ACTIVE}, session=s).to_list(None)
+            for r in rows:
+                base = {"node_id": r["node_id"], "date": r["date"], "type": "count_adjustment",
+                        "stocktake_id": st["_id"], "tank_type": r["tank_type"], "colour": r.get("colour"),
+                        "grade": r["grade"], "reference": None, "moved_from": r["_id"], "created_at": now,
+                        "notes": "Counted tanks moved from the floor into the store (tanks are delivered from the store)"}
+                for scope, q in (("tank_floor", -r["quantity"]), ("fg_warehouse", r["quantity"])):
+                    d = {**base, "_id": uuid4().hex, "scope": scope, "quantity": q}
+                    await db.finished_goods().insert_one(d, session=s)
+                    await audit.log(sys_user, r["node_id"], "create", "finished_goods_ledger", d["_id"], after=d, session=s)
+                moved += 1
+            await stocktakes().update_one({"_id": st["_id"]}, {"$set": {"floor_moved": True}}, session=s)
+    return {"rows_moved": moved}
 
 
 async def positions(node_id: str, cfg: dict) -> dict:
