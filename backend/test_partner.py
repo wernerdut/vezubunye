@@ -1194,3 +1194,37 @@ async def test_collect_and_card_links_off(client):
     await ok(await c.put("/api/p/yoco/online", headers=S["mx"], json={"online": False}))
     sh = await ok(await c.post(f"/api/p/quotes/{q['_id']}/share", headers=S["mx"]))
     assert sh["pay_link"] is None and "Please pay by EFT:" in sh["message"] and "Pay by card" not in sh["message"]
+
+
+async def test_delete_sale_completely(client):
+    """Werner, 9 Nov 2026: remove a whole sale so Steven can capture it again. Everything for the
+    order goes (backed up first), stock comes back, the customer stays, and it runs once."""
+    import cleanup
+    import recon
+    cfg = await db.node_config().find_one({"node_id": "makulu"})
+    done = None
+    async for inv in db.invoices().find({"node_id": "makulu", "order_id": {"$ne": None}, "display_number": {"$ne": None}}):
+        dns = [d async for d in db.delivery_notes().find({"order_id": inv["order_id"]})]
+        if not dns or any(d.get("void") for d in dns):
+            continue
+        before = await recon.fg_warehouse("makulu", None, cfg)
+        order = await db.orders().find_one({"_id": inv["order_id"]})
+        out = await cleanup.delete_sale("t-del", "makx", inv["display_number"], order["customer_name"][:4])
+        if "deleted" not in out:
+            continue
+        done = (inv, order, dns, before, out)
+        break
+    assert done, "no deletable sale in the fixtures"
+    inv, order, dns, before, out = done
+    assert await db.orders().find_one({"_id": order["_id"]}) is None
+    assert await db.invoices().find_one({"order_id": order["_id"]}) is None
+    assert await db.delivery_notes().find_one({"order_id": order["_id"]}) is None
+    assert await db.finished_goods().find_one({"reference": {"$in": [d["_id"] for d in dns]}}) is None
+    assert await db.customers().find_one({"_id": order["customer_id"]})
+    after = await recon.fg_warehouse("makulu", None, cfg)
+    shipped = sum(l["quantity"] for d in dns for l in d["lines"])
+    assert sum(after.values()) - sum(before.values()) == shipped
+    bk = await cleanup.backups().find_one({"_id": "t-del"})
+    assert bk and bk["docs"]["orders"][0]["_id"] == order["_id"]
+    assert (await cleanup.delete_sale("t-del", "makx", inv["display_number"]))["skipped"] == "already done"
+    assert "skipped" in await cleanup.delete_sale("t-x", "makx", "MX-INV-9999")

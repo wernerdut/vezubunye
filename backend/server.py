@@ -88,6 +88,11 @@ async def on_startup():
         print(f"stocktake floor to store: {await stocktake.floor_to_store()}")
     except Exception as exc:  # noqa: BLE001
         print(f"stocktake floor to store skipped: {exc}")
+    try:
+        import cleanup
+        print(f"cleanup: {await cleanup.run()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"cleanup skipped: {exc}")
     import scheduler
     scheduler.start()
 
