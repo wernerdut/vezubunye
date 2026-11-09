@@ -2,7 +2,7 @@ import { FileDown, Truck } from 'lucide-react'
 import { ReactNode, useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, errMsg, openPdf } from '../api'
-import { MarkDelivered, PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from '../components/Actions'
+import { MarkCollected, MarkDelivered, PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from '../components/Actions'
 import { cleanLines, COLLECT, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { Chip, ErrorBox, Field, Modal, PageTitle, SiteText, Spinner, Status, useAction } from '../components/ui'
 import { colourOf, lineLabel, useApp } from '../lib/ctx'
@@ -34,6 +34,7 @@ export default function OrderDetail() {
       case 'dispatch': return sched ? <>
         <button className="btn-ghost" onClick={async () => setModal(<ShareModal title="Send to driver" data={await sendToDriver(sched._id)} onClose={close} />)}>Send to driver</button>
         {onRoad.map(markBtn)}</> : null
+      case 'ready_for_collection': return <button className="btn-primary" onClick={() => setModal(<MarkCollected orderId={o._id} onClose={() => setModal(null)} onDone={close} />)}>Mark collected</button>
       case 'out_for_delivery': case 'collect_on_delivery': return <>{onRoad.map(markBtn)}</>
       default: return onRoad.length ? <>{onRoad.map(markBtn)}</> : null
     }

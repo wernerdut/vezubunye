@@ -65,7 +65,7 @@ async def order_rows(node_id: str) -> list[dict]:
             "_id": o["_id"], "order_number": o.get("order_number") or o.get("display_number") or "",
             "legacy": o.get("legacy", False), "date": o["date"], "customer_id": o.get("customer_id"),
             "customer": o["customer_name"], "site": site.get("label", ""), "town": site.get("town", ""),
-            "address": site.get("address", ""), "pinned": _pinned(site),
+            "address": site.get("address", ""), "pinned": _pinned(site), "collect": bool(o.get("collect")),
             "requested_date": o.get("requested_date"), "value": s["value"], "invoiced": s["invoiced"],
             "paid": s["paid"], "balance": s["balance"], "payment_status": s["payment_status"],
             "overdue": s["overdue"], "cod_outstanding": s["cod_outstanding"],

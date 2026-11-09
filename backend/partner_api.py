@@ -720,6 +720,36 @@ async def schedule_delivery(order_id: str, payload: dict, user: dict = Depends(c
     return {**out, "invoice": wall(inv, cfg, user["role"]) if inv else None}
 
 
+@router.post("/orders/{order_id}/collected")
+async def order_collected(order_id: str, payload: dict, user: dict = Depends(current_partner)):
+    """Pick up at the factory: the customer has taken the tanks. One delivery note for everything
+    still to go, delivered at once with who took it (the same stock, payment and release checks
+    as a delivery)."""
+    node, cfg = await ctx(user)
+    o = await commerce.order_or_404(node["node_id"], order_id)
+    if o.get("status") != "open":
+        raise HTTPException(400, "Only an open order is collected")
+    disp = await commerce.dispatched_by_line(o["_id"])
+    lines = [{"order_line_id": ln["line_id"],
+              "quantity": ln["qty"] - ln.get("qty_cancelled", 0) - disp.get(ln["line_id"], 0)}
+             for ln in o["lines"] if commerce.is_tank(ln)]
+    lines = [l for l in lines if l["quantity"] > 0]
+    if not lines:
+        raise HTTPException(400, "Nothing left to collect on this order")
+    who = (payload.get("receiver_name") or "").strip()
+    pod = {"receiver_name": who, "at": datetime.utcnow(), "by": user["email"], "lat": None, "lng": None,
+           "photo_file_id": None, "after_the_fact": False, "collected_at_factory": True}
+    async with corrections.txn() as s:
+        dn = await commerce.write_dn(node, cfg, o, {"lines": lines, "release_reason": payload.get("release_reason")},
+                                     user, session=s, extra={"delivery_status": "delivered", "collected_at_factory": True,
+                                                             "delivered_at": datetime.utcnow(), "pod": pod})
+        await audit.log(user, node["node_id"], "create", "delivery_notes", dn["_id"], after=dn, session=s)
+    await commerce.store_dn_pdf(await node_for_pdf(node), cfg, dn)
+    await commerce.refresh_order_status(o["_id"])
+    return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], o["_id"])),
+                cfg, user["role"])
+
+
 @router.post("/quick-sale")
 async def quick_sale(payload: dict, user: dict = Depends(current_partner)):
     """Walk-in at the factory: order, invoice, payment (cash, Yoco machine, or a pay link on the

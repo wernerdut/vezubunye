@@ -273,3 +273,33 @@ export function MarkDelivered({ dn, onClose, onDone }: {
     </Modal>
   )
 }
+
+/** Pick up orders: the customer took the tanks at the factory. Everything still to go goes out on
+ * one delivery note, delivered at once. Not paid yet on a pay-first order: say why it is released. */
+export function MarkCollected({ orderId, onClose, onDone }: { orderId: string; onClose: () => void; onDone: () => void }) {
+  const [name, setName] = useState('')
+  const [reason, setReason] = useState('')
+  const [needReason, setNeedReason] = useState(false)
+  const a = useAction()
+  const save = () => a.run(async () => {
+    try {
+      await api.post(`/api/p/orders/${orderId}/collected`, { receiver_name: name, release_reason: reason || undefined })
+      onDone()
+    } catch (e) {
+      const m = errMsg(e)
+      if (/release|paid/i.test(m)) setNeedReason(true)
+      throw e
+    }
+  }, errMsg)
+  return (
+    <Modal title="Mark collected" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-gray-600">All tanks still on this order are collected at the factory now.</p>
+        <Field label="Collected by"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Name of the person who took the tanks" /></Field>
+        {needReason && <Field label="Not fully paid: why release the tanks?"><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>}
+        <ErrorBox msg={a.error} />
+        <div className="flex justify-end"><button className="btn-primary" disabled={a.busy} onClick={save}>Mark collected</button></div>
+      </div>
+    </Modal>
+  )
+}

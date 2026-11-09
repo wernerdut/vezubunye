@@ -876,6 +876,8 @@ def summarise(order: dict, dns: list[dict], invoices: list[dict], cfg: dict,
         nxt = ("send_pay_link", "Send pay link")
     elif basis == "upfront" and not cod and remaining > 0 and dispatched_value + PAY_TOL >= paid:
         nxt = ("awaiting_payment", "Awaiting payment")
+    elif remaining > 0 and order.get("collect") and dstat not in ("out_for_delivery", "scheduled"):
+        nxt = ("ready_for_collection", "Ready for collection")
     elif remaining > 0 and dstat not in ("out_for_delivery",):
         nxt = ("schedule_delivery", "Schedule delivery")
     elif dstat == "out_for_delivery" and cod:

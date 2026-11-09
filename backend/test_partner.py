@@ -1194,6 +1194,25 @@ async def test_collect_and_card_links_off(client):
     await ok(await c.put("/api/p/yoco/online", headers=S["mx"], json={"online": False}))
     sh = await ok(await c.post(f"/api/p/quotes/{q['_id']}/share", headers=S["mx"]))
     assert sh["pay_link"] is None and "Please pay by EFT:" in sh["message"] and "Pay by card" not in sh["message"]
+    # paid pick up order: Ready for collection (not Schedule delivery), Mark collected completes it
+    import uuid
+    await db.finished_goods().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                          "type": "count_adjustment", "scope": "fg_warehouse", "tank_type": "W5000",
+                                          "colour": "EMERALD", "grade": "A", "quantity": 1, "reference": None})
+    ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
+    early = await c.post(f"/api/p/orders/{o['_id']}/collected", headers=S["mx"], json={"receiver_name": "Koos"})
+    assert early.status_code in (400, 403) and "Paid" in early.text or ov["next_action"]["code"] != "ready_for_collection"
+    await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": ov["value"], "invoice_id": ov["invoices"][0]["_id"], "customer_id": S["mx_cust"]["_id"]}))
+    ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
+    assert ov["next_action"]["code"] == "ready_for_collection" and ov["next_action"]["label"] == "Ready for collection"
+    row = next(r for r in (await ok(await c.get('/api/p/dashboard/board/orders?filters={}', headers=S["mx"])))["rows"] if r["_id"] == o["_id"])
+    assert row["collect"] is True
+    done = await ok(await c.post(f"/api/p/orders/{o['_id']}/collected", headers=S["mx"], json={"receiver_name": "Koos"}))
+    assert done["order_status"] == "complete" and done["delivery_status"] == "delivered"
+    dn = done["delivery_notes"][0]
+    assert dn["delivery_status"] == "delivered" and dn["collected_at_factory"] and dn["pod"]["receiver_name"] == "Koos"
+    assert (await c.post(f"/api/p/orders/{o['_id']}/collected", headers=S["mx"], json={})).status_code == 400
 
 
 async def test_delete_sale_completely(client):

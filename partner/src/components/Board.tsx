@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { api, downloadCsv, errMsg } from '../api'
 import { lineLabel, useApp } from '../lib/ctx'
 import { date, label, money, money0, today } from '../lib/format'
-import { MarkDelivered, PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from './Actions'
+import { MarkCollected, MarkDelivered, PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from './Actions'
 import { Chip, Empty, ErrorBox, SiteText, Spinner, Status } from './ui'
 
 export type Kind = 'orders' | 'deliveries' | 'invoices'
@@ -172,7 +172,8 @@ export default function Board({ kind, filters, setFilters, sort, setSort, onKind
       <div className="flex flex-wrap gap-1.5" onClick={(e) => e.stopPropagation()}>
         {inv && r.basis !== 'terms' && <button className={btn} onClick={() => setModal(<PayLinkModal invoiceId={inv._id} onClose={() => { setModal(null); load() }} />)}>Pay link</button>}
         {inv && <button className={btn} onClick={() => setModal(<RecordPayment customerId={r.customer_id} invoiceId={inv._id} defaultAmount={r.balance} methods={['cash', 'yoco_machine']} onClose={() => setModal(null)} onDone={() => { setModal(null); load() }} />)}>Record cash</button>}
-        {r.qty_remaining > 0 && <button className={btn} onClick={() => setModal(<ScheduleDelivery orderId={r._id} onClose={() => setModal(null)} onDone={() => { setModal(null); load() }} />)}>Schedule</button>}
+        {r.qty_remaining > 0 && r.collect && !onRoad.length && <button className="btn-primary btn-sm" onClick={() => setModal(<MarkCollected orderId={r._id} onClose={() => setModal(null)} onDone={() => { setModal(null); load() }} />)}>Mark collected</button>}
+        {r.qty_remaining > 0 && !r.collect && <button className={btn} onClick={() => setModal(<ScheduleDelivery orderId={r._id} onClose={() => setModal(null)} onDone={() => { setModal(null); load() }} />)}>Schedule</button>}
         {sched && <button className={btn} onClick={async () => {
           try { const d = await sendToDriver(sched._id); setModal(<ShareModal title="Send to driver" data={d} onClose={() => { setModal(null); load() }} />) } catch (e) { setErr(errMsg(e)) }
         }}>Send to driver</button>}
