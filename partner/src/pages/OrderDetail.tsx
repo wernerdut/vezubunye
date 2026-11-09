@@ -3,7 +3,7 @@ import { ReactNode, useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, errMsg, openPdf } from '../api'
 import { PayLinkModal, RecordPayment, ScheduleDelivery, sendToDriver, ShareModal } from '../components/Actions'
-import { cleanLines, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
+import { cleanLines, COLLECT, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { Chip, ErrorBox, Field, Modal, PageTitle, SiteText, Spinner, Status, useAction } from '../components/ui'
 import { colourOf, lineLabel, useApp } from '../lib/ctx'
 import { date, label, money } from '../lib/format'
@@ -47,7 +47,7 @@ export default function OrderDetail() {
           <div key={l} className="card p-3"><div className="label">{l}</div><div className="text-lg font-bold tabular-nums">{v}</div></div>
         ))}
       </div>
-      <div className="mb-1 text-sm text-gray-600">{o.site ? <>Deliver to <SiteText label={o.site.label} address={o.site.address} town={o.site.town} pinned={o.site.lat != null && o.site.lng != null} /></> : 'No delivery address (collect)'}</div>
+      <div className="mb-1 text-sm text-gray-600">{o.site ? <>Deliver to <SiteText label={o.site.label} address={o.site.address} town={o.site.town} pinned={o.site.lat != null && o.site.lng != null} /></> : 'Pick up at the factory'}</div>
       <div className="mb-2 text-sm font-semibold text-brand-primary">Next: {o.next_action.label}</div>
 
       <div className="card mb-4 overflow-x-auto">
@@ -120,7 +120,7 @@ export default function OrderDetail() {
 function EditOrder({ order, untouched, onClose }: { order: any; untouched: boolean; onClose: () => void }) {
   const [lines, setLines] = useState<Line[]>(order.order_lines.map((l: any) => ({ ...l })))
   const [customer, setCustomer] = useState<any>(null)
-  const [siteId, setSiteId] = useState(order.site?.site_id || '')
+  const [siteId, setSiteId] = useState(order.collect ? COLLECT : order.site?.site_id || '')
   const [newSite, setNewSite] = useState<any>(null)
   const [requested, setRequested] = useState(order.requested_date || '')
   const [notes, setNotes] = useState(order.notes || '')
@@ -133,7 +133,7 @@ function EditOrder({ order, untouched, onClose }: { order: any; untouched: boole
   const save = () => a.run(async () => {
     if (untouched && customer) {
       const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
-      await api.put(`/api/p/orders/${order._id}`, { site_id: site_id || null, requested_date: requested || null, notes, ...(order.payment_basis === 'upfront' ? { pay_on_delivery: cod, cod_method: codMethod } : {}) })
+      await api.put(`/api/p/orders/${order._id}`, { site_id: site_id || null, collect: siteId === COLLECT, requested_date: requested || null, notes, ...(order.payment_basis === 'upfront' ? { pay_on_delivery: cod, cod_method: codMethod } : {}) })
     }
     if (linesChanged) await api.put(`/api/p/orders/${order._id}/lines`, { lines: cleanLines(lines), reason })
     onClose()

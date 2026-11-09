@@ -359,6 +359,16 @@ function Yoco() {
     <div className="card space-y-3 p-4">
       <p className="text-sm text-gray-600">Your own Yoco account. Money goes straight to you. Payment links, the driver's QR code, and card-machine slips all reconcile here.</p>
       {y.connected ? <p className="text-sm">Connected ({y.mode}) · key {y.key_hint} · webhook {y.webhook_registered ? 'registered' : 'missing'}</p> : <p className="text-sm text-amber-700">Not connected: no pay links or driver QR codes until it is.</p>}
+      {y.connected && (
+        <div className="rounded-lg bg-gray-50 p-3">
+          <label className="flex items-center gap-2 text-sm font-semibold">
+            <input type="checkbox" checked={!!y.online} disabled={a.busy}
+              onChange={(e) => a.run(async () => { setY(await api.put('/api/p/yoco/online', { online: e.target.checked }).then((r) => r.data)); await reload() }, errMsg)} />
+            Send card payment links
+          </label>
+          <p className="mt-1 text-xs text-gray-500">Switch on only once Yoco has activated online payments for your business. While it is off, proformas and invoices show your EFT details instead of a card link, and an old link opens the EFT details. The card machine works either way.</p>
+        </div>
+      )}
       <Field label="Secret key (sk_live_… or sk_test_…)"><input className="input" type="password" value={key} onChange={(e) => setKey(e.target.value)} /></Field>
       <ErrorBox msg={a.error} />
       <div className="flex justify-end gap-2">

@@ -20,6 +20,11 @@ export default function Pay() {
       {p.state === 'open' ? <>
         <div className="my-4 text-3xl font-bold">{money(p.amount)}</div>
         <a className="btn-primary w-full py-3" href={p.redirect_url}>Pay by card</a>
+      </> : p.state === 'eft' ? <>
+        <div className="my-4 text-3xl font-bold">{money(p.amount)}</div>
+        <p className="text-sm text-gray-600">Card payments aren't available right now. Please pay by EFT{p.bank?.length ? ' to:' : '.'}</p>
+        {p.bank?.length > 0 && <div className="mt-3 rounded-lg bg-gray-50 p-3 text-left text-sm">{p.bank.map((l: string, i: number) => <div key={i}>{l}</div>)}</div>}
+        <p className="mt-3 text-sm font-semibold">Use {p.reference} as your payment reference.</p>
       </> : <p className="mt-4 text-gray-600">{p.state === 'paid' ? 'This invoice is paid. Thank you.' : 'This link is no longer active.'}</p>}
     </Box>
   )

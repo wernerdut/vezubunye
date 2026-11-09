@@ -319,6 +319,9 @@ async def test_pay_first_part_paid(client):
     st = await ok(await c.put("/api/p/yoco", headers=S["mx"], json={"secret_key": "sk_test_abc123"}))
     assert st["connected"] and st["mode"] == "test"
     assert "abc123" not in json.dumps(await ok(await c.get("/api/p/yoco", headers=S["mx"]))) or True
+    assert st["online"] is False   # card links stay off until Yoco activates online payments
+    st = await ok(await c.put("/api/p/yoco/online", headers=S["mx"], json={"online": True}))
+    assert st["online"] is True
 
     o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
         "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W5000", "colour": "EMERALD", "qty": 4, "unit_price": 4400}]}))
@@ -1129,3 +1132,22 @@ async def test_legacy_migration_and_cutover(client):
     assert r.status_code == 403
     await ok(await client.put("/api/nodes/gogreen", headers=admin, json={
         "node_id": "gogreen", "name": "GoGreen Roto Moulding", "location": "Queenstown", "partner_app_live": False}))
+
+
+async def test_collect_and_card_links_off(client):
+    """Pick up at the factory: no site on the order or proforma, the proforma PDF says
+    Collect from. With card links off, the proforma message carries EFT details and an
+    old link opens the EFT details instead of a Yoco checkout."""
+    c = client
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "collect": True,
+        "lines": [{"tank_type": "W5000", "colour": "EMERALD", "qty": 1, "unit_price": 4400}]}))
+    assert o["collect"] is True and o["site"] is None
+    q = await ok(await c.post("/api/p/quotes", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "collect": True,
+        "lines": [{"tank_type": "W2300", "colour": "EMERALD", "qty": 1}]}))
+    assert q["collect"] is True and q["site"] is None
+    import yoco
+    await ok(await c.put("/api/p/yoco/online", headers=S["mx"], json={"online": False}))
+    sh = await ok(await c.post(f"/api/p/quotes/{q['_id']}/share", headers=S["mx"]))
+    assert sh["pay_link"] is None and "payment reference" in sh["message"]

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, errMsg } from '../api'
 import { ShareBar } from '../components/Actions'
-import { cleanLines, CustomerPicker, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
+import { cleanLines, COLLECT, CustomerPicker, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { ErrorBox, Field, PageTitle, useAction } from '../components/ui'
 import { useApp } from '../lib/ctx'
 
@@ -32,7 +32,7 @@ export default function OrderNew({ quick }: { quick?: boolean }) {
     }
     const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
     const r = await api.post('/api/p/orders', {
-      customer_id: customer._id, lines: cleanLines(lines), site_id, requested_date: requested || undefined,
+      customer_id: customer._id, lines: cleanLines(lines), site_id, collect: siteId === COLLECT, requested_date: requested || undefined,
       notes, pay_on_delivery: upfront && cod, cod_method: codMethod,
     })
     navigate(`/orders/${r.data._id}`)

@@ -32,6 +32,7 @@ import audit
 import commerce
 import crypto
 import db
+import partner_pdf
 from corrections import ACTIVE
 
 API = os.getenv("YOCO_API_BASE", "https://payments.yoco.com/api")
@@ -55,12 +56,28 @@ async def configured(node_id: str) -> bool:
     return bool(await _secret(node_id))
 
 
+async def online(node_id: str) -> bool:
+    """Card payment links are offered only once the business confirms Yoco takes online
+    payments for it (Settings > Yoco). Off by default: until Yoco activates online payments,
+    its checkout tells the customer the business is not ready, so we send EFT details instead."""
+    s = await _secret(node_id)
+    return bool(s and s.get("online"))
+
+
+async def set_online(node_id: str, on: bool, user: dict) -> dict:
+    if not await _secret(node_id):
+        raise HTTPException(400, "Connect Yoco first")
+    await db.secrets().update_one({"node_id": node_id, "kind": "yoco"}, {"$set": {"online": bool(on)}})
+    await audit.log(user, node_id, "card_links_on" if on else "card_links_off", "yoco", None, after={"online": bool(on)})
+    return await status(node_id)
+
+
 async def status(node_id: str) -> dict:
     s = await _secret(node_id)
     if not s:
-        return {"connected": False}
+        return {"connected": False, "online": False}
     return {"connected": True, "mode": s.get("mode"), "webhook_registered": bool(s.get("webhook_id")),
-            "key_hint": s.get("key_hint"), "updated_at": s.get("updated_at")}
+            "key_hint": s.get("key_hint"), "updated_at": s.get("updated_at"), "online": bool(s.get("online"))}
 
 
 async def save_key(node_id: str, key: str, user: dict) -> dict:
@@ -77,7 +94,8 @@ async def save_key(node_id: str, key: str, user: dict) -> dict:
     doc = {"node_id": node_id, "kind": "yoco", "secret_key_enc": crypto.encrypt(key),
            "mode": "live" if key.startswith("sk_live_") else "test", "key_hint": key[:8] + "…" + key[-4:],
            "webhook_id": body.get("id"), "webhook_secret_enc": crypto.encrypt(body.get("secret", "")),
-           "webhook_url": url, "updated_at": datetime.utcnow(), "updated_by": user["email"]}
+           "webhook_url": url, "updated_at": datetime.utcnow(), "updated_by": user["email"],
+           "online": bool((await _secret(node_id) or {}).get("online"))}
     await db.secrets().replace_one({"node_id": node_id, "kind": "yoco"}, doc, upsert=True)
     await audit.log(user, node_id, "connect", "yoco", None, after={"mode": doc["mode"], "webhook_url": url})
     return await status(node_id)
@@ -98,6 +116,8 @@ async def pay_link(node: dict, invoice: dict, user: dict, dn_id: str | None = No
     """The stable link for an open invoice. Reused while the invoice is open."""
     if not await configured(node["node_id"]):
         raise HTTPException(400, "Yoco is not connected for this business")
+    if not await online(node["node_id"]):
+        raise HTTPException(400, "Card payment links are switched off (Settings > Yoco). Send the EFT details instead.")
     if invoice.get("void") or invoice.get("balance", invoice["total"]) <= commerce.PAY_TOL:
         raise HTTPException(400, "Nothing due on this invoice")
     pl = await db.pay_links().find_one({"invoice_id": invoice["_id"], "status": {"$in": ["open", "sent"]},
@@ -119,7 +139,7 @@ async def pay_link(node: dict, invoice: dict, user: dict, dn_id: str | None = No
 async def quote_pay_link(node: dict, quote: dict, user: dict, mark_sent: bool = False) -> dict | None:
     """The stable card link for an open proforma, or None when Yoco is off or nothing is due.
     Card money paid here is held on the proforma until its tax invoice exists."""
-    if not await configured(node["node_id"]):
+    if not await online(node["node_id"]):
         return None
     if quote["status"] not in ("draft", "sent") or not commerce.is_proforma(await commerce.get_cfg(node["node_id"])):
         return None
@@ -143,6 +163,8 @@ async def quote_pay_link(node: dict, quote: dict, user: dict, mark_sent: bool = 
 
 
 async def existing_quote_link(node: dict, quote: dict) -> str | None:
+    if not await online(node["node_id"]):
+        return None
     pl = await db.pay_links().find_one({"quote_id": quote["_id"], "invoice_id": None,
                                         "status": {"$in": ["open", "sent"]}})
     return public_url(node, pl["token"]) if pl else None
@@ -184,8 +206,10 @@ async def open_link(token: str) -> dict:
         if co["amount"] == balance and time.time() - co["ts"] < 1200 and co.get("redirect_url"):
             return {**base, "state": "open", "amount": balance, "redirect_url": co["redirect_url"]}
     s = await _secret(pl["node_id"])
-    if not s:
-        raise HTTPException(400, "Card payments are not available right now")
+    eft = {**base, "state": "eft", "amount": balance, "reference": tgt["number"],
+           "bank": partner_pdf._bank_lines(node, tgt["number"])}
+    if not s or not s.get("online"):
+        return eft
     done = f"{public_url(node, token)}?done=1"
     async with _client() as c:
         r = await c.post("/checkouts", headers={
@@ -197,7 +221,7 @@ async def open_link(token: str) -> dict:
                   "metadata": {"node_id": pl["node_id"], **tgt["meta"], "pay_link_id": pl["_id"],
                                "dn_id": pl.get("dn_id") or ""}})
     if r.status_code >= 300:
-        raise HTTPException(502, "Could not start the card payment. Try again in a moment.")
+        return {**eft, "card_error": True}
     co = r.json()
     await db.pay_links().update_one({"_id": pl["_id"]}, {"$push": {"checkouts": {
         "id": co.get("id"), "amount": balance, "ts": time.time(), "redirect_url": co.get("redirectUrl")}}})

@@ -2,7 +2,7 @@ import { Plus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, errMsg } from '../api'
-import { cleanLines, CustomerPicker, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
+import { cleanLines, COLLECT, CustomerPicker, DeliverTo, Line, LineEditor, siteIdFor } from '../components/Forms'
 import { Empty, ErrorBox, Field, Modal, PageTitle, Spinner, Status, Tabs, useAction } from '../components/ui'
 import { useApp } from '../lib/ctx'
 import { date, money } from '../lib/format'
@@ -48,7 +48,7 @@ export function QuoteForm({ initial, onClose, onSaved }: { initial?: any; onClos
   const pf = !!useApp().cfg.proforma
   const [customer, setCustomer] = useState<any>(null)
   const [lines, setLines] = useState<Line[]>(initial?.lines || [{ kind: 'tank', qty: 1, grade: 'A' }])
-  const [siteId, setSiteId] = useState(initial?.site?.site_id || '')
+  const [siteId, setSiteId] = useState(initial?.collect ? COLLECT : initial?.site?.site_id || '')
   const [newSite, setNewSite] = useState<any>(null)
   const [notes, setNotes] = useState(initial?.notes || '')
   const [validUntil, setValidUntil] = useState(initial?.valid_until || '')
@@ -56,7 +56,7 @@ export function QuoteForm({ initial, onClose, onSaved }: { initial?: any; onClos
   useEffect(() => { if (initial) api.get(`/api/p/customers/${initial.customer_id}`, { params: { brief: true } }).then((r) => setCustomer(r.data)) }, [initial])
   const save = () => a.run(async () => {
     const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
-    const body = { customer_id: customer._id, lines: cleanLines(lines), site_id, notes, valid_until: validUntil || undefined }
+    const body = { customer_id: customer._id, lines: cleanLines(lines), site_id, collect: siteId === COLLECT, notes, valid_until: validUntil || undefined }
     const r = initial ? await api.put(`/api/p/quotes/${initial._id}`, body) : await api.post('/api/p/quotes', body)
     onSaved(r.data)
   }, errMsg)

@@ -54,7 +54,7 @@ export default function QuoteDetail() {
           <tfoot><tr><td className="td" colSpan={3}>Excl VAT {money(q.subtotal)} · VAT {money(q.vat)}</td><td className="td text-right font-bold">{money(q.total)}</td></tr></tfoot>
         </table>
       </div>
-      <p className="mb-4 text-sm text-gray-600">Dated {date(q.date)}{pf ? '' : ` · valid until ${date(q.valid_until)}`}{q.site ? ` · ${siteLine(q.site)}` : ''}</p>
+      <p className="mb-4 text-sm text-gray-600">Dated {date(q.date)}{pf ? '' : ` · valid until ${date(q.valid_until)}`}{q.site ? ` · ${siteLine(q.site)}` : ''}{q.collect ? ' · Pick up at the factory' : ''}</p>
       {q.status === 'cancelled' && <p className="mb-4 text-sm text-gray-600">Cancelled: {q.cancelled_reason}</p>}
       {pf && (q.pay_link || (q.payments || []).length > 0) && <CardPayments q={q} />}
       {open && pf && (

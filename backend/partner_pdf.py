@@ -294,7 +294,11 @@ def quote(node: dict, cfg: dict, q: dict, customer: dict | None, pay_link: str |
     y0 = d.y
     yl = d.block("Bill to" if proforma else "Quote for", _customer_lines(customer, q["customer_name"]), MARGIN, y0)
     site = q.get("site") or {}
-    yr = d.block("Delivery site", [x for x in (site.get("label"), site.get("address"), site.get("town")) if x], W / 2, y0) if site else y0
+    if q.get("collect"):
+        yr = d.block("Collect from", [x for x in (_company(node).get("address"),
+                                                  cfg.get("collect_hours")) if x] or ["At our factory"], W / 2, y0)
+    else:
+        yr = d.block("Delivery site", [x for x in (site.get("label"), site.get("address"), site.get("town")) if x], W / 2, y0) if site else y0
     d.y = min(yl, yr) - 4 * mm
     rows, sw = _priced_rows(q, cfg, True)
     d.table(PRICE_COLS, rows, sw)
@@ -385,7 +389,7 @@ def delivery_note(node: dict, cfg: dict, dn: dict, ctx: dict | None = None) -> b
                color=_brand(node)["primary"])
     site = dn.get("site") or {}
     y0 = d.y
-    yl = d.block("Deliver to", [dn["client_name"]] + [x for x in (site.get("label"), site.get("address"), site.get("town")) if x]
+    yl = d.block("Deliver to" if site else "Collected at the factory by", [dn["client_name"]] + [x for x in (site.get("label"), site.get("address"), site.get("town")) if x]
                  + ([dn["client_details"]] if dn.get("client_details") and not site else []), MARGIN, y0)
     contact = [x for x in (site.get("contact_name"), site.get("contact_phone")) if x]
     yr = d.block("Site contact", [" ".join(contact)] if contact else ["—"], W / 2, y0)

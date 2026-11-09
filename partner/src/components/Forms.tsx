@@ -209,6 +209,7 @@ export function CustomerForm({ initial, onClose, onSaved }: { initial?: any; onC
 // ---------------------------------------------------------------- sites and maps
 
 export const NEW_SITE = '__new'
+export const COLLECT = '__collect'
 
 /** Where the order goes: one of the customer's addresses, or a new one typed in here. A new
  * address is saved on the customer (so it is there next time) when the order is saved. */
@@ -222,8 +223,16 @@ export function DeliverTo({ customer, siteId, setSiteId, site, setSite, optional
   }
   // no address on file: go straight to typing one
   useEffect(() => { if (!optional && sites.length === 0 && !siteId) choose(NEW_SITE) }, [customer?._id])  // eslint-disable-line react-hooks/exhaustive-deps
+  const collect = siteId === COLLECT
   return (
     <div className="sm:col-span-2">
+      <div className="mb-2 inline-flex rounded-lg bg-gray-100 p-1 text-sm font-semibold">
+        <button type="button" className={`rounded-md px-3 py-1 ${!collect ? 'bg-white shadow' : 'text-gray-600'}`}
+          onClick={() => collect && choose(sites[0]?.site_id || (optional ? '' : NEW_SITE))}>Delivery</button>
+        <button type="button" className={`rounded-md px-3 py-1 ${collect ? 'bg-white shadow' : 'text-gray-600'}`}
+          onClick={() => { setSiteId(COLLECT); setSite(null) }}>Pick up at the factory</button>
+      </div>
+      {collect ? <p className="text-sm text-gray-600">The customer collects at the factory. No delivery address or delivery charge needed.</p> : <>
       <Field label={optional ? 'Delivery address (optional)' : 'Deliver to'}>
         <select className="input" value={siteId} onChange={(e) => choose(e.target.value)}>
           {optional && <option value="">Not yet</option>}
@@ -232,12 +241,14 @@ export function DeliverTo({ customer, siteId, setSiteId, site, setSite, optional
         </select>
       </Field>
       {siteId === NEW_SITE && site && <div className="mt-2 rounded-lg border p-3"><SiteFields site={site} setSite={setSite} /></div>}
+      </>}
     </div>
   )
 }
 
 /** Save a new address typed on an order or quote; returns the site id to use. */
 export async function siteIdFor(customer: any, siteId: string, site: any, onSaved?: (site: any) => void): Promise<string | undefined> {
+  if (siteId === COLLECT) return undefined
   if (siteId !== NEW_SITE) return siteId || undefined
   if (!site || !(site.address || site.town || site.maps_link || (site.lat != null && site.lat !== ''))) {
     throw new Error('Type the new address, paste a Maps link or pin it')

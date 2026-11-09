@@ -254,15 +254,16 @@ async def create_order(node: dict, cfg: dict, customer: dict, raw: dict, user: d
         version = await pricing.current_version(node_id, tier)
         lines = await build_lines(cfg, node_id, raw.get("lines") or [], tier, version)
         version_id = version["_id"] if version else None
-    site = site_of(customer, raw.get("site_id")) if raw.get("site_id") else (
-        (quote or {}).get("site") or ((customer.get("sites") or [None])[0]))
+    collect = bool(raw.get("collect")) or (bool((quote or {}).get("collect")) and not raw.get("site_id"))
+    site = None if collect else (site_of(customer, raw.get("site_id")) if raw.get("site_id") else (
+        (quote or {}).get("site") or ((customer.get("sites") or [None])[0])))
     basis = customer.get("payment_basis", "upfront")
     cod = bool(raw.get("pay_on_delivery")) and basis == "upfront"
     order = {
         "_id": uuid4().hex, "node_id": node_id,
         "order_number": None if legacy else await number(node, "ord", "ORD", session),
         "date": raw.get("date") or today(), "customer_id": customer["_id"],
-        "customer_name": customer["name"], "site": site,
+        "customer_name": customer["name"], "site": site, "collect": collect,
         "quote_id": (quote or {}).get("_id"), "quote_number": (quote or {}).get("quote_number"),
         "payment_basis": basis, "pay_on_delivery": cod,
         "cod_method": raw.get("cod_method", "either") if cod else None,
@@ -972,7 +973,8 @@ async def create_quote(node: dict, cfg: dict, customer: dict, raw: dict, user: d
     q = {"_id": uuid4().hex, "node_id": node_id,
          "quote_number": await number(node, "quo", "PF" if is_proforma(cfg) else "QUO"), "rev": 1, "date": d,
          "customer_id": customer["_id"], "customer_name": customer["name"],
-         "site": site_of(customer, raw.get("site_id")) if raw.get("site_id") else None,
+         "site": site_of(customer, raw.get("site_id")) if raw.get("site_id") and not raw.get("collect") else None,
+         "collect": bool(raw.get("collect")),
          "lines": lines, **pricing.totals(lines, cfg),
          "valid_until": raw.get("valid_until") or add_days(d, int(cfg.get("quote_validity_days", 14))),
          "notes": raw.get("notes", ""), "status": "draft", "price_tier": tier,
@@ -1000,6 +1002,12 @@ async def revise_quote(node_id: str, quote: dict, cfg: dict, raw: dict, user: di
     upd = {"lines": lines, **pricing.totals(lines, cfg), "notes": raw.get("notes", quote["notes"]),
            "valid_until": raw.get("valid_until") or quote["valid_until"],
            "site": site_of(customer, raw["site_id"]) if raw.get("site_id") else quote.get("site")}
+    if "collect" in raw:
+        upd["collect"] = bool(raw["collect"])
+        if upd["collect"]:
+            upd["site"] = None
+        elif not raw.get("site_id"):
+            upd["site"] = None
     if quote["status"] != "draft":
         upd.update(rev=quote["rev"] + 1, status="draft", date=today(),
                    valid_until=raw.get("valid_until") or add_days(today(), int(cfg.get("quote_validity_days", 14))))
@@ -1202,6 +1210,10 @@ async def update_order_details(order: dict, raw: dict, user: dict) -> dict:
     if "site_id" in raw:
         cust = await db.customers().find_one({"_id": order["customer_id"]})
         upd["site"] = site_of(cust or {}, raw["site_id"]) if raw["site_id"] else None
+    if "collect" in raw:
+        upd["collect"] = bool(raw["collect"])
+        if upd["collect"]:
+            upd["site"] = None
     for k in ("requested_date", "notes"):
         if k in raw:
             upd[k] = raw[k] or ("" if k == "notes" else None)

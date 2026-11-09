@@ -145,7 +145,7 @@ async def login(payload: dict):
 async def me(user: dict = Depends(current_partner)):
     node, cfg = await ctx(user)
     return {**user, "business": (node.get("branding") or {}).get("display_name") or node["name"],
-            "features": {"yoco": await yoco.configured(node["node_id"]),
+            "features": {"yoco": await yoco.online(node["node_id"]),
                          "xero": bool(await xero_mt.connection(node["node_id"])),
                          "colour_stock": recon.track_colour(cfg),
                          "fenix_split": commerce.fenix_model(cfg) == "fenix_owns_tanks"}}
@@ -550,8 +550,11 @@ async def share_quote(quote_id: str, user: dict = Depends(current_partner)):
                f"{partner_pdf.money(q['total'])}.\nPay by card: {link['url']}\n"
                f"Or EFT using {q['quote_number']} as your payment reference.\n{url}")
     elif proforma:
+        bank = partner_pdf._bank_lines(node, q["quote_number"])
         msg = (f"{_greeting(cust)} here is your proforma {q['quote_number']} from {biz} for "
-               f"{partner_pdf.money(q['total'])}. Please use {q['quote_number']} as your payment reference.\n{url}")
+               f"{partner_pdf.money(q['total'])}.\n"
+               + (f"Please pay by EFT to:\n" + "\n".join(bank) + "\n" if bank else "")
+               + f"Use {q['quote_number']} as your payment reference.\n{url}")
     else:
         msg = (f"{_greeting(cust)} here is your quote {q['quote_number']} from {biz} for "
                f"{partner_pdf.money(q['total'])}, valid until {q['valid_until']}.\n{url}")
@@ -885,6 +888,8 @@ async def void_delivery(dn_id: str, payload: dict, user: dict = Depends(current_
 # ============================== invoices ============================== #
 
 async def _existing_pay_link(node: dict, inv: dict) -> str | None:
+    if not await yoco.online(node["node_id"]):
+        return None
     pl = await db.pay_links().find_one({"invoice_id": inv["_id"], "status": {"$in": ["open", "sent"]}})
     return yoco.public_url(node, pl["token"]) if pl else None
 
@@ -1376,6 +1381,11 @@ async def yoco_status(user: dict = Depends(current_partner)):
 @router.put("/yoco")
 async def yoco_key(payload: dict, user: dict = Depends(partner_admin)):
     return await yoco.save_key(user["node_id"], payload.get("secret_key", ""), user)
+
+
+@router.put("/yoco/online")
+async def yoco_online(payload: dict, user: dict = Depends(partner_admin)):
+    return await yoco.set_online(user["node_id"], bool(payload.get("online")), user)
 
 
 @router.delete("/yoco")
