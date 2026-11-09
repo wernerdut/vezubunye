@@ -350,18 +350,23 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
 
     # to deliver + shortfall
     remaining: dict = {}
+    waiting: dict = {}
     mto = 0
     for r in open_rows:
         for l in r["lines"]:
             if commerce.is_tank(l) and l.get("qty_remaining", 0) > 0:
                 k = recon.fg_key(cfg, l["tank_type"], l.get("grade", "A"), l.get("colour"))
                 remaining[k] = remaining.get(k, 0) + l["qty_remaining"]
+                waiting.setdefault(k, []).append({"order_number": r["order_number"], "customer": r["customer"],
+                                                  "date": r["date"], "qty": l["qty_remaining"]})
                 if l.get("made_to_order"):
                     mto += 1
     store = await recon.fg_warehouse(node_id, cfg=cfg)
     shortfall = [{"tank_type": k[0], "colour": k[1] if len(k) == 3 else None, "grade": k[-1],
-                  "remaining": q, "on_hand": store.get(k, 0), "short": q - store.get(k, 0)}
+                  "remaining": q, "on_hand": store.get(k, 0), "short": q - store.get(k, 0),
+                  "orders": sorted(waiting.get(k, []), key=lambda w: w["date"])}
                  for k, q in sorted(remaining.items()) if q > store.get(k, 0)]
+    shortfall.sort(key=lambda s: (s["orders"][0]["date"] if s["orders"] else "9999", s["tank_type"]))
     td = [r for r in open_rows if r["qty_remaining"] > 0]
     to_deliver = {"qty": sum(r["qty_remaining"] for r in td), "value": r2(sum(r["remaining_value"] for r in td)),
                   "oldest_days": max((r["age_days"] for r in td), default=0), "made_to_order_lines": mto,
