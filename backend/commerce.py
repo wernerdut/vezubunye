@@ -588,6 +588,15 @@ def driver_token() -> str:
     return pysecrets.token_urlsafe(24)
 
 
+SHORT_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # no 0/O, 1/l/I
+
+
+def short_code(n: int = 10) -> str:
+    """Short random code for links customers see (pay links, document links): 10 characters
+    of 56 is about 58 bits, unguessable but short enough to read in a WhatsApp message."""
+    return "".join(pysecrets.choice(SHORT_ALPHABET) for _ in range(n))
+
+
 async def dispatched_by_line(order_id: str, session=None, exclude_dn: str | None = None) -> dict:
     """order line_id -> quantity on active delivery notes."""
     out: dict = {}

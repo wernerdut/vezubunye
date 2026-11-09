@@ -114,10 +114,17 @@ async def disconnect(node_id: str, user: dict):
 PAY_HOSTS = {"makx": "https://www.makulutanks.co.za"}
 
 
+def own_host(node: dict) -> str | None:
+    """The partner's own website when customer links live there, else None."""
+    return node.get("pay_host") or PAY_HOSTS.get(node.get("slug") or "")
+
+
+def app_host(node: dict) -> str:
+    return f"https://{node['slug']}.vezubunye.com" if node.get("slug") else ""
+
+
 def public_url(node: dict, token: str) -> str:
-    host = node.get("pay_host") or PAY_HOSTS.get(node.get("slug") or "") or \
-        (f"https://{node['slug']}.vezubunye.com" if node.get("slug") else "")
-    return f"{host}/pay/{token}"
+    return f"{own_host(node) or app_host(node)}/pay/{token}"
 
 
 async def pay_link(node: dict, invoice: dict, user: dict, dn_id: str | None = None, mark_sent: bool = False) -> dict:
@@ -132,7 +139,7 @@ async def pay_link(node: dict, invoice: dict, user: dict, dn_id: str | None = No
                                         **({"dn_id": dn_id} if dn_id else {})})
     if not pl:
         pl = {"_id": uuid4().hex, "node_id": node["node_id"], "invoice_id": invoice["_id"], "dn_id": dn_id,
-              "token": commerce.driver_token(), "amount": invoice.get("balance", invoice["total"]),
+              "token": commerce.short_code(), "amount": invoice.get("balance", invoice["total"]),
               "status": "open", "sent_at": None, "checkouts": [], "created_by": user["email"],
               "created_at": datetime.utcnow(), "date": commerce.today()}
         await db.pay_links().insert_one(pl)
@@ -158,7 +165,7 @@ async def quote_pay_link(node: dict, quote: dict, user: dict, mark_sent: bool = 
                                         "status": {"$in": ["open", "sent"]}})
     if not pl:
         pl = {"_id": uuid4().hex, "node_id": node["node_id"], "invoice_id": None, "quote_id": quote["_id"],
-              "dn_id": None, "token": commerce.driver_token(), "amount": balance, "status": "open",
+              "dn_id": None, "token": commerce.short_code(), "amount": balance, "status": "open",
               "sent_at": None, "checkouts": [], "created_by": user["email"], "created_at": datetime.utcnow(),
               "date": commerce.today()}
         await db.pay_links().insert_one(pl)

@@ -527,6 +527,28 @@ def share_url(node: dict, kind: str, tok: str) -> str:
     return f"{host}/api/p/share/{kind}/{tok}.pdf"
 
 
+async def doc_link(node: dict, kind: str, doc: dict, exp: datetime) -> str:
+    """Short link to a shared PDF for messages: www.makulutanks.co.za/doc/<code> on a partner's
+    own site, else <slug>.vezubunye.com/api/p/doc/<code>. The code points at the signed share
+    token, so expiry and revocation (a new share_token) still apply. One per document, reused
+    while it has more than a week to run."""
+    now_ts = datetime.utcnow().timestamp()
+    sl = await db.short_links().find_one({"kind": kind, "rid": doc["_id"], "share_token": doc.get("share_token", ""),
+                                          "exp": {"$gt": now_ts + 7 * 86400}})
+    if not sl:
+        sl = {"_id": commerce.short_code(), "node_id": doc["node_id"], "kind": kind, "rid": doc["_id"],
+              "share_token": doc.get("share_token", ""), "token": share_token(kind, doc, exp),
+              "exp": int(exp.timestamp()), "created_at": datetime.utcnow()}
+        await db.short_links().insert_one(sl)
+    host = yoco.own_host(node)
+    return f"{host}/doc/{sl['_id']}" if host else f"{yoco.app_host(node)}/api/p/doc/{sl['_id']}"
+
+
+def _eft_block(node: dict, ref: str) -> str:
+    bank = partner_pdf._bank_lines(node, ref)
+    return "\n".join(bank) if bank else f"Reference: {ref}"
+
+
 def _greeting(cust: dict | None) -> str:
     name = ((cust or {}).get("contact_person") or (cust or {}).get("name") or "").split(" ")[0]
     return f"Hi {name}," if name else "Hi,"
@@ -541,23 +563,19 @@ async def share_quote(quote_id: str, user: dict = Depends(current_partner)):
         await db.quotes().update_one({"_id": q["_id"]}, {"$set": {"share_token": q["share_token"]}})
     proforma = commerce.is_proforma(cfg)
     exp = (datetime.utcnow() + timedelta(days=180)) if proforma else datetime.fromisoformat(q["valid_until"]) + timedelta(days=1)
-    url = share_url(node, "q", share_token("q", q, exp))
+    url = await doc_link(node, "q", q, exp)
     cust = await db.customers().find_one({"_id": q["customer_id"]})
     biz = (node.get("branding") or {}).get("display_name") or node["name"]
     link = await yoco.quote_pay_link(node, q, user, mark_sent=True) if proforma else None
-    if proforma and link:
-        msg = (f"{_greeting(cust)} here is your proforma {q['quote_number']} from {biz} for "
-               f"{partner_pdf.money(q['total'])}.\nPay by card: {link['url']}\n"
-               f"Or EFT using {q['quote_number']} as your payment reference.\n{url}")
-    elif proforma:
-        bank = partner_pdf._bank_lines(node, q["quote_number"])
-        msg = (f"{_greeting(cust)} here is your proforma {q['quote_number']} from {biz} for "
-               f"{partner_pdf.money(q['total'])}.\n"
-               + (f"Please pay by EFT to:\n" + "\n".join(bank) + "\n" if bank else "")
-               + f"Use {q['quote_number']} as your payment reference.\n{url}")
+    amount = partner_pdf.money(q["total"])
+    if proforma:
+        msg = (f"{_greeting(cust)}\n\nHere is your proforma {q['quote_number']} from {biz} for {amount}.\n\n"
+               f"View proforma (PDF): {url}\n\n"
+               + (f"Pay by card: {link['url']}\n\nOr pay by EFT:\n" if link else "Please pay by EFT:\n")
+               + f"{_eft_block(node, q['quote_number'])}\n\nThank you,\n{biz}")
     else:
-        msg = (f"{_greeting(cust)} here is your quote {q['quote_number']} from {biz} for "
-               f"{partner_pdf.money(q['total'])}, valid until {q['valid_until']}.\n{url}")
+        msg = (f"{_greeting(cust)}\n\nHere is your quote {q['quote_number']} from {biz} for {amount}, "
+               f"valid until {q['valid_until']}.\n\nView quote (PDF): {url}\n\nThank you,\n{biz}")
     if q["status"] == "draft":
         await commerce.set_quote_status(node, q, "sent", user)
     return {"url": url, "message": msg, "pay_link": link["url"] if link else None,
@@ -569,6 +587,15 @@ def _email(cust: dict | None, subject: str, body: str) -> dict:
     """mailto: for the share bar (opens the phone's or computer's mail app, nothing is sent from here)."""
     to = ((cust or {}).get("email") or "").strip()
     return {"email": f"mailto:{urlquote(to)}?subject={urlquote(subject)}&body={urlquote(body)}", "email_to": to}
+
+
+@router.get("/doc/{code}")
+async def short_doc(code: str):
+    """Public: the short link in a share message opens the PDF."""
+    sl = await db.short_links().find_one({"_id": code})
+    if not sl:
+        raise HTTPException(404, "Link not valid")
+    return await shared_pdf(sl["kind"], sl["token"])
 
 
 @router.get("/share/{kind}/{token}.pdf")
@@ -927,12 +954,16 @@ async def share_invoice(invoice_id: str, user: dict = Depends(current_partner)):
     if not inv.get("share_token"):
         inv["share_token"] = commerce.driver_token()
         await db.invoices().update_one({"_id": invoice_id}, {"$set": {"share_token": inv["share_token"]}})
-    url = share_url(node, "i", share_token("i", inv, datetime.utcnow() + timedelta(days=90)))
+    url = await doc_link(node, "i", inv, datetime.utcnow() + timedelta(days=90))
     cust = await db.customers().find_one({"_id": inv["customer_id"]})
     biz = (node.get("branding") or {}).get("display_name") or node["name"]
     link = await _existing_pay_link(node, inv)
-    msg = (f"{_greeting(cust)} here is invoice {inv['display_number']} from {biz}. Amount due "
-           f"{partner_pdf.money(inv.get('balance', inv['total']))}.\n{url}" + (f"\nPay by card: {link}" if link else ""))
+    due = inv.get("balance", inv["total"])
+    msg = (f"{_greeting(cust)}\n\nHere is your tax invoice {inv['display_number']} from {biz}. "
+           + (f"Amount due {partner_pdf.money(due)}." if due > 0.004 else "Paid in full, thank you.")
+           + f"\n\nView invoice (PDF): {url}"
+           + (f"\n\nPay by card: {link}" if link and due > 0.004 else "")
+           + f"\n\nThank you,\n{biz}")
     return {"url": url, "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg),
             **_email(cust, f"Tax invoice {inv['display_number']} from {biz}", msg)}
 
@@ -946,8 +977,8 @@ async def send_pay_link(invoice_id: str, user: dict = Depends(current_partner)):
     pl = await yoco.pay_link(node, inv, user, mark_sent=True)
     cust = await db.customers().find_one({"_id": inv["customer_id"]})
     biz = (node.get("branding") or {}).get("display_name") or node["name"]
-    msg = (f"{_greeting(cust)} you can pay {partner_pdf.money(inv.get('balance', inv['total']))} for "
-           f"{inv['display_number']} ({biz}) by card here:\n{pl['url']}")
+    msg = (f"{_greeting(cust)}\n\nYou can pay {partner_pdf.money(inv.get('balance', inv['total']))} for "
+           f"invoice {inv['display_number']} from {biz} by card here:\n{pl['url']}\n\nThank you,\n{biz}")
     await commerce.refresh_order_status(inv["order_id"])
     return {"url": pl["url"], "message": msg, "whatsapp": maps.wa_link((cust or {}).get("phone", ""), msg)}
 

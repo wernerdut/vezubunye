@@ -291,9 +291,13 @@ async def test_prices_incl_vat_and_versions(client):
     assert r.status_code == 400 and "by hand" in r.text
     # sent -> revise bumps the revision; accept creates the order
     sh = await ok(await c.post(f"/api/p/quotes/{q['_id']}/share", headers=S["mx"]))
-    assert sh["whatsapp"].startswith("https://wa.me/27825550101?text=") and "/api/p/share/q/" in sh["url"]
-    pdf = await c.get(sh["url"].split("vezubunye.com", 1)[-1])
+    assert sh["whatsapp"].startswith("https://wa.me/27825550101?text=") and sh["url"].startswith("https://www.makulutanks.co.za/doc/")
+    code = sh["url"].rsplit("/", 1)[1]
+    assert len(code) == 10 and (f"View quote (PDF): {sh['url']}" in sh["message"] or f"View proforma (PDF): {sh['url']}" in sh["message"])
+    pdf = await c.get(f"/api/p/doc/{code}")
     assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+    assert (await ok(await c.post(f"/api/p/quotes/{q['_id']}/share", headers=S["mx"])))["url"] == sh["url"]   # one short link per document
+    assert (await c.get("/api/p/doc/nosuchcode1")).status_code == 404
     rev = await ok(await c.put(f"/api/p/quotes/{q['_id']}", headers=S["mx"], json={"lines": q["lines"], "notes": "rev"}))
     assert rev["rev"] == 2 and len(rev["revisions"]) == 1
     await ok(await c.post(f"/api/p/quotes/{q['_id']}/status", headers=S["mx"], json={"status": "sent"}))
@@ -670,10 +674,11 @@ async def test_proforma_card_link_held_then_invoiced(client):
     pf = await ok(await new_pf())
     sh = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/share", headers=S["mx"]))
     assert sh["pay_link"] and "/pay/" in sh["pay_link"] and f"Pay by card: {sh['pay_link']}" in sh["message"]
+    assert len(sh["pay_link"].rsplit("/", 1)[1]) == 10 and "Or pay by EFT:" in sh["message"]
     pdf = await c.get(f"/api/p/quotes/{pf['_id']}/pdf", headers=S["mx"])
     txt = pdf_text(pdf.content)
     assert "Pay by card" in txt and sh["pay_link"].split("//")[1] in txt
-    shared = await c.get(sh["url"].split("vezubunye.com", 1)[1])
+    shared = await c.get("/api/p/doc/" + sh["url"].rsplit("/", 1)[1])
     assert "Pay by card" in pdf_text(shared.content)
     assert (await ok(await c.post(f"/api/p/quotes/{pf['_id']}/share", headers=S["mx"])))["pay_link"] == sh["pay_link"]  # reused
 
@@ -1188,4 +1193,4 @@ async def test_collect_and_card_links_off(client):
     import yoco
     await ok(await c.put("/api/p/yoco/online", headers=S["mx"], json={"online": False}))
     sh = await ok(await c.post(f"/api/p/quotes/{q['_id']}/share", headers=S["mx"]))
-    assert sh["pay_link"] is None and "payment reference" in sh["message"]
+    assert sh["pay_link"] is None and "Please pay by EFT:" in sh["message"] and "Pay by card" not in sh["message"]

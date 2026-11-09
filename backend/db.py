@@ -127,6 +127,10 @@ def pay_links():
     return db()["pay_links"]
 
 
+def short_links():
+    return db()["short_links"]
+
+
 def dashboard_views():
     return db()["dashboard_views"]
 
@@ -178,7 +182,7 @@ async def ensure_indexes():
         powder_ledger(), production_runs(), finished_goods(), scrap_log(),
         fittings_ledger(), paraffin_ledger(), daily_captures(), delivery_notes(),
         invoices(), payments(), flags(), physical_counts(), audit_log(),
-        customers(), quotes(), orders(), cash_deposits(), pay_links(), bills(),
+        customers(), quotes(), orders(), cash_deposits(), pay_links(), short_links(), bills(),
         suppliers(), price_lists(),
     ):
         await coll.create_index("node_id")
