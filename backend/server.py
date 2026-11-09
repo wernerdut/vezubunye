@@ -55,7 +55,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     # every partner app lives on its own <slug>.vezubunye.com
-    allow_origin_regex=os.getenv("PARTNER_ORIGIN_REGEX", r"https://[a-z0-9-]+\.vezubunye\.com"),
+    # and pay links open on the partner's own site (yoco.PAY_HOSTS)
+    allow_origin_regex=os.getenv("PARTNER_ORIGIN_REGEX",
+                                 r"https://([a-z0-9-]+\.vezubunye\.com|(www\.)?makulutanks\.co\.za)"),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -108,8 +108,16 @@ async def disconnect(node_id: str, user: dict):
 
 # ---------- pay links ---------- #
 
+# Pay links on the partner's own website (verified with Yoco), proxied to the partner app. A
+# node's own pay_host wins. Makulu: www.makulutanks.co.za/pay/* (9 Nov 2026), because Yoco only
+# verifies public sites and <slug>.vezubunye.com opens on the login page.
+PAY_HOSTS = {"makx": "https://www.makulutanks.co.za"}
+
+
 def public_url(node: dict, token: str) -> str:
-    return f"https://{node['slug']}.vezubunye.com/pay/{token}" if node.get("slug") else f"/pay/{token}"
+    host = node.get("pay_host") or PAY_HOSTS.get(node.get("slug") or "") or \
+        (f"https://{node['slug']}.vezubunye.com" if node.get("slug") else "")
+    return f"{host}/pay/{token}"
 
 
 async def pay_link(node: dict, invoice: dict, user: dict, dn_id: str | None = None, mark_sent: bool = False) -> dict:

@@ -335,7 +335,7 @@ async def test_pay_first_part_paid(client):
     assert r.status_code == 400 and "Paid R0.00" in r.text
     # pay link via WhatsApp, customer pays half by Yoco (webhook)
     pl = await ok(await c.post(f"/api/p/invoices/{inv['_id']}/pay-link", headers=S["mx"]))
-    assert pl["url"].startswith("https://makx.vezubunye.com/pay/") and "wa.me/27825550101" in pl["whatsapp"]
+    assert pl["url"].startswith("https://www.makulutanks.co.za/pay/") and "wa.me/27825550101" in pl["whatsapp"]
     tok = pl["url"].rsplit("/", 1)[1]
     opened = await ok(await c.get(f"/api/p/pay/{tok}"))
     assert opened["amount"] == 17600.0 and opened["redirect_url"].startswith("https://pay.example/")
@@ -419,7 +419,7 @@ async def test_pay_on_delivery_and_driver(client):
     inv = (await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"])))["invoices"][0]
     await ok(await webhook(c, "makulu", "pay_cod_qr", 4700.0, {"invoice_id": inv["_id"], "dn_id": dn2["_id"]}))
     v = await ok(await c.get(f"/api/d/{tok2}"))
-    assert v["collection"]["method"] == "yoco_link" and link["url"].startswith("https://makx.vezubunye.com/pay/")
+    assert v["collection"]["method"] == "yoco_link" and link["url"].startswith("https://www.makulutanks.co.za/pay/")
     await ok(await c.post(f"/api/d/{tok2}/delivered", data={"receiver_name": "Gate guard"}))
     o = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
     assert o["order_status"] == "complete"
