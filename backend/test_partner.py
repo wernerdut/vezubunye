@@ -1247,3 +1247,41 @@ async def test_delete_sale_completely(client):
     assert bk and bk["docs"]["orders"][0]["_id"] == order["_id"]
     assert (await cleanup.delete_sale("t-del", "makx", inv["display_number"]))["skipped"] == "already done"
     assert "skipped" in await cleanup.delete_sale("t-x", "makx", "MX-INV-9999")
+
+
+async def test_payment_emails(client, monkeypatch):
+    """Werner, 9 Nov 2026: an email to Steven when a payment comes in. Only payments made after
+    emails were switched on, each once, from payments@makulutanks.co.za through Resend."""
+    import httpx
+    import notify
+    c = client
+    sent = []
+
+    def handler(req):
+        import json as _j
+        sent.append(_j.loads(req.content))
+        return httpx.Response(200, json={"id": f"em{len(sent)}"})
+    monkeypatch.setattr(notify, "_transport", httpx.MockTransport(handler))
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    bad = await c.put("/api/p/settings/notifications", headers=S["mx"], json={"payment_emails": "not-an-email"})
+    assert bad.status_code == 400
+    n = await ok(await c.put("/api/p/settings/notifications", headers=S["mx"], json={"payment_emails": "Steven@MakuluTanks.co.za, steven@makulutanks.co.za"}))
+    assert n["payment_emails"] == ["steven@makulutanks.co.za"] and n["sender"] == "Makulu Tanks <payments@makulutanks.co.za>" and n["ready"]
+    assert (await notify.sweep()).get("makulu") == 0          # history is not emailed
+    t = await ok(await c.post("/api/p/settings/notifications/test", headers=S["mx"]))
+    assert t["sent_to"] == ["steven@makulutanks.co.za"] and sent[-1]["subject"].startswith("Test:")
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "collect": True,
+        "lines": [{"tank_type": "W2300", "colour": "EMERALD", "qty": 1, "unit_price": 1900}]}))
+    ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
+    await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": ov["value"], "reference": "EFT 123", "invoice_id": ov["invoices"][0]["_id"],
+        "customer_id": S["mx_cust"]["_id"]}))
+    assert (await notify.sweep())["makulu"] == 1
+    m = sent[-1]
+    assert m["from"] == "Makulu Tanks <payments@makulutanks.co.za>" and m["to"] == ["steven@makulutanks.co.za"]
+    assert m["subject"].startswith("Payment received:") and "by EFT" in m["subject"]
+    assert "Ready for collection" in m["text"] and f"/orders/{o['_id']}" in m["text"] and "paid in full" in m["text"]
+    assert (await notify.sweep())["makulu"] == 0              # once
+    monkeypatch.setenv("RESEND_API_KEY", "")
+    assert (await notify.sweep()) == {"skipped": "no key"}

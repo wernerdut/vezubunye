@@ -95,6 +95,8 @@ async def on_startup():
         print(f"cleanup skipped: {exc}")
     import scheduler
     scheduler.start()
+    import notify
+    notify.start()
 
 
 import driver_api  # noqa: E402

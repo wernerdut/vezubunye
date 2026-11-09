@@ -201,6 +201,49 @@ async def put_config(payload: dict, user: dict = Depends(partner_admin)):
     return await get_config(user)
 
 
+@router.get("/settings/notifications")
+async def get_notifications(user: dict = Depends(current_partner)):
+    import notify
+    node, cfg = await ctx(user)
+    return {"payment_emails": cfg.get("payment_notify_emails") or [], "sender": notify.sender(node),
+            "ready": bool(notify.api_key()) and bool(notify.sender(node))}
+
+
+@router.put("/settings/notifications")
+async def put_notifications(payload: dict, user: dict = Depends(partner_admin)):
+    """Who gets an email when a payment comes in. Turning it on (from no one) starts from now:
+    payments already in the system are not emailed."""
+    node, cfg = await ctx(user)
+    raw = payload.get("payment_emails") or []
+    if isinstance(raw, str):
+        raw = raw.replace(";", ",").split(",")
+    emails = list(dict.fromkeys(e.strip().lower() for e in raw if e and e.strip()))
+    bad = [e for e in emails if "@" not in e or "." not in e.split("@")[-1] or " " in e]
+    if bad:
+        raise HTTPException(400, f"Not an email address: {', '.join(bad)}")
+    upd: dict = {"payment_notify_emails": emails, "updated_at": datetime.utcnow()}
+    if emails and not cfg.get("payment_notify_emails"):
+        upd["payment_notify_since"] = datetime.utcnow()
+    await db.node_config().update_one({"node_id": node["node_id"]}, {"$set": upd})
+    await audit.log(user, node["node_id"], "update", "node_config", cfg.get("_id"),
+                    before={"payment_notify_emails": cfg.get("payment_notify_emails")}, after={"payment_notify_emails": emails})
+    return await get_notifications(user)
+
+
+@router.post("/settings/notifications/test")
+async def test_notification(user: dict = Depends(partner_admin)):
+    import notify
+    node, cfg = await ctx(user)
+    to = notify.recipients(cfg)
+    biz = (node.get("branding") or {}).get("display_name") or node["name"]
+    res = await notify.send(node, to, f"Test: payment emails from {biz} are working",
+                            f"This is a test. From now on you get an email like this whenever a payment comes in.\n\n{biz}",
+                            f"<p>This is a test. From now on you get an email like this whenever a payment comes in.</p><p>{biz}</p>")
+    if not res.get("sent"):
+        raise HTTPException(400, res.get("error") or "Not sent")
+    return {"sent_to": to}
+
+
 @router.put("/settings/company")
 async def put_company(payload: dict, user: dict = Depends(partner_admin)):
     node, _ = await ctx(user)

@@ -31,7 +31,7 @@ export default function Settings() {
       {tab === 'drivers' && <Drivers />}
       {tab === 'users' && <Users />}
       {tab === 'xero' && <Xero />}
-      {tab === 'yoco' && <Yoco />}
+      {tab === 'yoco' && <><Yoco /><PaymentEmails /></>}
       {tab === 'import' && <ImportCin7 />}
     </div>
   )
@@ -374,6 +374,30 @@ function Yoco() {
       <div className="flex justify-end gap-2">
         {y.connected && <button className="btn-danger" onClick={() => a.run(async () => { await api.delete('/api/p/yoco'); await load(); await reload() }, errMsg)}>Disconnect</button>}
         <button className="btn-primary" disabled={!key || a.busy} onClick={() => a.run(async () => { await api.put('/api/p/yoco', { secret_key: key }); setKey(''); await load(); await reload() }, errMsg)}>Save key</button>
+      </div>
+    </div>
+  )
+}
+
+/** Who gets an email when money comes in (card, EFT, cash, card machine, Xero matches). */
+function PaymentEmails() {
+  const [n, setN] = useState<any>(null)
+  const [list, setList] = useState('')
+  const [msg, setMsg] = useState<string | null>(null)
+  const a = useAction()
+  useEffect(() => { api.get('/api/p/settings/notifications').then((r) => { setN(r.data); setList(r.data.payment_emails.join(', ')) }) }, [])
+  if (!n) return null
+  return (
+    <div className="card mt-4 space-y-3 p-4">
+      <div className="font-bold">Payment emails</div>
+      <p className="text-sm text-gray-600">An email the moment a payment comes in: card, EFT, cash or card machine, with the customer, the proforma or invoice, and what to do next.</p>
+      {n.sender && <p className="text-xs text-gray-500">Sent from {n.sender}{n.ready ? '' : ' (email is not switched on on the server yet)'}</p>}
+      <Field label="Send to (separate addresses with commas)"><input className="input" value={list} onChange={(e) => setList(e.target.value)} placeholder="steven@makulutanks.co.za" /></Field>
+      <ErrorBox msg={a.error} />
+      {msg && <p className="text-sm text-emerald-700">{msg}</p>}
+      <div className="flex justify-end gap-2">
+        <button className="btn-ghost" disabled={a.busy || !n.payment_emails.length} onClick={() => a.run(async () => { setMsg(null); const r = await api.post('/api/p/settings/notifications/test'); setMsg(`Test sent to ${r.data.sent_to.join(', ')}`) }, errMsg)}>Send test email</button>
+        <button className="btn-primary" disabled={a.busy} onClick={() => a.run(async () => { setMsg(null); const r = await api.put('/api/p/settings/notifications', { payment_emails: list }); setN(r.data); setList(r.data.payment_emails.join(', ')); setMsg('Saved') }, errMsg)}>Save</button>
       </div>
     </div>
   )
