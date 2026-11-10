@@ -368,10 +368,26 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
                   "orders": sorted(waiting.get(k, []), key=lambda w: w["date"])}
                  for k, q in sorted(remaining.items()) if q > store.get(k, 0)]
     shortfall.sort(key=lambda s: (s["orders"][0]["date"] if s["orders"] else "9999", s["tank_type"]))
+    # stock committed to orders (Steven, 10 Nov 2026): tanks on hand that open orders need,
+    # handed to the oldest orders first, so it shows which orders can go now
+    committed = []
+    for k, q in sorted(remaining.items()):
+        have = store.get(k, 0)
+        if have <= 0:
+            continue
+        left, alloc = have, []
+        for w in sorted(waiting.get(k, []), key=lambda w: w["date"]):
+            if left <= 0:
+                break
+            n = min(left, w["qty"])
+            alloc.append({**w, "qty": n})
+            left -= n
+        committed.append({"tank_type": k[0], "colour": k[1] if len(k) == 3 else None, "grade": k[-1],
+                          "on_hand": have, "committed": min(have, q), "free": max(have - q, 0), "orders": alloc})
     td = [r for r in open_rows if r["qty_remaining"] > 0]
     to_deliver = {"qty": sum(r["qty_remaining"] for r in td), "value": r2(sum(r["remaining_value"] for r in td)),
                   "oldest_days": max((r["age_days"] for r in td), default=0), "made_to_order_lines": mto,
-                  "shortfall": shortfall}
+                  "shortfall": shortfall, "committed": committed}
 
     # deliveries
     sched_today = out_now = delivered = failed = unpinned = 0

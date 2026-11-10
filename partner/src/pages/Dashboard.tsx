@@ -73,6 +73,17 @@ export default function Dashboard({ readOnlyNode }: { readOnlyNode?: string }) {
                 ))}
               </div>
             )}
+            {(t.to_deliver.committed || []).length > 0 && (
+              <div className="col-span-3 rounded-lg bg-emerald-50 p-2 text-xs text-emerald-900">
+                <div className="font-semibold">Stock committed to orders</div>
+                {t.to_deliver.committed.map((s: any, i: number) => (
+                  <div key={i} className="mt-1">
+                    <span className="font-semibold">{tankName(cfg, s.tank_type)} {colourOf(cfg, s.colour)?.name || ''} {s.grade !== 'A' ? `(${s.grade})` : ''}: {s.committed} of {s.on_hand} in stock for orders{s.free ? `, ${s.free} free` : ''}</span>
+                    <div className="text-emerald-800">{s.orders.map((o: any) => `${o.order_number} ${o.customer} × ${o.qty}`).join(' · ')}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </Group>
           <Group title="Payments">
             <Stat label="Received" value={money0(t.payments.received)} sub={Object.entries(t.payments.by_method).map(([k, v]) => `${label(k)} ${money0(v as number)}`).join(' · ') || 'none'} />

@@ -1326,3 +1326,16 @@ async def test_single_powder_stock_rule1(client):
                                          "type": "count_adjustment", "scope": "warehouse",
                                          "powder_type": k, "kg": -10000000.0})
     assert len(await recon.check_powder_floor("makulu", today(), "cap-y")) == 1
+
+
+
+async def test_board_stock_committed_to_orders(client):
+    """Steven, 10 Nov 2026: next to Short of stock, the stock already committed to orders,
+    given to the oldest orders first."""
+    tiles = await ok(await client.get("/api/p/dashboard/tiles", headers=S["mx"]))
+    td = tiles["to_deliver"]
+    assert "committed" in td
+    for s in td["committed"]:
+        assert s["committed"] + s["free"] == s["on_hand"] and s["committed"] == sum(o["qty"] for o in s["orders"])
+        dates = [o["date"] for o in s["orders"]]
+        assert dates == sorted(dates)
