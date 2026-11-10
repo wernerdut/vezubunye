@@ -6,7 +6,7 @@ import { ShareBar } from '../components/Actions'
 import Board, { Kind, Sort } from '../components/Board'
 import { Modal, PageTitle, Stat } from '../components/ui'
 import { colourOf, tankName, useApp } from '../lib/ctx'
-import { date as fmtDate, label, money0 } from '../lib/format'
+import { label, money0 } from '../lib/format'
 
 const PERIODS = [
   { key: 'today', label: 'Today' }, { key: 'week', label: 'This week' }, { key: 'month', label: 'This month' },
@@ -147,41 +147,28 @@ function Aging({ a }: { a: Record<string, number> }) {
 /** Short-of-stock as a production list Steven can print for the factory or send on WhatsApp. */
 function ProductionList({ items, onClose }: { items: any[]; onClose: () => void }) {
   const { cfg, brand } = useApp()
-  const [withOrders, setWithOrders] = useState(true)
-  const name = (s: any) => [tankName(cfg, s.tank_type), colourOf(cfg, s.colour)?.name, s.grade && s.grade !== 'A' ? `(${s.grade})` : '']
-    .filter(Boolean).join(' ')
+  // Just the tanks to make (Werner, 10 Nov 2026): size, colour, how many. No orders, no stock maths.
+  const name = (s: any) => [tankName(cfg, s.tank_type).replace(/\s+water\b/i, ''), colourOf(cfg, s.colour)?.name,
+    s.grade && s.grade !== 'A' ? `(${s.grade})` : ''].filter(Boolean).join(' ')
   const day = new Date().toLocaleDateString('en-ZA', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
   const total = items.reduce((n, s) => n + s.short, 0)
-  const oldest = items.flatMap((s) => s.orders || []).map((o: any) => o.date).sort()[0]
-  const oldestDays = oldest ? Math.max(0, Math.round((Date.now() - Date.parse(oldest)) / 864e5)) : 0
   const title = `${brand.display_name} production list, ${day}`
-
-  const lines: string[] = [title, '']
-  items.forEach((s) => {
-    lines.push(`[ ] ${s.short} x ${name(s)} (need ${s.remaining}, have ${s.on_hand})`)
-    if (withOrders) (s.orders || []).forEach((o: any) => lines.push(`      ${o.order_number || 'order'} · ${o.customer} · ${fmtDate(o.date)} · ${o.qty}`))
-  })
-  lines.push('', `Total to mould: ${total} ${total === 1 ? 'tank' : 'tanks'}${oldest ? ` · oldest order waiting ${oldestDays} ${oldestDays === 1 ? 'day' : 'days'}` : ''}`)
-  const message = lines.join('\n')
+  const totalLine = `Total: ${total} ${total === 1 ? 'tank' : 'tanks'}`
+  const message = [title, '', ...items.map((s) => `[ ] ${s.short} x ${name(s)}`), '', totalLine].join('\n')
 
   const print = () => {
     const esc = (x: any) => String(x ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c])
-    const rows = items.map((s) => `
-      <tr><td class="box"></td><td class="qty">${s.short}</td><td><b>${esc(name(s))}</b><div class="sub">need ${s.remaining}, have ${s.on_hand}</div>
-      ${withOrders ? (s.orders || []).map((o: any) => `<div class="ord">${esc(o.order_number)} · ${esc(o.customer)} · ${esc(fmtDate(o.date))} · ${o.qty}</div>`).join('') : ''}</td></tr>`).join('')
+    const rows = items.map((s) => `<tr><td class="box"></td><td class="qty">${s.short}</td><td>${esc(name(s))}</td></tr>`).join('')
     const w = window.open('', '_blank', 'width=820,height=1000')
     if (!w) return
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
       body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:28px}
-      h1{font-size:22px;margin:0 0 4px} .meta{font-size:13px;margin-bottom:18px}
-      table{width:100%;border-collapse:collapse} td{border-bottom:1px solid #999;padding:10px 8px;vertical-align:top;font-size:16px}
+      h1{font-size:22px;margin:0 0 18px}
+      table{width:100%;border-collapse:collapse} td{border-bottom:1px solid #999;padding:12px 8px;vertical-align:middle;font-size:18px;font-weight:bold}
       td.box{width:26px} td.box:before{content:"";display:inline-block;width:20px;height:20px;border:2px solid #000}
-      td.qty{width:48px;font-size:22px;font-weight:bold} .sub{font-size:13px;color:#333;margin-top:2px}
-      .ord{font-size:13px;margin-top:3px;color:#333} .tot{margin-top:16px;font-size:16px;font-weight:bold}
+      td.qty{width:48px;font-size:22px} .tot{margin-top:16px;font-size:16px;font-weight:bold}
       @page{size:A4;margin:14mm}</style></head><body>
-      <h1>${esc(title)}</h1><div class="meta">Tanks to mould to fill open orders.</div>
-      <table>${rows}</table>
-      <div class="tot">Total to mould: ${total} ${total === 1 ? 'tank' : 'tanks'}${oldest ? ` · oldest order waiting ${oldestDays} ${oldestDays === 1 ? 'day' : 'days'}` : ''}</div>
+      <h1>${esc(title)}</h1><table>${rows}</table><div class="tot">${esc(totalLine)}</div>
       <script>window.onload=function(){window.print()}<\/script></body></html>`)
     w.document.close()
   }
@@ -190,9 +177,6 @@ function ProductionList({ items, onClose }: { items: any[]; onClose: () => void 
   const whatsapp = `https://wa.me/${number || ''}?text=${encodeURIComponent(message)}`
   return (
     <Modal title="Production list" onClose={onClose}>
-      <label className="mb-2 flex items-center gap-2 text-sm text-gray-700">
-        <input type="checkbox" checked={withOrders} onChange={(e) => setWithOrders(e.target.checked)} /> Show the orders waiting for each tank
-      </label>
       <pre className="mb-4 max-h-[50vh] overflow-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800">{message}</pre>
       <div className="flex flex-wrap gap-2">
         <button className="btn-ghost" onClick={print}><Printer size={16} /> Print</button>
