@@ -193,16 +193,43 @@ async def powder_floor(node_id: str, cfg: dict, up_to_date: str | None = None) -
     return {pt: round(issued.get(pt, 0.0) + adj.get(pt, 0.0) - consumed.get(pt, 0.0), 2) for pt in types}
 
 
+def single_stock(cfg: dict) -> bool:
+    """Partner factories keep one powder stock per colour, no store and floor (Werner, 10 Nov
+    2026): received, less what moulding used, plus or minus stocktakes."""
+    return bool(cfg.get("powder_single_stock"))
+
+
+async def powder_stock(node_id: str, cfg: dict, up_to_date: str | None = None) -> dict:
+    """One balance per colour (black grades pooled): store + floor. Issues to the floor cancel
+    out, so this is received + every count adjustment - consumed by moulding."""
+    out: dict = {}
+    for code, v in (await powder_warehouse(node_id, up_to_date)).items():
+        k = floor_key(cfg, code)
+        out[k] = out.get(k, 0.0) + v
+    for k, v in (await powder_floor(node_id, cfg, up_to_date)).items():
+        out[k] = out.get(k, 0.0) + v
+    return {k: round(v, 2) for k, v in out.items()}
+
+
 # ---------- Rule 1: powder floor identity ---------- #
 
 async def check_powder_floor(node_id: str, date: str, capture_id: str) -> list[str]:
     """Each powder grade's floor must stay >= 0: you cannot mould more of a colour (or black)
     than was issued. A negative floor means that material left the store without becoming a tank."""
     cfg = await get_config(node_id)
-    floor = await powder_floor(node_id, cfg, date)
     names = {p["code"]: (p.get("colour") or p["code"]) for p in cfg.get("powder_products", [])}
     names[BLACK_POOL] = "Black (all black grades)"
     raised = []
+    if single_stock(cfg):
+        for pt, kg in (await powder_stock(node_id, cfg, date)).items():
+            if kg < -EPS:
+                raised.append(await raise_flag(
+                    node_id, "powder_variance",
+                    f"{date}: {names.get(pt, pt)} powder stock is {kg:.1f} kg: more moulded than received. "
+                    f"Capture the powder received, or count the powder.",
+                    {"capture_id": capture_id, "powder_type": pt, "date": date}, date))
+        return raised
+    floor = await powder_floor(node_id, cfg, date)
     for pt, kg in floor.items():
         if kg < -EPS:
             raised.append(await raise_flag(

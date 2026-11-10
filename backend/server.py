@@ -88,6 +88,12 @@ async def on_startup():
         print(f"stocktake floor to store: {await stocktake.floor_to_store()}")
     except Exception as exc:  # noqa: BLE001
         print(f"stocktake floor to store skipped: {exc}")
+    try:   # Makulu keeps one powder stock per colour, no store and floor (Werner, 10 Nov 2026)
+        mk = await db.nodes().find_one({"slug": "makx"})
+        if mk:
+            await db.node_config().update_one({"node_id": mk["node_id"]}, {"$set": {"powder_single_stock": True}})
+    except Exception as exc:  # noqa: BLE001
+        print(f"powder_single_stock skipped: {exc}")
     try:
         import cleanup
         print(f"cleanup: {await cleanup.run()}")

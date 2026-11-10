@@ -81,9 +81,10 @@ def clean(cfg: dict, raw: dict) -> dict:
         p = l.get("powder_type")
         if p not in powders:
             raise HTTPException(400, f"Unknown powder {p}")
-        e = powder.setdefault(p, {"powder_type": p, "warehouse_kg": 0.0, "floor_kg": 0.0})
-        e["warehouse_kg"] = round(e["warehouse_kg"] + _kg(l.get("warehouse_kg"), "Powder in the store"), 2)
-        e["floor_kg"] = round(e["floor_kg"] + _kg(l.get("floor_kg"), "Powder on the floor"), 2)
+        # one figure per powder (10 Nov 2026); store and floor figures from older forms add up
+        e = powder.setdefault(p, {"powder_type": p, "kg": 0.0})
+        e["kg"] = round(e["kg"] + _kg(l.get("kg"), "Powder") + _kg(l.get("warehouse_kg"), "Powder")
+                        + _kg(l.get("floor_kg"), "Powder"), 2)
     fits: dict = {}
     for l in raw.get("fittings") or []:
         f = l.get("fitting_type")
@@ -125,19 +126,18 @@ async def variances(node_id: str, cfg: dict, st: dict) -> list[dict]:
             if s or c:
                 rows.append({"kind": kind, "tank_type": k[0], "colour": colour, "grade": k[-1], "label": name,
                              "system": s, "counted": c, "variance": c - s})
-    wh = await recon.powder_warehouse(node_id, date)
-    pfloor = await recon.powder_floor(node_id, cfg, date)
-    c_wh = {l["powder_type"]: l["warehouse_kg"] for l in st["powder"]}
-    c_pf: dict = {}
+    # powder: one stock per colour (black grades pooled), no store and floor
+    pst = await recon.powder_stock(node_id, cfg, date)
+    c_p: dict = {}
     for l in st["powder"]:
         k = recon.floor_key(cfg, l["powder_type"])
-        c_pf[k] = round(c_pf.get(k, 0.0) + l["floor_kg"], 2)
-    for kind, sysd, cnt in (("powder_warehouse", wh, c_wh), ("powder_floor", pfloor, c_pf)):
-        for p in sorted(set(sysd) | set(cnt)):
-            s, c = round(sysd.get(p, 0.0), 2), round(cnt.get(p, 0.0), 2)
-            if abs(s) > 0.004 or abs(c) > 0.004:
-                rows.append({"kind": kind, "powder_type": p, "label": lab["powder"].get(p, p),
-                             "system": s, "counted": c, "variance": round(c - s, 2)})
+        n = l.get("kg", (l.get("warehouse_kg") or 0) + (l.get("floor_kg") or 0))
+        c_p[k] = round(c_p.get(k, 0.0) + n, 2)
+    for p in sorted(set(pst) | set(c_p)):
+        s, c = round(pst.get(p, 0.0), 2), round(c_p.get(p, 0.0), 2)
+        if abs(s) > 0.004 or abs(c) > 0.004:
+            rows.append({"kind": "powder_stock", "powder_type": p, "label": lab["powder"].get(p, p),
+                         "system": s, "counted": c, "variance": round(c - s, 2)})
     fw = await recon.fittings_warehouse(node_id, date)
     c_fw = {l["fitting_type"]: l["qty"] for l in st["fittings"]}
     for f in sorted(set(fw) | set(c_fw)):
@@ -218,11 +218,11 @@ async def approve(st_id: str, note: str, user: dict) -> dict:
                      "quantity": v, "reference": None}
                 await db.finished_goods().insert_one(d, session=s)
                 coll = "finished_goods_ledger"
-            elif r["kind"] in ("powder_warehouse", "powder_floor"):
+            elif r["kind"] in ("powder_warehouse", "powder_floor", "powder_stock"):
                 pt = r["powder_type"]
                 if pt == recon.BLACK_POOL:
-                    pt = blacks[0]          # pooled: any black grade carries the floor adjustment
-                d = {**base, "powder_type": pt, "scope": "warehouse" if r["kind"] == "powder_warehouse" else "floor",
+                    pt = blacks[0]          # pooled: any black grade carries the adjustment
+                d = {**base, "powder_type": pt, "scope": "floor" if r["kind"] == "powder_floor" else "warehouse",
                      "kg": v, "source_capture_id": None}
                 await db.powder_ledger().insert_one(d, session=s)
                 coll = "powder_ledger"
@@ -259,14 +259,16 @@ def _physical_count(st: dict, rows: list[dict], user: dict, now: datetime) -> di
     pick = lambda kind: [{"powder_type": r["powder_type"], "system": r["system"], "counted": r["counted"],
                           "variance": r["variance"]} for r in rows if r["kind"] == kind]
     return {"_id": uuid4().hex, "node_id": st["node_id"], "date": st["date"],
-            "powder_counted": [{"powder_type": p["powder_type"], "warehouse_kg": p["warehouse_kg"],
-                                "floor_kg": p["floor_kg"]} for p in st["powder"]],
+            "powder_counted": [{"powder_type": p["powder_type"],
+                                "kg": p.get("kg", (p.get("warehouse_kg") or 0) + (p.get("floor_kg") or 0))}
+                               for p in st["powder"]],
             "fg_warehouse_counted": [{"tank_type": t["tank_type"], "colour": t["colour"], "grade": t["grade"],
                                       "quantity": t["store"]} for t in st["tanks"]],
             "tank_floor_counted": [{"tank_type": t["tank_type"], "colour": t["colour"], "grade": t["grade"],
                                     "quantity": t["floor"]} for t in st["tanks"]],
             "fittings_counted": [{"fitting_type": f["fitting_type"], "warehouse_qty": f["qty"]} for f in st["fittings"]],
-            "variances": {"powder_warehouse": pick("powder_warehouse"), "powder_floor": pick("powder_floor"),
+            "variances": {"powder_stock": pick("powder_stock"),
+                          "powder_warehouse": pick("powder_warehouse"), "powder_floor": pick("powder_floor"),
                           "tanks": list(tanks.values()),
                           "fittings": [{"fitting_type": r["fitting_type"], "system": r["system"], "counted": r["counted"],
                                         "variance": r["variance"]} for r in rows if r["kind"] == "fittings"]},

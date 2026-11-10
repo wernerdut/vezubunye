@@ -63,13 +63,12 @@ export default function Production() {
           <button className="btn-ghost btn-sm" onClick={() => setProd([...prod, { tank_type: cfg.tank_types[0].code, tank_colour: '', quantity_a: 0, quantity_b: 0, quantity_reject: 0 }])}><Plus size={14} /> Line</button>
         </div>
         <div>
-          <div className="label">Powder (kg)</div>
+          <div className="label">Powder received (kg)</div>
           {powder.map((l, i) => (
-            <div key={i} className="mb-2 grid grid-cols-3 gap-2">
+            <div key={i} className="mb-2 grid grid-cols-2 gap-2">
               <select className="input" value={l.powder_type} onChange={(e) => setPowder(powder.map((x, j) => j === i ? { ...x, powder_type: e.target.value } : x))}>
                 {cfg.powder_products.map((p) => <option key={p.code} value={p.code}>{p.code}</option>)}</select>
               <input type="number" className="input" placeholder="Received" value={l.received_kg || ''} onChange={(e) => setPowder(powder.map((x, j) => j === i ? { ...x, received_kg: Number(e.target.value) } : x))} />
-              <input type="number" className="input" placeholder="Issued" value={l.issued_kg || ''} onChange={(e) => setPowder(powder.map((x, j) => j === i ? { ...x, issued_kg: Number(e.target.value) } : x))} />
             </div>
           ))}
           <button className="btn-ghost btn-sm" onClick={() => setPowder([...powder, { powder_type: cfg.powder_products[0]?.code, received_kg: 0, issued_kg: 0 }])}><Plus size={14} /> Powder</button>

@@ -4,7 +4,7 @@ import type { User } from '../types'
 import { StatusBadge } from './ui'
 
 const KIND: Record<string, string> = {
-  tank_store: 'store', tank_floor: 'floor', powder_warehouse: 'store kg', powder_floor: 'floor kg', fittings: 'fittings',
+  tank_store: 'store', tank_floor: 'floor', powder_stock: 'kg', powder_warehouse: 'store kg', powder_floor: 'floor kg', fittings: 'fittings',
 }
 
 /** Stocktakes counted in the partner app. Nothing moves until audit or admin signs off here:

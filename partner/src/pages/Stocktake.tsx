@@ -8,7 +8,7 @@ import { date as fmtDate, today } from '../lib/format'
 type TankLine = { tank_type: string; colour: string; grade: 'A' | 'B'; store: string; floor: string }
 
 const KIND: Record<string, string> = {
-  tank_store: 'in the store', tank_floor: 'on the floor', powder_warehouse: 'kg in the store',
+  tank_store: 'tanks', tank_floor: 'on the floor', powder_stock: 'kg', powder_warehouse: 'kg in the store',
   powder_floor: 'kg on the floor', fittings: 'fittings',
 }
 
@@ -62,7 +62,7 @@ function CountForm({ positions, onClose, onSaved }: { positions: any; onClose: (
     positions.tanks.length
       ? positions.tanks.map((t: any) => ({ ...t, store: '', floor: '' }))
       : [{ tank_type: cfg.tank_types[0]?.code || '', colour: '', grade: 'A', store: '', floor: '' }])
-  const [powder, setPowder] = useState<Record<string, { w: string; f: string }>>({})
+  const [powder, setPowder] = useState<Record<string, string>>({})
   const [fits, setFits] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState('')
   const a = useAction()
@@ -76,8 +76,8 @@ function CountForm({ positions, onClose, onSaved }: { positions: any; onClose: (
       date: day, notes,
       tanks: tanks.filter((t) => t.tank_type && Number(t.store))
         .map((t) => ({ tank_type: t.tank_type, colour: t.colour, grade: t.grade, store: Number(t.store) || 0, floor: 0 })),
-      powder: positions.powder.map((p: string) => ({ powder_type: p, warehouse_kg: Number(powder[p]?.w) || 0, floor_kg: Number(powder[p]?.f) || 0 }))
-        .filter((p: any) => p.warehouse_kg || p.floor_kg),
+      powder: positions.powder.map((p: string) => ({ powder_type: p, kg: Number(powder[p]) || 0 }))
+        .filter((p: any) => p.kg),
       fittings: positions.fittings.map((f: string) => ({ fitting_type: f, qty: Number(fits[f]) || 0 })).filter((f: any) => f.qty),
     })
     onSaved()
@@ -115,8 +115,7 @@ function CountForm({ positions, onClose, onSaved }: { positions: any; onClose: (
           {positions.powder.map((p: string) => (
             <div key={p} className="flex items-center gap-2 text-sm">
               <span className="w-36 truncate" title={p}>{powderName(p)}</span>
-              <input className="input w-24" type="number" min="0" step="0.1" placeholder="Store" value={powder[p]?.w || ''} onChange={(e) => setPowder({ ...powder, [p]: { w: e.target.value, f: powder[p]?.f || '' } })} />
-              <input className="input w-24" type="number" min="0" step="0.1" placeholder="Floor" value={powder[p]?.f || ''} onChange={(e) => setPowder({ ...powder, [p]: { f: e.target.value, w: powder[p]?.w || '' } })} />
+              <input className="input w-28" type="number" min="0" step="0.1" placeholder="kg" value={powder[p] || ''} onChange={(e) => setPowder({ ...powder, [p]: e.target.value })} />
             </div>
           ))}
         </div>

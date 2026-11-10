@@ -1024,15 +1024,17 @@ async def test_partner_stocktake_signed_off_by_fenix(client):
     await ok(await c.post(f"/api/stocktakes/{st['_id']}/return", headers=w, json={"note": "Recount the grey 2300s"}))
     assert await recon.fg_warehouse("makulu", today(), cfg) == store_before
     st2 = await ok(await c.post("/api/p/stocktakes", headers=S["mxs"], json=body))
-    wh_before = await recon.powder_warehouse("makulu", today())
+    wh_before = await recon.powder_stock("makulu", cfg, today())
     out = await ok(await c.post(f"/api/stocktakes/{st2['_id']}/approve", headers=w, json={"note": "OK"}))
     assert out["status"] == "approved" and out["adjustment_ids"]
     after = await recon.fg_warehouse("makulu", today(), cfg)
     assert after[k] == store_before.get(k, 0) + 7
     # positions not counted are counted as zero
     assert all(q == 0 for kk, q in after.items() if kk != k)
-    wh = await recon.powder_warehouse("makulu", today())
-    assert wh[colour_powder] == 400 and wh[blacks[0]] == 250 and all(v2 == 0 for p2, v2 in wh.items() if p2 not in (colour_powder, blacks[0]))
+    # one powder stock per colour (black grades pooled) set to the count, store and floor alike
+    wh = await recon.powder_stock("makulu", cfg, today())
+    bk = recon.floor_key(cfg, blacks[0])
+    assert wh[colour_powder] == 400 and wh[bk] == 250 and all(abs(v2) < 0.01 for p2, v2 in wh.items() if p2 not in (colour_powder, bk))
     assert wh_before != wh
     pc = await db.physical_counts().find_one({"_id": out["physical_count_id"]})
     assert pc["stocktake_id"] == st2["_id"] and pc["date"] == today()
@@ -1288,15 +1290,39 @@ async def test_payment_emails(client, monkeypatch):
 
 
 async def test_stock_shows_powder_store_and_floor(client):
-    """Werner, 10 Nov 2026: powder counted on the floor showed nowhere; only the store did."""
+    """Werner, 10 Nov 2026: one powder stock per colour, no store and floor. Powder counted on
+    the floor (Steven's opening count) is simply stock."""
     c = client
     import uuid
+    before = {r["key"]: r["kg"] for r in (await ok(await c.get("/api/p/stock", headers=S["mx"])))["powder_positions"]}
     await db.powder_ledger().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
                                          "type": "count_adjustment", "scope": "floor", "powder_type": "MAKULU_BEIGE",
                                          "kg": 300.0})
+    await db.powder_ledger().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                         "type": "issued", "powder_type": "MAKULU_BEIGE", "kg": 100.0})
     st = await ok(await c.get("/api/p/stock", headers=S["mx"]))
     rows = {r["key"]: r for r in st["powder_positions"]}
-    assert rows, st
-    assert any(r["floor_kg"] >= 300 for r in rows.values())
-    for r in rows.values():
-        assert abs(r["both_kg"] - (r["store_kg"] + r["floor_kg"])) < 0.2 and r["name"]
+    assert set(rows["MAKULU_BEIGE"]) == {"key", "name", "kg"}
+    assert abs(rows["MAKULU_BEIGE"]["kg"] - (before.get("MAKULU_BEIGE", 0) + 300)) < 0.2   # an issue moves nothing
+
+
+async def test_single_powder_stock_rule1(client):
+    """With one stock, moulding without an 'issue' is normal: no flag while stock covers it;
+    a flag when more is moulded than there is powder."""
+    import recon
+    import uuid
+    await db.node_config().update_one({"node_id": "makulu"}, {"$set": {"powder_single_stock": True}})
+    cfg = await db.node_config().find_one({"node_id": "makulu"})
+    stock = await recon.powder_stock("makulu", cfg, today())
+    floor = await recon.powder_floor("makulu", cfg, today())
+    k = next(p for p in stock)
+    # give every colour plenty of stock: no flag even though nothing was issued
+    for p in set(stock) | set(floor):
+        await db.powder_ledger().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                             "type": "count_adjustment", "scope": "warehouse",
+                                             "powder_type": p, "kg": 100000.0})
+    assert await recon.check_powder_floor("makulu", today(), "cap-x") == []
+    await db.powder_ledger().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                         "type": "count_adjustment", "scope": "warehouse",
+                                         "powder_type": k, "kg": -10000000.0})
+    assert len(await recon.check_powder_floor("makulu", today(), "cap-y")) == 1
