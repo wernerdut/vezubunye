@@ -4,6 +4,8 @@ import { PageTitle, Spinner } from '../components/ui'
 import { colourOf, tankName, useApp } from '../lib/ctx'
 import { StocktakeHistory } from './Stocktake'
 
+const kg = (v: number) => v ? `${Math.round(v).toLocaleString('en-ZA')} kg` : '–'
+
 export default function Stock() {
   const { cfg } = useApp()
   const [s, setS] = useState<any>(null)
@@ -26,8 +28,16 @@ export default function Stock() {
         </table>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
-        <div className="card"><h2 className="border-b p-3 font-bold">Powder in the store</h2>
-          {s.powder.map((p: any) => <div key={p.powder_type} className="flex justify-between border-b px-3 py-2 text-sm"><span>{p.powder_type}</span><b className="tabular-nums">{p.warehouse_kg.toLocaleString()} kg</b></div>)}</div>
+        <div className="card overflow-x-auto"><h2 className="border-b p-3 font-bold">Powder</h2>
+          <table className="min-w-full text-sm">
+            <thead className="border-b bg-gray-50"><tr><th className="th">Colour</th><th className="th text-right">Store</th><th className="th text-right">Floor</th><th className="th text-right">Total</th></tr></thead>
+            <tbody>{(s.powder_positions || []).map((p: any) => (
+              <tr key={p.key} className="border-b"><td className="td">{p.name}</td>
+                <td className="td text-right tabular-nums">{kg(p.store_kg)}</td>
+                <td className={`td text-right tabular-nums ${p.floor_kg < 0 ? 'text-red-700' : ''}`}>{kg(p.floor_kg)}</td>
+                <td className="td text-right font-semibold tabular-nums">{kg(p.both_kg)}</td></tr>))}</tbody>
+          </table>
+          <p className="p-3 text-xs text-gray-500">Store: bags not yet issued. Floor: issued to moulding, used up as tanks are captured.</p></div>
         {s.fittings.length > 0 && <div className="card"><h2 className="border-b p-3 font-bold">Fittings</h2>
           {s.fittings.map((p: any) => <div key={p.fitting_type} className="flex justify-between border-b px-3 py-2 text-sm"><span>{p.fitting_type}</span><b>{p.qty}</b></div>)}</div>}
       </div>

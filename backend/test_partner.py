@@ -1285,3 +1285,18 @@ async def test_payment_emails(client, monkeypatch):
     assert (await notify.sweep())["makulu"] == 0              # once
     monkeypatch.setenv("RESEND_API_KEY", "")
     assert (await notify.sweep()) == {"skipped": "no key"}
+
+
+async def test_stock_shows_powder_store_and_floor(client):
+    """Werner, 10 Nov 2026: powder counted on the floor showed nowhere; only the store did."""
+    c = client
+    import uuid
+    await db.powder_ledger().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                         "type": "count_adjustment", "scope": "floor", "powder_type": "MAKULU_BEIGE",
+                                         "kg": 300.0})
+    st = await ok(await c.get("/api/p/stock", headers=S["mx"]))
+    rows = {r["key"]: r for r in st["powder_positions"]}
+    assert rows, st
+    assert any(r["floor_kg"] >= 300 for r in rows.values())
+    for r in rows.values():
+        assert abs(r["both_kg"] - (r["store_kg"] + r["floor_kg"])) < 0.2 and r["name"]

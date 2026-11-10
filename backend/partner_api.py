@@ -1220,8 +1220,30 @@ async def stock(user: dict = Depends(current_partner)):
     powder = [{"powder_type": k, "colour": products.get(k, {}).get("colour", k),
                "is_black": products.get(k, {}).get("is_black", False), "warehouse_kg": v}
               for k, v in sorted(wh.items())]
+    # store and floor side by side, one row per colour (black grades pool on the floor, so they
+    # share one row): a count can put powder on the floor, and moulding draws from the floor
+    floor = await recon.powder_floor(nid, cfg)
+    pool = recon.black_pool_key(cfg)
+    rows: dict = {}
+
+    def row(k: str) -> dict:
+        if k == recon.BLACK_POOL:
+            name = "Black (all black grades)"
+        elif pool and k == pool:
+            name = "Black"
+        else:
+            name = products.get(k, {}).get("colour") or k
+        return rows.setdefault(k, {"key": k, "name": name, "store_kg": 0.0, "floor_kg": 0.0})
+    for code, v in wh.items():
+        row(recon.floor_key(cfg, code))["store_kg"] += v
+    for k, v in floor.items():
+        row(k)["floor_kg"] += v
+    positions = [{**r, "store_kg": round(r["store_kg"], 1), "floor_kg": round(r["floor_kg"], 1),
+                  "both_kg": round(r["store_kg"] + r["floor_kg"], 1)}
+                 for r in sorted(rows.values(), key=lambda r: (r["name"] == "Black" or r["key"] == recon.BLACK_POOL, r["name"]))
+                 if abs(r["store_kg"]) > 0.05 or abs(r["floor_kg"]) > 0.05]
     fittings = [{"fitting_type": k, "qty": v} for k, v in sorted((await recon.fittings_warehouse(nid)).items())]
-    return {"finished_goods": fg, "powder": powder, "fittings": fittings}
+    return {"finished_goods": fg, "powder": powder, "powder_positions": positions, "fittings": fittings}
 
 
 # ---------- stocktakes (counted here, signed off by Fenix in the internal app) ---------- #
