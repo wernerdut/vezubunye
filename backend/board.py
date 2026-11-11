@@ -362,6 +362,16 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
                                                   "date": r["date"], "qty": l["qty_remaining"]})
                 if l.get("made_to_order"):
                     mto += 1
+    # deliveries scheduled ahead of stock still need their tanks (they leave the store when
+    # they go out), so they count towards what has to be made
+    async for dn in db.delivery_notes().find({"node_id": node_id, "stock_out": False, **ACTIVE,
+                                              "delivery_status": {"$ne": "delivered"}}):
+        for l in dn["lines"]:
+            k = recon.fg_key(cfg, l["tank_type"], l.get("grade", "A"), l.get("colour"))
+            remaining[k] = remaining.get(k, 0) + l["quantity"]
+            waiting.setdefault(k, []).append({"order_number": dn.get("order_number"), "customer": dn.get("client_name"),
+                                              "date": dn.get("planned_date") or dn.get("date"), "qty": l["quantity"],
+                                              "dn_number": dn.get("dn_number")})
     store = await recon.fg_warehouse(node_id, cfg=cfg)
     shortfall = [{"tank_type": k[0], "colour": k[1] if len(k) == 3 else None, "grade": k[-1],
                   "remaining": q, "on_hand": store.get(k, 0), "short": q - store.get(k, 0),

@@ -750,7 +750,7 @@ async def schedule_delivery(order_id: str, payload: dict, user: dict = Depends(c
     if payload.get("driver") and not isinstance(payload["driver"], dict):
         raise HTTPException(400, "Driver is {name, phone}")
     async with corrections.txn() as s:
-        dn = await commerce.write_dn(node, cfg, o, payload, user, session=s)
+        dn = await commerce.write_dn(node, cfg, o, payload, user, session=s, defer_stock=True)
         inv = None
         if o["payment_basis"] == "terms" and payload.get("invoice_now", True):
             inv = await commerce.invoice_dn(node, cfg, dn, user, session=s)

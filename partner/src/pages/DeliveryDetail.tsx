@@ -26,6 +26,7 @@ export default function DeliveryDetail() {
     <div>
       <PageTitle title={d.dn_number} sub={<span className="flex flex-wrap items-center gap-2">
         {d.client_name} <Status s={d.void ? 'void' : d.delivery_status} />
+        {live && d.stock_out === false && <span className="rounded bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800" title="Booked ahead: the tanks come off stock when it goes out, and must be made by then">Tanks come off stock when it goes out</span>}
         {d.order_id && <button className="text-brand-primary" onClick={() => navigate(`/orders/${d.order_id}`)}>Order {d.order_number}</button>}</span>}
         actions={<>
           <button className="btn-ghost" onClick={() => openPdf(`/api/p/deliveries/${id}/pdf`)}><FileDown size={16} /> PDF</button>

@@ -647,10 +647,14 @@ async def order_paid(order_id: str, session=None) -> float:
 
 async def write_dn(node: dict, cfg: dict, order: dict, raw: dict, user: dict, session=None,
                    extra: dict | None = None, freed: dict | None = None,
-                   skip_checks: bool = False) -> dict:
+                   skip_checks: bool = False, defer_stock: bool = False) -> dict:
     """Number and insert a delivery note against an order, plus its stock-out rows (the tanks
     leave finished goods now: they are on the truck). Applies the remaining-quantity and stock
-    checks and, on upfront pay-first orders, the release rule."""
+    checks and, on upfront pay-first orders, the release rule.
+
+    defer_stock (a scheduled delivery, Steven 11 Nov 2026): a delivery can be booked for a
+    future day before the tanks are moulded. No stock check and no stock-out now; the tanks
+    leave the store (and must be there) when it goes out or is marked delivered."""
     node_id = node["node_id"]
     by_id = {ln["line_id"]: ln for ln in order["lines"]}
     disp = await dispatched_by_line(order["_id"], session)
@@ -674,7 +678,7 @@ async def write_dn(node: dict, cfg: dict, order: dict, raw: dict, user: dict, se
         want[k] = want.get(k, 0) + q
     if not lines:
         raise HTTPException(400, "A delivery needs at least one line")
-    if not skip_checks:
+    if not skip_checks and not defer_stock:
         await check_stock(node_id, cfg, want, freed)
 
     value = dn_value_incl(lines, order, cfg)
@@ -732,10 +736,10 @@ async def write_dn(node: dict, cfg: dict, order: dict, raw: dict, user: dict, se
         "delivery_status": "scheduled", "pod": None,
         "collect_amount": collect_amount, "collection": None,
         "driver_token": driver_token(), "release": release,
-        "created_by": user["email"], "created_at": now(), **(extra or {}),
+        "created_by": user["email"], "created_at": now(), "stock_out": not defer_stock, **(extra or {}),
     }
     dn.update(recon.compute_split(dn, cfg, dn["total"]))
-    for ln in lines:
+    for ln in ([] if defer_stock else lines):
         await db.finished_goods().insert_one({
             "_id": uuid4().hex, "node_id": node_id, "date": d, "tank_type": ln["tank_type"],
             "colour": ln.get("colour", ""), "grade": ln["grade"], "type": "dispatched",
@@ -748,6 +752,33 @@ async def write_dn(node: dict, cfg: dict, order: dict, raw: dict, user: dict, se
                                f"paid against R{release['value_after']:,.2f} delivered. Reason: {release['reason']}",
                                {"dn_id": dn_id, "order_id": order["_id"]}, d)
     return dn
+
+
+async def book_dn_stock(dn: dict, session=None) -> dict:
+    """A scheduled delivery takes its tanks out of the store when it goes out (or is marked
+    delivered), and only if they are there. Notes written before deferral (no stock_out field)
+    and immediate ones are already booked."""
+    if dn.get("stock_out", True):
+        return dn
+    cfg = await recon.get_config(dn["node_id"])
+    want: dict = {}
+    for ln in dn["lines"]:
+        k = recon.fg_key(cfg, ln["tank_type"], ln.get("grade", "A"), ln.get("colour"))
+        want[k] = want.get(k, 0) + ln["quantity"]
+    try:
+        await check_stock(dn["node_id"], cfg, want)
+    except HTTPException as e:
+        raise HTTPException(400, f"{e.detail}. Capture the tanks as made first, then send {dn['dn_number']} out.")
+    d = today()
+    for ln in dn["lines"]:
+        await db.finished_goods().insert_one({
+            "_id": uuid4().hex, "node_id": dn["node_id"], "date": d, "tank_type": ln["tank_type"],
+            "colour": ln.get("colour", ""), "grade": ln.get("grade", "A"), "type": "dispatched",
+            "quantity": ln["quantity"], "dn_number": dn["dn_number"], "reference": dn["_id"],
+            "created_at": now()}, session=session)
+    await db.delivery_notes().update_one({"_id": dn["_id"]}, {"$set": {"stock_out": True, "stock_out_date": d}},
+                                         session=session)
+    return {**dn, "stock_out": True, "stock_out_date": d}
 
 
 async def store_dn_pdf(node: dict, cfg: dict, dn: dict, session=None):
@@ -816,8 +847,8 @@ def summarise(order: dict, dns: list[dict], invoices: list[dict], cfg: dict,
                       "qty_invoiced": invoiced.get(ol["line_id"], 0), "qty_remaining": rem})
         tot_ordered += ol["qty"]; tot_net += net
         tot_dispatched += disp.get(ol["line_id"], 0); tot_delivered += delivered.get(ol["line_id"], 0)
-        if ol.get("made_to_order") and rem > 0:
-            made_to_order = True
+        if ol.get("made_to_order") and net - delivered.get(ol["line_id"], 0) > 0:
+            made_to_order = True      # until delivered: a delivery booked ahead still needs moulding
     remaining = max(0, tot_net - tot_dispatched)
     # value of the order net of cancelled quantities
     net_value = r2(sum(pricing.price_line(ol, cfg, ol["qty"] - ol.get("qty_cancelled", 0))["line_total"]
@@ -1376,6 +1407,7 @@ async def set_delivery_status(dn: dict, status: str, actor: dict, reason: str = 
         raise HTTPException(400, f"A delivery that is {cur.replace('_', ' ')} cannot go to {status.replace('_', ' ')}")
     upd: dict = {"delivery_status": status}
     if status == "out_for_delivery":
+        dn = await book_dn_stock(dn)
         upd["out_at"] = now()
     if status == "failed":
         if not reason.strip():
@@ -1446,6 +1478,7 @@ async def capture_pod(dn: dict, raw: dict, actor: dict, photo: bytes | None = No
         raise HTTPException(400, "Record what was collected before marking delivered")
     if dn.get("delivery_status") == "delivered" and dn.get("pod"):
         raise HTTPException(400, "Proof of delivery already captured")
+    dn = await book_dn_stock(dn)
     file_id = None
     if photo:
         import files

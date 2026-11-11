@@ -573,9 +573,11 @@ async def test_colour_stock(client):
     o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
         "customer_id": S["mx_terms"]["_id"], "lines": [{"tank_type": "W2300", "colour": "ISLAND", "qty": 1}]}))
     assert o["order_lines"][0]["made_to_order"]
+    # scheduling ahead of stock is allowed (11 Nov 2026); the tanks leave the store when it goes out
     r = await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
         "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 1}]})
-    assert r.status_code == 400 and "Island Blue" in r.text
+    assert r.status_code == 200, r.text
+    assert (await db.delivery_notes().find_one({"order_id": o["_id"]}))["stock_out"] is False
     t = await ok(await c.get("/api/p/dashboard/tiles", headers=S["mx"]))
     assert any(s["colour"] == "ISLAND" and s["tank_type"] == "W2300" for s in t["to_deliver"]["shortfall"])
     rows = (await ok(await c.get('/api/p/dashboard/board/orders?filters={"made_to_order":true}', headers=S["mx"])))["rows"]
@@ -1339,3 +1341,47 @@ async def test_board_stock_committed_to_orders(client):
         assert s["committed"] + s["free"] == s["on_hand"] and s["committed"] == sum(o["qty"] for o in s["orders"])
         dates = [o["date"] for o in s["orders"]]
         assert dates == sorted(dates)
+
+
+
+async def test_schedule_delivery_ahead_of_stock(client):
+    """Steven, 11 Nov 2026: book a delivery for a future day before the tanks are made. The
+    tanks count as needed (Short of stock) and leave the store only when the delivery goes
+    out or is marked delivered, and only if they are there."""
+    import recon
+    import uuid
+    c = client
+    cfg = await db.node_config().find_one({"node_id": "makulu"})
+    k = recon.fg_key(cfg, "W5000", "A", "ISLAND")
+    have = (await recon.fg_warehouse("makulu", None, cfg)).get(k, 0)
+    if have:
+        await db.finished_goods().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                              "type": "count_adjustment", "scope": "fg_warehouse", "tank_type": "W5000",
+                                              "colour": "ISLAND", "grade": "A", "quantity": -have, "reference": None})
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_terms"]["_id"],
+        "lines": [{"tank_type": "W5000", "colour": "ISLAND", "qty": 1, "unit_price": 4400}]}))
+    ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
+    line = next(l for l in ov["lines"] if l.get("tank_type") == "W5000")
+    site = None
+    r = await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
+        "lines": [{"order_line_id": line["line_id"], "quantity": 1}], "planned_date": "2026-12-01",
+        **({"site_id": site} if site else {})})
+    assert r.status_code == 200, r.text
+    dn = r.json()["delivery_notes"][-1] if "delivery_notes" in r.json() else r.json()
+    dn = await db.delivery_notes().find_one({"order_id": o["_id"]})
+    assert dn["stock_out"] is False
+    assert (await recon.fg_warehouse("makulu", None, cfg)).get(k, 0) == 0          # nothing left the store
+    tiles = await ok(await c.get("/api/p/dashboard/tiles", headers=S["mx"]))
+    assert any(s["tank_type"] == "W5000" and s.get("colour") == "ISLAND" for s in tiles["to_deliver"]["shortfall"])
+    # going out without the tanks is refused
+    no = await c.post(f"/api/p/deliveries/{dn['_id']}/pod", data={"receiver_name": "X"}, headers=S["mx"])
+    assert no.status_code == 400 and "in stock" in no.text
+    # once moulded it goes out and the store drops then
+    await db.finished_goods().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                          "type": "count_adjustment", "scope": "fg_warehouse", "tank_type": "W5000",
+                                          "colour": "ISLAND", "grade": "A", "quantity": 1, "reference": None})
+    await ok(await c.post(f"/api/p/deliveries/{dn['_id']}/pod", data={"receiver_name": "X"}, headers=S["mx"]))
+    dn = await db.delivery_notes().find_one({"_id": dn["_id"]})
+    assert dn["stock_out"] is True and dn["delivery_status"] == "delivered"
+    assert (await recon.fg_warehouse("makulu", None, cfg)).get(k, 0) == 0
