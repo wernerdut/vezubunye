@@ -56,7 +56,7 @@ export function ScheduleDelivery({ orderId, onClose, onDone }: { orderId: string
   const [driverIdx, setDriverIdx] = useState(-1)
   const [adhoc, setAdhoc] = useState({ name: '', phone: '' })
   const [reg, setReg] = useState('')
-  const [invoiceNow, setInvoiceNow] = useState(true)
+  const invoiceNow = false   // terms: invoiced on delivery (11 Nov 2026)
   const [release, setRelease] = useState('')
   const [customer, setCustomer] = useState<any>(null)
   const a = useAction()
@@ -122,9 +122,7 @@ export function ScheduleDelivery({ orderId, onClose, onDone }: { orderId: string
             <Field label="Vehicle reg"><input className="input" value={reg} placeholder={cfg.drivers[driverIdx].vehicle_reg || ''} onChange={(e) => setReg(e.target.value)} /></Field>
           )}
         </div>
-        {order.payment_basis === 'terms' && (
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={invoiceNow} onChange={(e) => setInvoiceNow(e.target.checked)} /> Invoice now</label>
-        )}
+        {order.payment_basis === 'terms' && <p className="text-sm text-gray-600">Terms: the invoice is made when this delivery is marked delivered.</p>}
         {order.pay_on_delivery && <p className="text-sm text-violet-700">Pay on delivery: the driver collects at the site.</p>}
         <ErrorBox msg={a.error} />
         {needsRelease && isAdmin && (

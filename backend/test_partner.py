@@ -466,8 +466,8 @@ async def test_terms_part_delivered(client):
         "customer_id": S["nb_terms"]["_id"], "lines": [{"tank_type": "5000L", "colour": "GRN", "qty": 5, "unit_price": 5000}]}))
     assert o["payment_status"] == "not_invoiced" and not o["invoices"]
     lid = o["order_lines"][0]["line_id"]
-    d1 = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["nbs"], json={"lines": [{"order_line_id": lid, "quantity": 3}]}))
-    d2 = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["nbs"], json={"lines": [{"order_line_id": lid, "quantity": 2}]}))
+    d1 = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["nbs"], json={"lines": [{"order_line_id": lid, "quantity": 3}], "invoice_now": True}))
+    d2 = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["nbs"], json={"lines": [{"order_line_id": lid, "quantity": 2}], "invoice_now": True}))
     assert d1["invoice"]["total"] == 3 * 5750 and d2["invoice"]["total"] == 2 * 5750
     assert d1["invoice"]["due_date"] == days(30)
     # one EFT (non-Xero node) allocated across both, oldest first
@@ -514,14 +514,16 @@ async def test_r3_dn_not_invoiced(client):
     dn = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["nb"], json={
         "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 2}], "invoice_now": False, "date": today()}))
     import commerce
-    assert dn["_id"] not in str(await commerce.sweep_dn_not_invoiced("nodeb"))      # within grace
+    # terms are invoiced on delivery (11 Nov 2026): a booked, undelivered note owes no invoice yet
     await db.delivery_notes().update_one({"_id": dn["_id"]}, {"$set": {"date": days(-3)}})
+    assert dn["_id"] not in str(await commerce.sweep_dn_not_invoiced("nodeb"))
+    rows = (await ok(await c.get('/api/p/dashboard/board/orders?filters={"ready_to_invoice":true}', headers=S["nb"])))["rows"]
+    assert any(r["_id"] == o["_id"] for r in rows) is False   # not delivered yet (scheduled)
+    # delivered and somehow not invoiced (older notes): flagged after the grace, and invoiceable by hand
+    await db.delivery_notes().update_one({"_id": dn["_id"]}, {"$set": {"delivery_status": "delivered", "stock_out": True}})
     await commerce.sweep_dn_not_invoiced("nodeb")
     f = await db.flags().find_one({"type": "dn_not_invoiced", "references.dn_id": dn["_id"]})
     assert f and f["status"] == "open"
-    rows = (await ok(await c.get('/api/p/dashboard/board/orders?filters={"ready_to_invoice":true}', headers=S["nb"])))["rows"]
-    assert any(r["_id"] == o["_id"] for r in rows) is False   # not delivered yet (scheduled)
-    await ok(await c.post(f"/api/p/deliveries/{dn['_id']}/pod", headers=S["nb"], data={"receiver_name": "x"}))
     rows = (await ok(await c.get('/api/p/dashboard/board/orders?filters={"ready_to_invoice":true}', headers=S["nb"])))["rows"]
     assert any(r["_id"] == o["_id"] for r in rows)
     inv = await ok(await c.post(f"/api/p/deliveries/{dn['_id']}/invoice", headers=S["nb"]))
@@ -833,7 +835,7 @@ async def test_xero_pull_skips_our_payments(client):
     o2 = await ok(await client.post("/api/p/orders", headers=S["mx"], json={
         "customer_id": S["mx_terms"]["_id"], "lines": [{"tank_type": "W5000", "colour": "EMERALD", "qty": 1}]}))
     d = await ok(await client.post(f"/api/p/orders/{o2['_id']}/deliveries", headers=S["mx"], json={
-        "lines": [{"order_line_id": o2["order_lines"][0]["line_id"], "quantity": 1}]}))
+        "lines": [{"order_line_id": o2["order_lines"][0]["line_id"], "quantity": 1}], "invoice_now": True}))
     tinv = d["invoice"]
     await db.invoices().update_one({"_id": tinv["_id"]}, {"$set": {"xero": {"status": "posted", "invoice_id": "XI-2"}}})
 
@@ -1385,3 +1387,26 @@ async def test_schedule_delivery_ahead_of_stock(client):
     dn = await db.delivery_notes().find_one({"_id": dn["_id"]})
     assert dn["stock_out"] is True and dn["delivery_status"] == "delivered"
     assert (await recon.fg_warehouse("makulu", None, cfg)).get(k, 0) == 0
+
+
+async def test_terms_invoiced_on_delivery(client):
+    """Steven, 11 Nov 2026: a terms delivery is invoiced when it is delivered, not when booked;
+    Invoice delivery shows as a button for older ones that missed it."""
+    import uuid
+    import recon
+    c = client
+    cfg = await db.node_config().find_one({"node_id": "makulu"})
+    await db.finished_goods().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                          "type": "count_adjustment", "scope": "fg_warehouse", "tank_type": "W2300",
+                                          "colour": "ISLAND", "grade": "A", "quantity": 1, "reference": None})
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_terms"]["_id"], "lines": [{"tank_type": "W2300", "colour": "ISLAND", "qty": 1}]}))
+    r = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
+        "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 1}]}))
+    dn = await db.delivery_notes().find_one({"order_id": o["_id"]})
+    assert r["invoice"] is None and not await db.invoices().find_one({"dn_id": dn["_id"]})
+    await ok(await c.post(f"/api/p/deliveries/{dn['_id']}/pod", data={"receiver_name": "Koos"}, headers=S["mx"]))
+    inv = await db.invoices().find_one({"dn_id": dn["_id"]})
+    assert inv and inv["date"] == today()
+    ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
+    assert ov["next_action"]["code"] != "invoice_delivery"

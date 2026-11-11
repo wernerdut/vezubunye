@@ -1337,6 +1337,24 @@ async def cancel_remainder(node: dict, order: dict, user: dict, reason: str) -> 
     return o
 
 
+async def invoice_on_delivery(dn: dict, actor: dict) -> dict | None:
+    """Terms (Steven, 11 Nov 2026): a delivery is invoiced when it is delivered, not when it is
+    booked. Dated the delivery day, so the terms run from delivery. Returns the new invoice (the
+    caller queues it for Xero), or None when not terms or already invoiced."""
+    if not dn.get("order_id") or dn.get("void"):
+        return None
+    order = await db.orders().find_one({"_id": dn["order_id"]})
+    if not order or order.get("payment_basis") != "terms":
+        return None
+    if await db.invoices().find_one({"dn_id": dn["_id"], **ACTIVE}):
+        return None
+    node = await db.nodes().find_one({"node_id": dn["node_id"]})
+    cfg = await recon.get_config(dn["node_id"])
+    inv = await invoice_dn(node, cfg, await db.delivery_notes().find_one({"_id": dn["_id"]}), actor)
+    await refresh_order_status(dn["order_id"])
+    return inv
+
+
 async def invoice_dn(node: dict, cfg: dict, dn: dict, user: dict, session=None) -> dict:
     """Terms: one invoice per delivery note, covering exactly that DN's lines."""
     if await db.invoices().find_one({"dn_id": dn["_id"], **ACTIVE}, session=session):
@@ -1542,6 +1560,8 @@ async def sweep_dn_not_invoiced(node_id: str) -> list[str]:
         running: dict = {}
         async for dn in db.delivery_notes().find({"order_id": order["_id"], **ACTIVE},
                                                  {"content_b64": 0}).sort("created_at", 1):
+            if dn.get("delivery_status") != "delivered":
+                continue      # terms are invoiced on delivery (11 Nov 2026): only delivered notes owe one
             breach = False
             for ln in dn["lines"]:
                 lid = ln.get("order_line_id")

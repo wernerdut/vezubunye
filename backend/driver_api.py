@@ -140,4 +140,11 @@ async def delivered(token: str, receiver_name: str = Form(""), lat: Optional[flo
         raise HTTPException(400, "Photo too large (max 12 MB)")
     out = await commerce.capture_pod(dn, {"receiver_name": receiver_name, "lat": lat, "lng": lng}, actor(dn),
                                      photo, (file.content_type if file else None) or "image/jpeg")
+    inv = await commerce.invoice_on_delivery(out, actor(dn))
+    if inv:
+        try:
+            import xero_mt
+            await xero_mt.post_invoice(inv["_id"])
+        except Exception as e:  # noqa: BLE001  (stays queued)
+            print(f"[xero] invoice post deferred: {e}")
     return await view(out, node)

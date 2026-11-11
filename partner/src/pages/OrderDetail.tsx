@@ -31,6 +31,10 @@ export default function OrderDetail() {
     switch (o.next_action.code) {
       case 'send_pay_link': return inv && me.features.yoco ? <button className="btn-primary" onClick={() => setModal(<PayLinkModal invoiceId={inv._id} onClose={close} />)}>Send pay link</button> : null
       case 'schedule_delivery': return <button className="btn-primary" onClick={() => setModal(<ScheduleDelivery orderId={o._id} onClose={() => setModal(null)} onDone={close} />)}><Truck size={16} /> Schedule delivery</button>
+      case 'invoice_delivery': {
+        const d = o.delivery_notes.find((x: any) => !x.void && x.delivery_status === 'delivered' && !x.invoice_id)
+        return d ? <button className="btn-primary" onClick={() => a.run(async () => { await api.post(`/api/p/deliveries/${d._id}/invoice`); close() }, errMsg)}>Invoice {d.dn_number}</button> : null
+      }
       case 'dispatch': return sched ? <>
         <button className="btn-ghost" onClick={async () => setModal(<ShareModal title="Send to driver" data={await sendToDriver(sched._id)} onClose={close} />)}>Send to driver</button>
         {onRoad.map(markBtn)}</> : null

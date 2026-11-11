@@ -742,7 +742,8 @@ async def cancel_remainder(order_id: str, payload: dict, user: dict = Depends(pa
 
 @router.post("/orders/{order_id}/deliveries")
 async def schedule_delivery(order_id: str, payload: dict, user: dict = Depends(current_partner)):
-    """Schedule a delivery (full or part) from the order. Terms: invoice now is on by default."""
+    """Schedule a delivery (full or part) from the order. Terms: invoiced when delivered
+    (invoice_now true still invoices at booking)."""
     node, cfg = await ctx(user)
     o = await commerce.order_or_404(node["node_id"], order_id)
     if o.get("status") != "open":
@@ -752,7 +753,7 @@ async def schedule_delivery(order_id: str, payload: dict, user: dict = Depends(c
     async with corrections.txn() as s:
         dn = await commerce.write_dn(node, cfg, o, payload, user, session=s, defer_stock=True)
         inv = None
-        if o["payment_basis"] == "terms" and payload.get("invoice_now", True):
+        if o["payment_basis"] == "terms" and payload.get("invoice_now", False):
             inv = await commerce.invoice_dn(node, cfg, dn, user, session=s)
         await audit.log(user, node["node_id"], "create", "delivery_notes", dn["_id"], after=dn, session=s)
     await commerce.store_dn_pdf(await node_for_pdf(node), cfg, dn)
@@ -788,6 +789,9 @@ async def order_collected(order_id: str, payload: dict, user: dict = Depends(cur
                                                              "delivered_at": datetime.utcnow(), "pod": pod})
         await audit.log(user, node["node_id"], "create", "delivery_notes", dn["_id"], after=dn, session=s)
     await commerce.store_dn_pdf(await node_for_pdf(node), cfg, dn)
+    inv = await commerce.invoice_on_delivery(dn, user)
+    if inv:
+        await _xero_invoice(inv["_id"])
     await commerce.refresh_order_status(o["_id"])
     return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], o["_id"])),
                 cfg, user["role"])
@@ -927,6 +931,9 @@ async def delivery_pod(dn_id: str, receiver_name: str = Form(""), lat: Optional[
     out = await commerce.capture_pod(dn, {"receiver_name": receiver_name, "lat": lat, "lng": lng,
                                           "after_the_fact": True}, user, photo,
                                      (file.content_type if file else None) or "image/jpeg")
+    inv = await commerce.invoice_on_delivery(out, user)
+    if inv:
+        await _xero_invoice(inv["_id"])
     return wall(out, cfg, user["role"])
 
 
