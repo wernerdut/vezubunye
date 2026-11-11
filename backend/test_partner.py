@@ -527,7 +527,7 @@ async def test_r3_dn_not_invoiced(client):
     rows = (await ok(await c.get('/api/p/dashboard/board/orders?filters={"ready_to_invoice":true}', headers=S["nb"])))["rows"]
     assert any(r["_id"] == o["_id"] for r in rows)
     inv = await ok(await c.post(f"/api/p/deliveries/{dn['_id']}/invoice", headers=S["nb"]))
-    assert all(l.get("kind") != "charge" for l in inv["lines"])     # charge lines are not part of R3
+    assert any(l.get("kind") == "charge" for l in inv["lines"])     # the order's delivery charge goes on it (11 Nov 2026)
 
 
 async def test_cancel_remainder_refund_due(client):
@@ -1410,3 +1410,25 @@ async def test_terms_invoiced_on_delivery(client):
     assert inv and inv["date"] == today()
     ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
     assert ov["next_action"]["code"] != "invoice_delivery"
+
+
+async def test_terms_invoice_carries_charges(client):
+    """Steven, 11 Nov 2026: R2,500 of tanks + R200 delivery on terms invoiced only R2,500. The
+    first invoice now carries the order's charges; an older one gets them by Invoice charges."""
+    import uuid
+    c = client
+    await db.finished_goods().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                          "type": "count_adjustment", "scope": "fg_warehouse", "tank_type": "W2300",
+                                          "colour": "ISLAND", "grade": "A", "quantity": 2, "reference": None})
+    charge = (await db.node_config().find_one({"node_id": "makulu"})).get("charges", [{}])[0].get("code")
+    lines = [{"tank_type": "W2300", "colour": "ISLAND", "qty": 1, "unit_price": 1850}]
+    if charge:
+        lines.append({"kind": "charge", "code": charge})
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={"customer_id": S["mx_terms"]["_id"], "lines": lines}))
+    await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
+        "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 1}]}))
+    dn = await db.delivery_notes().find_one({"order_id": o["_id"]})
+    await ok(await c.post(f"/api/p/deliveries/{dn['_id']}/pod", data={"receiver_name": "K"}, headers=S["mx"]))
+    ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
+    assert abs(ov["invoiced"] - ov["value"]) < 0.01, (ov["invoiced"], ov["value"])
+    assert (await c.post(f"/api/p/orders/{o['_id']}/invoice-charges", headers=S["mx"])).status_code == 400

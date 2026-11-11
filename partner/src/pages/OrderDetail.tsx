@@ -27,6 +27,11 @@ export default function OrderDetail() {
     Mark delivered{onRoad.length > 1 ? ` ${d.dn_number}` : ''}</button>
   // nothing scheduled or dispatched yet: the whole order can still be changed or cancelled
   const untouched = !o.delivery_notes.some((d: any) => !d.void)
+  // terms: charges (delivery etc.) an earlier invoice left off
+  const openCharges = o.payment_basis === 'terms' && (o.invoices || []).some((i: any) => !i.void)
+    ? o.lines.filter((l: any) => l.kind && l.kind !== 'tank' && (l.qty_invoiced || 0) < l.qty - (l.qty_cancelled || 0)) : []
+  const chargesBtn = () => openCharges.length ? <button className="btn-ghost" onClick={() => a.run(async () => { await api.post(`/api/p/orders/${o._id}/invoice-charges`); close() }, errMsg)}>
+    Invoice {openCharges.map((l: any) => lineLabel(cfg, l)).join(', ')}</button> : null
   const nextBtn = () => {
     switch (o.next_action.code) {
       case 'send_pay_link': return inv && me.features.yoco ? <button className="btn-primary" onClick={() => setModal(<PayLinkModal invoiceId={inv._id} onClose={close} />)}>Send pay link</button> : null
@@ -50,7 +55,7 @@ export default function OrderDetail() {
         <Status s={o.payment_status} />{o.overdue && <Status s="overdue" />}<Status s={o.delivery_status} />
         <Chip tone={o.pay_on_delivery ? 'violet' : o.payment_basis === 'terms' ? 'blue' : 'grey'}>{o.pay_on_delivery ? 'Pay on delivery' : label(o.payment_basis)}</Chip>
         {o.order_status !== 'open' && <Status s={o.order_status} />}
-      </span>} actions={<>{nextBtn()}</>} />
+      </span>} actions={<>{nextBtn()}{chargesBtn()}</>} />
       <ErrorBox msg={a.error} />
       {o.refund_due && <div className="mb-3 rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-800">Refund due {money(o.refund_due)} (done in the books by hand).</div>}
 

@@ -301,11 +301,11 @@ async def order_or_404(node_id: str, order_id: str) -> dict:
 
 async def create_invoice(node: dict, cfg: dict, order: dict, lines: list[dict], user: dict,
                          dn: dict | None = None, session=None, legacy: bool = False,
-                         extra: dict | None = None) -> dict:
+                         extra: dict | None = None, inv_date: str | None = None) -> dict:
     """One invoice for a full upfront order, or one per delivery note on terms. Lines are the
     order's lines (priced at order prices) for the quantities invoiced."""
     node_id = node["node_id"]
-    inv_date = (dn or {}).get("date") if dn else (order.get("date") or today())
+    inv_date = inv_date or ((dn or {}).get("date") if dn else (order.get("date") or today()))
     inv_date = inv_date or today()
     customer = await db.customers().find_one({"_id": order.get("customer_id")}, session=session) or {}
     terms_days = customer.get("payment_terms_days") or cfg.get("payment_terms_days", 30)
@@ -1350,9 +1350,38 @@ async def invoice_on_delivery(dn: dict, actor: dict) -> dict | None:
         return None
     node = await db.nodes().find_one({"node_id": dn["node_id"]})
     cfg = await recon.get_config(dn["node_id"])
-    inv = await invoice_dn(node, cfg, await db.delivery_notes().find_one({"_id": dn["_id"]}), actor)
+    fresh = await db.delivery_notes().find_one({"_id": dn["_id"]})
+    inv = await invoice_dn(node, cfg, {**fresh, "date": today()}, actor)     # dated the delivery day
     await refresh_order_status(dn["order_id"])
     return inv
+
+
+async def uninvoiced_charges(order: dict, cfg: dict, session=None) -> list[dict]:
+    """Priced non-tank lines of the order (delivery and other charges) not yet on an invoice."""
+    invoiced: dict = {}
+    async for inv in db.invoices().find({"order_id": order["_id"], **ACTIVE}, session=session):
+        for ln in inv["lines"]:
+            invoiced[ln.get("line_id")] = invoiced.get(ln.get("line_id"), 0) + pricing.qty_of(ln)
+    out = []
+    for ol in order["lines"]:
+        if is_tank(ol):
+            continue
+        left = ol["qty"] - ol.get("qty_cancelled", 0) - invoiced.get(ol["line_id"], 0)
+        if left > 0:
+            out.append(pricing.price_line({**ol, "qty": left}, cfg))
+    return out
+
+
+async def invoice_charges(node: dict, cfg: dict, order: dict, user: dict, session=None) -> dict:
+    """Terms: an invoice for charges left off earlier invoices (before 11 Nov 2026 a terms invoice
+    covered the delivered tanks only)."""
+    if order["payment_basis"] != "terms":
+        raise HTTPException(400, "Upfront orders carry one invoice for the full order")
+    lines = await uninvoiced_charges(order, cfg, session=session)
+    if not lines:
+        raise HTTPException(400, "No charges left to invoice on this order")
+    return await create_invoice(node, cfg, order, lines, user, session=session,
+                                extra={"charges_only": True}, inv_date=today())
 
 
 async def invoice_dn(node: dict, cfg: dict, dn: dict, user: dict, session=None) -> dict:
@@ -1367,6 +1396,9 @@ async def invoice_dn(node: dict, cfg: dict, dn: dict, user: dict, session=None) 
     by_id = {ln["line_id"]: ln for ln in order["lines"]}
     lines = [pricing.price_line({**by_id[l["order_line_id"]], "qty": l["quantity"]}, cfg)
              for l in dn["lines"] if l.get("order_line_id") in by_id]
+    # the order's charges (delivery and the like) go on the first invoice that is made, so they
+    # are never left off (Steven, 11 Nov 2026: R200 delivery missing from a terms invoice)
+    lines += await uninvoiced_charges(order, cfg, session=session)
     inv = await create_invoice(node, cfg, order, lines, user, dn=dn, session=session)
     await db.delivery_notes().update_one({"_id": dn["_id"]}, {"$set": {"invoice_id": inv["_id"]}}, session=session)
     return inv

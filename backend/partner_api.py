@@ -968,6 +968,18 @@ async def invoice_delivery(dn_id: str, user: dict = Depends(current_partner)):
     return wall(inv, cfg, user["role"])
 
 
+@router.post("/orders/{order_id}/invoice-charges")
+async def invoice_order_charges(order_id: str, user: dict = Depends(current_partner)):
+    """Terms: invoice the order's charges (delivery etc.) that no invoice carries yet."""
+    node, cfg = await ctx(user)
+    o = await commerce.order_or_404(node["node_id"], order_id)
+    async with corrections.txn() as s:
+        inv = await commerce.invoice_charges(node, cfg, o, user, session=s)
+    await commerce.refresh_order_status(o["_id"])
+    await _xero_invoice(inv["_id"])
+    return wall(inv, cfg, user["role"])
+
+
 @router.post("/deliveries/{dn_id}/void")
 async def void_delivery(dn_id: str, payload: dict, user: dict = Depends(current_partner)):
     """Tanks return to stock. Staff void a failed or not-yet-dispatched delivery; anything
