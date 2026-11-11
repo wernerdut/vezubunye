@@ -31,7 +31,7 @@ export default function OrderDetail() {
   const openCharges = o.payment_basis === 'terms' && (o.invoices || []).some((i: any) => !i.void)
     ? o.lines.filter((l: any) => l.kind && l.kind !== 'tank' && (l.qty_invoiced || 0) < l.qty - (l.qty_cancelled || 0)) : []
   const chargesBtn = () => openCharges.length ? <button className="btn-ghost" onClick={() => a.run(async () => { await api.post(`/api/p/orders/${o._id}/invoice-charges`); close() }, errMsg)}>
-    Invoice {openCharges.map((l: any) => lineLabel(cfg, l)).join(', ')}</button> : null
+    Add {openCharges.map((l: any) => lineLabel(cfg, l)).join(', ')} to the invoice</button> : null
   const nextBtn = () => {
     switch (o.next_action.code) {
       case 'send_pay_link': return inv && me.features.yoco ? <button className="btn-primary" onClick={() => setModal(<PayLinkModal invoiceId={inv._id} onClose={close} />)}>Send pay link</button> : null

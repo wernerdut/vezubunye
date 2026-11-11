@@ -970,11 +970,12 @@ async def invoice_delivery(dn_id: str, user: dict = Depends(current_partner)):
 
 @router.post("/orders/{order_id}/invoice-charges")
 async def invoice_order_charges(order_id: str, user: dict = Depends(current_partner)):
-    """Terms: invoice the order's charges (delivery etc.) that no invoice carries yet."""
+    """Terms: add the order's charges (delivery etc.) that no invoice carries yet to its unpaid
+    invoice, so the customer gets one invoice."""
     node, cfg = await ctx(user)
     o = await commerce.order_or_404(node["node_id"], order_id)
     async with corrections.txn() as s:
-        inv = await commerce.invoice_charges(node, cfg, o, user, session=s)
+        inv = await commerce.add_charges_to_invoice(node, cfg, o, user, session=s)
     await commerce.refresh_order_status(o["_id"])
     await _xero_invoice(inv["_id"])
     return wall(inv, cfg, user["role"])

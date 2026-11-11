@@ -1372,16 +1372,40 @@ async def uninvoiced_charges(order: dict, cfg: dict, session=None) -> list[dict]
     return out
 
 
-async def invoice_charges(node: dict, cfg: dict, order: dict, user: dict, session=None) -> dict:
-    """Terms: an invoice for charges left off earlier invoices (before 11 Nov 2026 a terms invoice
-    covered the delivered tanks only)."""
+async def add_charges_to_invoice(node: dict, cfg: dict, order: dict, user: dict, session=None) -> dict:
+    """Terms: put charges an earlier invoice left off (before 11 Nov 2026 a terms invoice covered
+    the delivered tanks only) onto that same invoice, so the customer gets one invoice for the
+    order, not a second one. Only an unpaid invoice that is not in Xero yet is changed."""
     if order["payment_basis"] != "terms":
         raise HTTPException(400, "Upfront orders carry one invoice for the full order")
-    lines = await uninvoiced_charges(order, cfg, session=session)
-    if not lines:
+    extra = await uninvoiced_charges(order, cfg, session=session)
+    if not extra:
         raise HTTPException(400, "No charges left to invoice on this order")
-    return await create_invoice(node, cfg, order, lines, user, session=session,
-                                extra={"charges_only": True}, inv_date=today())
+    target = None
+    async for inv in db.invoices().find({"order_id": order["_id"], **ACTIVE}, session=session).sort("created_at", 1):
+        x = inv.get("xero") or {}
+        if inv.get("amount_paid", 0) > 0.004:
+            continue
+        if x.get("status") == "posted" or x.get("invoice_id"):
+            continue
+        target = inv
+        break
+    if not target:
+        raise HTTPException(400, "Every invoice on this order is paid or already in Xero: "
+                                 "the charge needs a separate invoice (ask Fenix)")
+    lines = target["lines"] + extra
+    upd = {"lines": lines, **pricing.totals(lines, cfg), "updated_at": now()}
+    upd["balance"] = r2(upd["total"] - target.get("amount_paid", 0))
+    upd["status"] = inv_status(target.get("amount_paid", 0), upd["total"])
+    if fenix_model(cfg) == "fenix_owns_tanks":
+        upd["fenix_value"] = recon.compute_split({**target, **upd}, cfg, upd["total"])["fenix_exworks_value"]
+    await db.invoices().update_one({"_id": target["_id"]}, {"$set": upd}, session=session)
+    after = {**target, **upd}
+    await audit.log(user, node["node_id"], "update", "invoices", target["_id"],
+                    before={"lines": target["lines"], "total": target["total"]},
+                    after={"lines": lines, "total": upd["total"], "reason": "charges left off a terms invoice"},
+                    session=session)
+    return after
 
 
 async def invoice_dn(node: dict, cfg: dict, dn: dict, user: dict, session=None) -> dict:

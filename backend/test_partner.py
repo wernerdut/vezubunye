@@ -1432,3 +1432,28 @@ async def test_terms_invoice_carries_charges(client):
     ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
     assert abs(ov["invoiced"] - ov["value"]) < 0.01, (ov["invoiced"], ov["value"])
     assert (await c.post(f"/api/p/orders/{o['_id']}/invoice-charges", headers=S["mx"])).status_code == 400
+
+
+
+async def test_left_off_charge_added_to_same_invoice(client):
+    """Werner, 11 Nov 2026: a charge an older terms invoice left off goes onto that invoice
+    (one invoice for the customer), unless it is paid or in Xero."""
+    import commerce
+    import cleanup
+    c = client
+    o = await ok(await c.post("/api/p/orders", headers=S["nb"], json={
+        "customer_id": S["nb_terms"]["_id"], "lines": [{"tank_type": "5000L", "colour": "GRN", "qty": 1, "unit_price": 5000},
+                                                       {"kind": "charge", "code": "DEL"}]}))
+    order = await db.orders().find_one({"_id": o["_id"]})
+    cfg = await db.node_config().find_one({"node_id": "nodeb"})
+    node = await db.nodes().find_one({"node_id": "nodeb"})
+    tank = [l for l in order["lines"] if l.get("kind", "tank") == "tank"]
+    import pricing
+    old = await commerce.create_invoice(node, cfg, order, [pricing.price_line({**tank[0], "qty": 1}, cfg)], cleanup.SYSTEM)
+    assert await commerce.uninvoiced_charges(order, cfg)
+    r = await ok(await c.post(f"/api/p/orders/{o['_id']}/invoice-charges", headers=S["nb"]))
+    assert r["_id"] == old["_id"] and r["total"] > old["total"]
+    assert await db.invoices().count_documents({"order_id": o["_id"], "void": {"$exists": False}}) <= 1 or \
+        await db.invoices().count_documents({"order_id": o["_id"]}) == 1
+    assert not await commerce.uninvoiced_charges(order, cfg)
+    assert (await c.post(f"/api/p/orders/{o['_id']}/invoice-charges", headers=S["nb"])).status_code == 400

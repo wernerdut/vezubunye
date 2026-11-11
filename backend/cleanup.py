@@ -106,6 +106,32 @@ async def delete_sale(key: str, slug: str, invoice_number: str, customer_contain
     return {"deleted": summary}
 
 
+async def charges_onto_invoices(slug: str = "makx") -> dict:
+    """Werner, 11 Nov 2026: terms invoices made before charges were included get their left-off
+    charges added (MX-ORD-0022's R200 onto MX-INV-0026). Paid or Xero invoices are skipped."""
+    import commerce
+    import recon
+    node = await db.nodes().find_one({"slug": slug})
+    if not node:
+        return {}
+    cfg = await recon.get_config(node["node_id"])
+    done, skipped = [], []
+    async for o in db.orders().find({"node_id": node["node_id"], "payment_basis": "terms", "status": {"$ne": "cancelled"}}):
+        if not await commerce.uninvoiced_charges(o, cfg):
+            continue
+        if not await db.invoices().find_one({"order_id": o["_id"], **corrections.ACTIVE}):
+            continue          # nothing invoiced yet: the first invoice will carry them
+        try:
+            inv = await commerce.add_charges_to_invoice(node, cfg, o, SYSTEM)
+            await commerce.refresh_order_status(o["_id"])
+            done.append(f"{o.get('order_number')}: {inv.get('display_number')} now {inv['total']}")
+        except Exception as e:  # noqa: BLE001
+            skipped.append(f"{o.get('order_number')}: {getattr(e, 'detail', e)}")
+    return {"added": done, "skipped": skipped}
+
+
 async def run() -> list:
-    return [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
-            for r in REQUESTS]
+    out = [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
+           for r in REQUESTS]
+    out.append({"charges_onto_invoices": await charges_onto_invoices()})
+    return out
