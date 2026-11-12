@@ -1457,3 +1457,10 @@ async def test_left_off_charge_added_to_same_invoice(client):
         await db.invoices().count_documents({"order_id": o["_id"]}) == 1
     assert not await commerce.uninvoiced_charges(order, cfg)
     assert (await c.post(f"/api/p/orders/{o['_id']}/invoice-charges", headers=S["nb"])).status_code == 400
+
+
+async def test_delivery_fees_tile(client):
+    """Steven, 12 Nov 2026: delivery fees on the period's invoices, and how much of it is paid."""
+    t = await ok(await client.get("/api/p/dashboard/tiles", headers=S["nb"]))
+    f = t["delivery_fees"]
+    assert f["invoiced"] > 0 and f["count"] >= 1 and 0 <= f["paid"] <= f["invoiced"]

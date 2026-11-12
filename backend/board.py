@@ -433,6 +433,26 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
     invoices = {"invoiced": r2(inv_period), "outstanding": r2(outstanding), "overdue": r2(overdue),
                 "aging": {k: r2(v) for k, v in aging.items()}}
 
+    # delivery fees (Steven, 12 Nov 2026): what the delivery charges on this period's invoices
+    # brought in, separate from tank sales. Paid share follows each invoice's payments.
+    del_codes = {c["code"] for c in cfg.get("charges", [])
+                 if c.get("code", "").upper().startswith("DEL") or "deliver" in (c.get("name") or "").lower()}
+    fee_inv = fee_paid = 0.0
+    fee_n = 0
+    async for inv in db.invoices().find({"node_id": node_id, **ACTIVE}):
+        if not _in(inv["date"], rng):
+            continue
+        fee = sum(l.get("line_total", 0) for l in inv["lines"]
+                  if l.get("kind") == "charge" and (l.get("code") in del_codes
+                                                    or "deliver" in (l.get("name") or l.get("description") or "").lower()))
+        if fee <= 0:
+            continue
+        fee_n += 1
+        fee_inv += fee
+        share = min(1.0, (inv.get("amount_paid") or 0) / inv["total"]) if inv.get("total") else 0.0
+        fee_paid += fee * share
+    delivery_fees = {"paid": r2(fee_paid), "invoiced": r2(fee_inv), "count": fee_n}
+
     # payments
     by_method: dict = {}
     fenix_due = 0.0
@@ -454,7 +474,7 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
         payments["cash_on_hand"] = [{k: v for k, v in h.items() if k != "payment_ids"}
                                     for h in await commerce.cash_on_hand(node_id)]
     out = {"period": {"from": rng[0], "to": rng[1]}, "quotes": quotes, "to_deliver": to_deliver,
-           "deliveries": deliveries, "invoices": invoices, "payments": payments}
+           "deliveries": deliveries, "invoices": invoices, "delivery_fees": delivery_fees, "payments": payments}
     if include_fenix and commerce.fenix_model(cfg) == "fenix_owns_tanks":
         out["fenix"] = {"draw_due": r2(fenix_due)}
     return out

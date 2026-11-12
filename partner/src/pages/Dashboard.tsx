@@ -108,6 +108,12 @@ export default function Dashboard({ readOnlyNode }: { readOnlyNode?: string }) {
             <Stat label="Delivered" value={t.deliveries.delivered} sub={t.deliveries.failed ? `${t.deliveries.failed} failed` : undefined} onClick={() => go('deliveries', { delivery_status: ['delivered'] })} active={is('deliveries', 'delivery_status', ['delivered'])} />
             {t.deliveries.unpinned > 0 && <Stat label="Not pinned" value={t.deliveries.unpinned} sub="ask for a location" tone="red" onClick={() => go('deliveries', { unpinned: true })} active={is('deliveries', 'unpinned')} />}
           </Group>
+          {t.delivery_fees && (
+            <Group title="Delivery fees">
+              <Stat label="Paid" value={money0(t.delivery_fees.paid)} sub={`of ${money0(t.delivery_fees.invoiced)} invoiced`} />
+              <Stat label="Deliveries charged" value={t.delivery_fees.count} />
+            </Group>
+          )}
           <Group title={cfg.proforma ? 'Proformas' : 'Quotes'}>
             <Stat label="Open" value={t.quotes.open} sub={money0(t.quotes.open_value)} onClick={() => navigate('/quotes')} />
             {!cfg.proforma && <Stat label="Expiring 7 days" value={t.quotes.expiring_7d} onClick={() => navigate('/quotes')} />}
