@@ -37,7 +37,7 @@ export default function DeliveryDetail() {
         <div className="card p-4">
           <div className="label">Load</div>
           {d.lines.map((l: any, i: number) => <div key={i} className="text-sm">{l.quantity} × {lineLabel(cfg, { ...l, kind: 'tank' })}</div>)}
-          {d.collect_amount != null && <div className="mt-3 rounded-lg bg-violet-50 p-2 text-sm font-semibold text-violet-800">Collect {money(d.collect_amount)} on delivery
+          {(d.collect_amount || 0) > 0.004 && <div className="mt-3 rounded-lg bg-violet-50 p-2 text-sm font-semibold text-violet-800">Collect {money(d.collect_amount)} on delivery
             {d.collection && <span className="block font-normal">{d.collection.method === 'not_collected' ? `Not collected: ${d.collection.reason}` : `Collected ${money(d.collection.amount)} (${d.collection.method.replace('_', ' ')})`}</span>}</div>}
           <div className="mt-3 text-sm text-gray-600">Planned {date(d.planned_date)}{d.driver?.name ? ` · ${d.driver.name} ${d.driver.phone}` : ''}{d.vehicle_reg ? ` · ${d.vehicle_reg}` : ''}</div>
           {d.failed_reason && <div className="mt-2 text-sm text-red-700">Failed: {d.failed_reason}</div>}
@@ -65,7 +65,7 @@ export default function DeliveryDetail() {
       {live && (
         <div className="mt-4 flex flex-wrap gap-2">
           {d.delivery_status === 'scheduled' && <button className="btn-ghost" onClick={() => status('out_for_delivery')}>Mark out for delivery</button>}
-          {d.collect_amount != null && !d.collection && <button className="btn-ghost" onClick={() => setModal(<Collect dnId={d._id} amount={d.collect_amount} onClose={close} />)}>Record collection</button>}
+          {(d.collect_amount || 0) > 0.004 && !d.collection && <button className="btn-ghost" onClick={() => setModal(<Collect dnId={d._id} amount={d.collect_amount} onClose={close} />)}>Record collection</button>}
           {d.delivery_status !== 'failed' && <button className="btn-primary" onClick={() => setModal(<MarkDelivered dn={{ _id: d._id, dn_number: d.dn_number, collect_amount: d.collect_amount, collected: !!d.collection }} onClose={() => setModal(null)} onDone={close} />)}><Camera size={16} /> Mark delivered</button>}
           {d.delivery_status !== 'failed' && <button className="btn-danger" onClick={() => setModal(<Reason title="Couldn't deliver" onClose={() => setModal(null)} cta="Mark failed" onSave={(reason) => api.post(`/api/p/deliveries/${id}/status`, { status: 'failed', reason }).then(close)} />)}>Couldn't deliver</button>}
           {d.delivery_status === 'failed' && <button className="btn-primary" onClick={() => setModal(<Reschedule dnId={d._id} onClose={close} />)}>Reschedule</button>}

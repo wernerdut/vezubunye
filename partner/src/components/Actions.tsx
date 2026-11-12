@@ -234,7 +234,7 @@ export function MarkDelivered({ dn, onClose, onDone }: {
   dn: { _id: string; dn_number?: string; collect_amount?: number | null; collected?: boolean }
   onClose: () => void; onDone: () => void
 }) {
-  const needsCollection = dn.collect_amount != null && !dn.collected
+  const needsCollection = (dn.collect_amount || 0) > 0.004 && !dn.collected
   const [name, setName] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [method, setMethod] = useState('cash')

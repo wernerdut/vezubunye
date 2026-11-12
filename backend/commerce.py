@@ -697,6 +697,8 @@ async def write_dn(node: dict, cfg: dict, order: dict, raw: dict, user: dict, se
                        - sum(l["quantity"] for l in lines if l["order_line_id"] == ol["line_id"]) <= 0
                        for ol in order["lines"] if is_tank(ol))
             collect_amount = r2(max(0.0, balance if last else min(value, balance)))
+            if collect_amount <= PAY_TOL:
+                collect_amount = None      # already paid: nothing to collect (Steven, 12 Nov 2026)
         else:
             paid = await order_paid(order["_id"], session)
             out_value = 0.0
@@ -995,6 +997,12 @@ async def refresh_order_status(order_id: str, session=None):
     invs = [i async for i in db.invoices().find({"order_id": order_id}, session=session)]
     s = summarise(o, dns, invs, cfg)
     await db.orders().update_one({"_id": order_id}, {"$set": {"status": s["order_status"]}}, session=session)
+    # paid in full before the truck arrives: its notes have nothing left to collect
+    if s["balance"] <= PAY_TOL and s["invoiced"] > PAY_TOL:
+        await db.delivery_notes().update_many(
+            {"order_id": order_id, "collect_amount": {"$gt": PAY_TOL}, "collection": None,
+             "delivery_status": {"$ne": "delivered"}},
+            {"$set": {"collect_amount": None, "collect_cleared": "paid before delivery"}}, session=session)
 
 
 # ============================== quotes ============================== #
@@ -1501,7 +1509,7 @@ async def record_collection(node: dict, dn: dict, raw: dict, actor: dict) -> dic
     """What the driver collected on a pay-on-delivery note. Cash lands in cash on hand under the
     driver; a card-machine payment is a Yoco payment with source machine; not collected needs a
     reason and raises cod_not_collected."""
-    if dn.get("collect_amount") is None:
+    if (dn.get("collect_amount") or 0) <= PAY_TOL:
         raise HTTPException(400, "Nothing to collect on this delivery")
     if dn.get("collection"):
         raise HTTPException(400, "Collection already recorded")
@@ -1548,7 +1556,7 @@ async def capture_pod(dn: dict, raw: dict, actor: dict, photo: bytes | None = No
                       content_type: str = "image/jpeg") -> dict:
     """Proof of delivery: photo of the signed DN, receiver, time, GPS when the device allows.
     On a pay-on-delivery note, Delivered cannot complete until the collection is recorded."""
-    if dn.get("collect_amount") is not None and not dn.get("collection"):
+    if (dn.get("collect_amount") or 0) > PAY_TOL and not dn.get("collection"):
         raise HTTPException(400, "Record what was collected before marking delivered")
     if dn.get("delivery_status") == "delivered" and dn.get("pod"):
         raise HTTPException(400, "Proof of delivery already captured")

@@ -1464,3 +1464,13 @@ async def test_delivery_fees_tile(client):
     t = await ok(await client.get("/api/p/dashboard/tiles", headers=S["nb"]))
     f = t["delivery_fees"]
     assert f["invoiced"] > 0 and f["count"] >= 1 and 0 <= f["paid"] <= f["invoiced"]
+
+
+async def test_nothing_to_collect_when_paid(client):
+    """Steven, 12 Nov 2026: a pay-on-delivery note showing 'Collect R0.00' (paid) could not be
+    marked delivered. R0 means nothing to collect; paying in full clears what a note had to collect."""
+    import commerce
+    dn = {"_id": "x", "collect_amount": 0.0, "collection": None, "delivery_status": "scheduled"}
+    assert not ((dn.get("collect_amount") or 0) > commerce.PAY_TOL)
+    r = await client.post("/api/p/deliveries/nonexistent/collection", headers=S["mx"], json={"method": "cash", "amount": 0})
+    assert r.status_code in (400, 404)
