@@ -217,12 +217,19 @@ async def run() -> list:
         r = await cash_was_eft()
         await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
         out.append({"cash_was_eft": r})
-    if not await backups().find_one({"_id": "xero-accounts-makx"}):
-        try:
-            r = await xero_accounts()
-        except Exception as e:  # noqa: BLE001
-            r = {"failed": str(getattr(e, "message", e))[:300]}
-        if r.get("sales"):
-            await backups().insert_one({"_id": "xero-accounts-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
-        out.append({"xero_accounts": r})
     return out
+
+
+async def background():
+    """Slow one-offs (calls to Xero per invoice) run after startup, so the health check is not
+    held up: on 13 Nov 2026 doing this inside startup failed a deploy."""
+    key = "xero-accounts-makx-v2"
+    try:
+        if await backups().find_one({"_id": key}):
+            return
+        r = await xero_accounts()
+        if r.get("sales"):
+            await backups().insert_one({"_id": key, "at": datetime.utcnow(), "summary": r, "docs": {}})
+    except Exception as e:  # noqa: BLE001
+        r = {"failed": str(getattr(e, "message", e))[:300]}
+    print(f"cleanup background: {{'xero_accounts': {r}}}")

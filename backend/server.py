@@ -95,8 +95,10 @@ async def on_startup():
     except Exception as exc:  # noqa: BLE001
         print(f"powder_single_stock skipped: {exc}")
     try:
+        import asyncio
         import cleanup
         print(f"cleanup: {await cleanup.run()}")
+        asyncio.get_event_loop().create_task(cleanup.background())
     except Exception as exc:  # noqa: BLE001
         print(f"cleanup skipped: {exc}")
     import scheduler
