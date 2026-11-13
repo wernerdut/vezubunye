@@ -173,6 +173,41 @@ async def cod_invoices_ahead(slug: str = "makx") -> list:
     return out
 
 
+async def xero_accounts(slug: str = "makx", sales: str = "200", delivery: str = "210") -> dict:
+    """Pierre, 13 Nov 2026: tanks to account 200 (Sales), delivery fees to 210 (Shipping), tax
+    Standard Rate Sales 15% (the default code OUTPUT is South Africa's archived 14%). Sets the
+    Xero settings and resends the lines of invoices already in Xero. Accounts and the tax rate
+    are checked against the organisation's own lists first; nothing is guessed."""
+    import xero_mt
+    node = await db.nodes().find_one({"slug": slug})
+    c = await xero_mt.connection(node["node_id"]) if node else None
+    if not c or c.get("status") != "connected":
+        return {"skipped": "Xero not connected"}
+    await xero_mt.sync_reference(node["node_id"])
+    c = await xero_mt.connection(node["node_id"])
+    ref = c.get("reference") or {}
+    codes = {a["code"]: a["name"] for a in ref.get("accounts", [])}
+    missing = [x for x in (sales, delivery) if x not in codes]
+    if missing:
+        return {"refused": f"account {', '.join(missing)} not in Xero"}
+    rates = [t for t in ref.get("tax_rates", []) if abs(t["rate"] - 15) < 0.01
+             and "sales" in t["name"].lower() and "standard" in t["name"].lower()]
+    if len(rates) != 1:
+        return {"refused": f"15% standard sales rate not found once: {[t['name'] for t in rates]}"}
+    cfg = await db.node_config().find_one({"node_id": node["node_id"]})
+    s = {**xero_mt.default_settings(), **(c.get("settings") or {})}
+    before = {k: s.get(k) for k in ("sales_accounts", "charge_accounts", "tax_type")}
+    s["sales_accounts"] = {"water": sales, "septic": sales}
+    s["charge_accounts"] = {ch["code"]: delivery for ch in cfg.get("charges", [])}
+    s["tax_type"] = rates[0]["tax_type"]
+    await xero_mt.conns().update_one({"node_id": node["node_id"]}, {"$set": {"settings": s}})
+    await audit.log(SYSTEM, node["node_id"], "update", "xero_settings", None, before=before,
+                    after={k: s[k] for k in before})
+    lines = await xero_mt.update_all_lines(node["node_id"])
+    return {"sales": f"{sales} {codes[sales]}", "delivery": f"{delivery} {codes[delivery]}",
+            "tax": f"{rates[0]['tax_type']} {rates[0]['name']}", "charges": list(s["charge_accounts"]), **lines}
+
+
 async def run() -> list:
     out = [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
            for r in REQUESTS]
@@ -182,4 +217,12 @@ async def run() -> list:
         r = await cash_was_eft()
         await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
         out.append({"cash_was_eft": r})
+    if not await backups().find_one({"_id": "xero-accounts-makx"}):
+        try:
+            r = await xero_accounts()
+        except Exception as e:  # noqa: BLE001
+            r = {"failed": str(getattr(e, "message", e))[:300]}
+        if r.get("sales"):
+            await backups().insert_one({"_id": "xero-accounts-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
+        out.append({"xero_accounts": r})
     return out
