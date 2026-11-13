@@ -170,7 +170,7 @@ async def callback(code: str, state: str) -> dict:
 def default_settings() -> dict:
     return {"post_status": "DRAFT", "sales_accounts": {"water": "", "septic": ""}, "charge_accounts": {},
             "tax_type": "OUTPUT", "bill_tax_type": "INPUT", "yoco_in_xero": "match", "yoco_clearing_account": "",
-            "cash_account": "",
+            "cash_account": "", "post_payments": False,
             "tracking_category_id": None, "tracking_option_id": None}
 
 
@@ -456,6 +456,41 @@ async def post_invoice(invoice_id: str) -> dict:
         return {"failed": e.message}
 
 
+async def update_lines(invoice_id: str) -> dict:
+    """Resend the line items (and so their accounts: tanks to sales, delivery to its own account)
+    of an invoice already in Xero. Xero refuses once it is paid; that is reported, not forced."""
+    inv = await db.invoices().find_one({"_id": invoice_id})
+    xid = ((inv or {}).get("xero") or {}).get("invoice_id")
+    if not xid or inv.get("void"):
+        return {"skipped": True}
+    node_id = inv["node_id"]
+    c = await connection(node_id)
+    if not c:
+        return {"skipped": "no_xero"}
+    import commerce
+    cfg = await commerce.get_cfg(node_id)
+    settings = c.get("settings") or default_settings()
+    body = invoice_payload(inv, cfg, settings, "", "DRAFT")["Invoices"][0]
+    try:
+        await request(node_id, "POST", f"Invoices/{xid}", json_body={"Invoices": [{
+            "InvoiceID": xid, "LineAmountTypes": body["LineAmountTypes"], "LineItems": body["LineItems"]}]})
+        await db.invoices().update_one({"_id": invoice_id}, {"$set": {"xero.lines_updated_at": _now()}})
+        return {"updated": True}
+    except (XeroApiError, XeroAuthError) as e:
+        return {"failed": getattr(e, "message", str(e))}
+
+
+async def update_all_lines(node_id: str) -> dict:
+    out = {"updated": 0, "failed": []}
+    async for inv in db.invoices().find({"node_id": node_id, "xero.invoice_id": {"$exists": True}, **ACTIVE}):
+        r = await update_lines(inv["_id"])
+        if r.get("updated"):
+            out["updated"] += 1
+        elif r.get("failed"):
+            out["failed"].append(f"{inv.get('display_number')}: {r['failed']}")
+    return out
+
+
 async def logo_png(node_id: str) -> bytes | None:
     a = await db.brand_assets().find_one({"node_id": node_id, "kind": "logo_light_png"})
     return base64.b64decode(a["content_b64"]) if a else None
@@ -468,10 +503,16 @@ def yoco_mode(c: dict | None) -> str:
 
 
 async def queue_payment(node_id: str, payment_id: str):
-    """Mark a Yoco or cash payment for posting; post now when connected."""
+    """Payments are not sent to Xero (Werner, 13 Nov 2026): Pierre reconciles the bank in Xero
+    himself. Every payment waits there to be matched; what he reconciles is pulled back and linked
+    to the payment captured here, never doubled. (post_payments true restores posting.)"""
     p = await db.payments().find_one({"_id": payment_id})
     c = await connection(node_id)
     if not p or not c:
+        return
+    if not (c.get("settings") or {}).get("post_payments"):
+        if not p.get("xero_payment_id"):
+            await db.payments().update_one({"_id": payment_id}, {"$set": {"xero_status": "match_in_xero"}})
         return
     if p.get("method") == "eft" and not p.get("xero_payment_id"):
         # keyed in the app when it showed in the bank: Xero gets it when the bank line is matched
@@ -595,7 +636,9 @@ async def pull_invoice_payments(node_id: str) -> dict:
 async def _link_yoco(node_id: str, invoice_id: str, xp: dict) -> bool:
     """Link a Xero payment to the oldest payment on this invoice that waits to be matched in
     Xero: a Yoco payment (in "match" mode) or an EFT keyed in the app when it showed in the bank."""
-    methods = ["eft"] + (["yoco"] if yoco_mode(await connection(node_id)) == "match" else [])
+    c = await connection(node_id)
+    methods = ["eft"] + (["yoco"] if yoco_mode(c) == "match" else []) + \
+        ([] if ((c or {}).get("settings") or {}).get("post_payments") else ["cash", "yoco"])
     async for p in db.payments().find({"node_id": node_id, "method": {"$in": methods}, "allocations.invoice_id": invoice_id,
                                        "xero_payment_id": {"$in": [None]},
                                        f"xero_payment_ids.{invoice_id}": {"$exists": False}, **ACTIVE}).sort("created_at", 1):
@@ -631,7 +674,11 @@ async def process_queue(node_id: str) -> dict:
                                                   "xero.void_sent": {"$ne": True}}]}):
         if (await post_invoice(inv["_id"])).get("posted"):
             out["invoices"] += 1
+    c = await connection(node_id)
     async for p in db.payments().find({"node_id": node_id, "xero_status": {"$in": ["queued", "waiting"]}, **ACTIVE}):
+        if not ((c or {}).get("settings") or {}).get("post_payments"):
+            await db.payments().update_one({"_id": p["_id"]}, {"$set": {"xero_status": "match_in_xero"}})
+            continue
         if (await post_payment(p["_id"])).get("posted") is not None:
             out["payments"] += 1
     import bills

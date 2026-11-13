@@ -1474,3 +1474,22 @@ async def test_nothing_to_collect_when_paid(client):
     assert not ((dn.get("collect_amount") or 0) > commerce.PAY_TOL)
     r = await client.post("/api/p/deliveries/nonexistent/collection", headers=S["mx"], json={"method": "cash", "amount": 0})
     assert r.status_code in (400, 404)
+
+
+async def test_cash_was_eft_and_no_payments_to_xero(client):
+    """Werner, 13 Nov 2026: EFTs Steven captured as cash become EFT (not cash on hand); driver
+    cash stays cash. Payments are never posted to Xero: they wait to be matched there."""
+    import cleanup
+    import commerce
+    import uuid
+    p1 = {"_id": uuid.uuid4().hex, "node_id": "makulu", "method": "cash", "amount": 100.0, "date": today(),
+          "holder": {"type": "staff", "name": "Steven"}, "allocations": [], "created_at": datetime.utcnow()}
+    p2 = {**p1, "_id": uuid.uuid4().hex, "holder": {"type": "driver", "name": "Tapiwa"}}
+    await db.payments().insert_many([p1, p2])
+    await db.nodes().update_one({"node_id": "makulu"}, {"$set": {"slug": "makx"}})
+    r = await cleanup.cash_was_eft()
+    assert any("R100.00" in x for x in r["changed"])
+    assert (await db.payments().find_one({"_id": p1["_id"]}))["method"] == "eft"
+    assert (await db.payments().find_one({"_id": p2["_id"]}))["method"] == "cash"
+    held = await commerce.cash_on_hand("makulu")
+    assert not any(p1["_id"] in (h.get("payment_ids") or []) for h in held)

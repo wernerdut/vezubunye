@@ -130,8 +130,36 @@ async def charges_onto_invoices(slug: str = "makx") -> dict:
     return {"added": done, "skipped": skipped}
 
 
+async def cash_was_eft(slug: str = "makx") -> dict:
+    """Werner, 13 Nov 2026: with no EFT option in Record payment, Steven captured EFTs as cash,
+    so cash on hand showed money he never held. Cash he recorded himself (not driver collections),
+    not banked and not in Xero, becomes EFT waiting to be matched in Xero."""
+    node = await db.nodes().find_one({"slug": slug})
+    if not node:
+        return {}
+    done = []
+    async for p in db.payments().find({"node_id": node["node_id"], "method": "cash", "deposit_id": None,
+                                       "dn_id": None, "xero_payment_id": None, **corrections.ACTIVE}):
+        h = p.get("holder") or {}
+        if h.get("type") == "driver" or p.get("posted_to_xero") or p.get("xero_payment_ids"):
+            continue
+        ref = (p.get("reference") or "").strip()
+        upd = {"method": "eft", "holder": None, "xero_status": "match_in_xero", "was_cash": True,
+               "reference": ref or "EFT (captured as cash)"}
+        await db.payments().update_one({"_id": p["_id"]}, {"$set": upd})
+        await audit.log(SYSTEM, node["node_id"], "update", "payments", p["_id"],
+                        before={"method": "cash", "holder": p.get("holder")},
+                        after={**upd, "reason": "EFT captured as cash before EFT was offered"})
+        done.append(f"{p.get('date')} R{p['amount']:,.2f} {ref}".strip())
+    return {"changed": done}
+
+
 async def run() -> list:
     out = [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
            for r in REQUESTS]
     out.append({"charges_onto_invoices": await charges_onto_invoices()})
+    if not await backups().find_one({"_id": "cash-was-eft-makx"}):
+        r = await cash_was_eft()
+        await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
+        out.append({"cash_was_eft": r})
     return out

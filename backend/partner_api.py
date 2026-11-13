@@ -1496,6 +1496,10 @@ async def xero_settings(payload: dict, user: dict = Depends(partner_admin)):
         raise HTTPException(400, "Yoco in Xero is match or clearing")
     await xero_mt.conns().update_one({"node_id": user["node_id"]}, {"$set": {"settings": s}})
     await audit.log(user, user["node_id"], "update", "xero_settings", None, before=c.get("settings"), after=s)
+    old = c.get("settings") or {}
+    if (old.get("sales_accounts"), old.get("charge_accounts")) != (s.get("sales_accounts"), s.get("charge_accounts")):
+        # accounts changed: invoices already in Xero get their lines split onto them too
+        s = {**s, "_lines": await xero_mt.update_all_lines(user["node_id"])}
     return s
 
 
