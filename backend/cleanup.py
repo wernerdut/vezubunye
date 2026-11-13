@@ -154,10 +154,30 @@ async def cash_was_eft(slug: str = "makx") -> dict:
     return {"changed": done}
 
 
+async def cod_invoices_ahead(slug: str = "makx") -> list:
+    """Read only: pay on delivery invoices made before delivery (before 13 Nov 2026), unpaid and
+    not delivered yet. Listed so Werner can decide what to do with them; nothing is changed."""
+    node = await db.nodes().find_one({"slug": slug})
+    out = []
+    if not node:
+        return out
+    async for o in db.orders().find({"node_id": node["node_id"], "pay_on_delivery": True, "status": "open"}):
+        if await db.delivery_notes().find_one({"order_id": o["_id"], "delivery_status": "delivered", **corrections.ACTIVE}):
+            continue
+        async for i in db.invoices().find({"order_id": o["_id"], **corrections.ACTIVE}):
+            if (i.get("amount_paid") or 0) > 0.004:
+                continue
+            x = i.get("xero") or {}
+            out.append(f"{i.get('display_number')} {o.get('order_number')} {o.get('customer_name')} "
+                       f"R{i['total']:,.2f} xero={'yes' if x.get('invoice_id') else 'no'}")
+    return out
+
+
 async def run() -> list:
     out = [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
            for r in REQUESTS]
     out.append({"charges_onto_invoices": await charges_onto_invoices()})
+    out.append({"cod_invoices_ahead": await cod_invoices_ahead()})
     if not await backups().find_one({"_id": "cash-was-eft-makx"}):
         r = await cash_was_eft()
         await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})

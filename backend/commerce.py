@@ -276,7 +276,9 @@ async def create_order(node: dict, cfg: dict, customer: dict, raw: dict, user: d
     await db.orders().insert_one(order, session=session)
     if not legacy:
         await touch_customer(customer["_id"], order["date"], session=session)
-    if basis == "upfront" and not legacy:
+    # pay on delivery (Werner, 13 Nov 2026): no invoice yet, or it shows as outstanding before the
+    # tanks have gone. ensure_order_invoice makes it when it is delivered, collected or paid.
+    if basis == "upfront" and not legacy and not cod:
         await create_invoice(node, cfg, order, order["lines"], user, session=session)
     await audit.log(user, node_id, "create", "orders", order["_id"], after=order, session=session)
     return order
@@ -1107,6 +1109,13 @@ async def invoice_proforma(node: dict, quote: dict, user: dict, payment: dict | 
     quote = await set_quote_status(node, quote, "accepted", user, order_raw=order_raw)
     order = quote["order"]
     inv = await db.invoices().find_one({"order_id": order["_id"], "dn_id": None, **ACTIVE})
+    if not inv and order.get("pay_on_delivery") and not payment and not await held_payments(quote["_id"]):
+        # pay on delivery, nothing received: the order is made, the tax invoice follows on delivery
+        return {"payment": None, "held_payment_ids": [], "order_id": order["_id"],
+                "order_number": order.get("order_number"), "invoice_id": None, "invoice_number": None,
+                "invoice_on_delivery": True}
+    if not inv:
+        inv = await ensure_order_invoice(order, user)
     if not inv:
         raise HTTPException(400, "The order has no invoice")
     held_ids = await allocate_held(quote, inv, user)
@@ -1345,6 +1354,31 @@ async def cancel_remainder(node: dict, order: dict, user: dict, reason: str) -> 
     return o
 
 
+async def ensure_order_invoice(order: dict, actor: dict) -> dict | None:
+    """The one tax invoice of an upfront order, made now if it does not exist yet (a pay on
+    delivery order has none until it is delivered, collected or paid). Dated today, sent to Xero
+    when connected. None for terms and legacy orders."""
+    if order.get("payment_basis") != "upfront" or order.get("legacy") or order.get("status") == "cancelled":
+        return None
+    inv = await db.invoices().find_one({"order_id": order["_id"], "dn_id": None, **ACTIVE})
+    if inv:
+        return inv
+    node = await db.nodes().find_one({"node_id": order["node_id"]})
+    cfg = await recon.get_config(order["node_id"])
+    lines = [pricing.price_line({**ol, "qty": ol["qty"] - ol.get("qty_cancelled", 0)}, cfg)
+             for ol in order["lines"] if ol["qty"] - ol.get("qty_cancelled", 0) > 0]
+    if not lines:
+        return None
+    inv = await create_invoice(node, cfg, order, lines, actor, inv_date=today())
+    await refresh_order_status(order["_id"])
+    try:
+        import xero_mt
+        await xero_mt.post_invoice(inv["_id"])
+    except Exception as e:  # noqa: BLE001  (stays queued; nothing is lost)
+        print(f"[xero] invoice post deferred: {e}")
+    return await db.invoices().find_one({"_id": inv["_id"]})
+
+
 async def invoice_on_delivery(dn: dict, actor: dict) -> dict | None:
     """Terms (Steven, 11 Nov 2026): a delivery is invoiced when it is delivered, not when it is
     booked. Dated the delivery day, so the terms run from delivery. Returns the new invoice (the
@@ -1352,6 +1386,9 @@ async def invoice_on_delivery(dn: dict, actor: dict) -> dict | None:
     if not dn.get("order_id") or dn.get("void"):
         return None
     order = await db.orders().find_one({"_id": dn["order_id"]})
+    if order and order.get("payment_basis") == "upfront":
+        await ensure_order_invoice(order, actor)      # pay on delivery: invoiced now it is delivered
+        return None
     if not order or order.get("payment_basis") != "terms":
         return None
     if await db.invoices().find_one({"dn_id": dn["_id"], **ACTIVE}):
@@ -1515,7 +1552,8 @@ async def record_collection(node: dict, dn: dict, raw: dict, actor: dict) -> dic
         raise HTTPException(400, "Collection already recorded")
     method = raw.get("method")
     node_id = node["node_id"]
-    inv = await db.invoices().find_one({"order_id": dn["order_id"], "dn_id": None, **ACTIVE})
+    order = await db.orders().find_one({"_id": dn["order_id"]})
+    inv = await ensure_order_invoice(order, actor) if order else None    # the money is in: invoice it
     coll: dict = {"method": method, "at": now(), "by": actor["email"]}
     if method in ("cash", "yoco_machine"):
         amount = r2(raw.get("amount") or 0)

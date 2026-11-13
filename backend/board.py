@@ -420,8 +420,16 @@ async def tiles(node_id: str, rng: tuple[str, str], include_cash: bool, include_
     # invoices + aging
     inv_period = outstanding = overdue = 0.0
     aging = {"current": 0.0, "d30": 0.0, "d60": 0.0, "d90": 0.0}
+    # pay on delivery invoices made before 13 Nov 2026 exist ahead of delivery: until the order
+    # has a delivered note or a payment they are not owed yet, so not invoiced or outstanding
+    cod_waiting = set()
+    async for o in db.orders().find({"node_id": node_id, "pay_on_delivery": True, "status": "open"}, {"_id": 1}):
+        if not await db.delivery_notes().find_one({"order_id": o["_id"], "delivery_status": "delivered", **ACTIVE}):
+            cod_waiting.add(o["_id"])
     for r in await invoice_rows(node_id):
         if r["status"] == "void":
+            continue
+        if r.get("order_id") in cod_waiting and r["balance"] >= r["total"] - commerce.PAY_TOL:
             continue
         if _in(r["date"], rng):
             inv_period += r["total"]

@@ -385,7 +385,10 @@ async def test_pay_on_delivery_and_driver(client):
     o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
         "customer_id": S["mx_cust"]["_id"], "pay_on_delivery": True, "cod_method": "either",
         "lines": [{"tank_type": "W5000", "colour": "EMERALD", "qty": 2, "unit_price": 4400}, {"kind": "charge", "code": "DEL50"}]}))
-    assert o["pay_on_delivery"] and o["payment_status"] == "unpaid"
+    # pay on delivery (Werner, 13 Nov 2026): no invoice until it is delivered, collected or paid,
+    # so nothing shows as outstanding ahead of the delivery
+    assert o["pay_on_delivery"] and o["payment_status"] == "not_invoiced" and not o["invoices"]
+    out0 = (await ok(await c.get("/api/p/dashboard/tiles", headers=S["mx"])))["invoices"]["outstanding"]
     lid = o["order_lines"][0]["line_id"]
     dn = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
         "lines": [{"order_line_id": lid, "quantity": 1}], "driver": {"name": "Jimmy", "phone": "+27 67 046 3659"}}))
@@ -404,7 +407,11 @@ async def test_pay_on_delivery_and_driver(client):
     # delivered cannot complete without a collection
     r = await c.post(f"/api/d/{tok}/delivered", data={"receiver_name": "Pieter"})
     assert r.status_code == 400
+    assert not await db.invoices().find_one({"order_id": o["_id"]})       # booked and out, still no invoice
+    assert (await ok(await c.get("/api/p/dashboard/tiles", headers=S["mx"])))["invoices"]["outstanding"] == out0
     await ok(await c.post(f"/api/d/{tok}/collection", json={"method": "cash", "amount": 4400}))
+    made = await db.invoices().find_one({"order_id": o["_id"]})
+    assert made and made["date"] == today() and made["amount_paid"] == 4400.0   # invoiced when the money came in
     v = await ok(await c.post(f"/api/d/{tok}/delivered", data={"receiver_name": "Pieter", "lat": "-33.9", "lng": "18.6"},
                               files={"file": ("pod.jpg", b"\xff\xd8\xff fake", "image/jpeg")}))
     assert v["status"] == "delivered" and v["pod"]
@@ -1493,3 +1500,24 @@ async def test_cash_was_eft_and_no_payments_to_xero(client):
     assert (await db.payments().find_one({"_id": p2["_id"]}))["method"] == "cash"
     held = await commerce.cash_on_hand("makulu")
     assert not any(p1["_id"] in (h.get("payment_ids") or []) for h in held)
+
+
+
+async def test_pay_on_delivery_paid_early_and_proforma(client):
+    """Pay on delivery, paid by EFT before the truck leaves: Record payment on the order makes
+    the tax invoice then. A proforma turned into a pay on delivery order with nothing paid makes
+    the order only."""
+    c = client
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "pay_on_delivery": True,
+        "lines": [{"tank_type": "W2300", "colour": "SAHARA", "qty": 1}]}))
+    assert not o["invoices"]
+    p = await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": o["value"], "reference": "FNB 1", "order_id": o["_id"]}))
+    ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
+    assert len(ov["invoices"]) == 1 and ov["payment_status"] == "paid" and p["allocations"][0]["invoice_id"] == ov["invoices"][0]["_id"]
+    q = await ok(await c.post("/api/p/quotes", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W2300", "colour": "SAHARA", "qty": 1}]}))
+    r = await ok(await c.post(f"/api/p/quotes/{q['_id']}/invoice", headers=S["mx"], json={"payment": None, "pay_on_delivery": True}))
+    assert r["invoice_id"] is None and r["invoice_on_delivery"] and r["order_id"]
+    assert not await db.invoices().find_one({"order_id": r["order_id"]})

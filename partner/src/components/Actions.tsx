@@ -138,8 +138,8 @@ export function ScheduleDelivery({ orderId, onClose, onDone }: { orderId: string
 }
 
 /** Cash, Yoco card machine or EFT (non-Xero) receipt, with editable allocation. */
-export function RecordPayment({ customerId, invoiceId, defaultAmount, onClose, onDone, methods }: {
-  customerId: string; invoiceId?: string; defaultAmount?: number; onClose: () => void; onDone: () => void; methods?: string[]
+export function RecordPayment({ customerId, invoiceId, orderId, defaultAmount, onClose, onDone, methods }: {
+  customerId: string; invoiceId?: string; orderId?: string; defaultAmount?: number; onClose: () => void; onDone: () => void; methods?: string[]
 }) {
   // EFT is always offered (Steven, 13 Nov 2026); with Xero connected it goes to Xero as a payment
   // and is matched to the bank line there
@@ -152,7 +152,7 @@ export function RecordPayment({ customerId, invoiceId, defaultAmount, onClose, o
   const [alloc, setAlloc] = useState<Record<string, number>>({})
   const a = useAction()
   useEffect(() => {
-    if (!amount) return
+    if (!amount || orderId) return      // orderId: the order's tax invoice is made on save
     api.get('/api/p/payments/allocation-preview', { params: { customer_id: customerId, amount } }).then((r) => {
       setPreview(r.data)
       const m: Record<string, number> = {}
@@ -165,7 +165,7 @@ export function RecordPayment({ customerId, invoiceId, defaultAmount, onClose, o
   const total = Object.values(alloc).reduce((s, v) => s + (v || 0), 0)
   const save = () => a.run(async () => {
     await api.post('/api/p/payments', {
-      method, amount, reference, date: d, customer_id: customerId,
+      method, amount, reference, date: d, customer_id: customerId, ...(orderId ? { order_id: orderId } : {}),
       allocations: Object.entries(alloc).filter(([, v]) => v > 0).map(([invoice_id, amount]) => ({ invoice_id, amount })),
     })
     onDone()
@@ -185,6 +185,7 @@ export function RecordPayment({ customerId, invoiceId, defaultAmount, onClose, o
           <Field label="Date"><input type="date" className="input" value={d} onChange={(e) => setD(e.target.value)} /></Field>
         </div>
         {method !== 'cash' && <Field label={method === 'eft' ? 'Bank reference' : 'Slip reference'}><input className="input" value={reference} onChange={(e) => setReference(e.target.value)} /></Field>}
+        {orderId && <p className="text-sm text-gray-600">The tax invoice for this order is made when you save, with this payment on it.</p>}
         {preview && preview.open_invoices.length > 0 && (
           <div>
             <div className="label">Allocate to</div>

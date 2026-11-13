@@ -20,6 +20,7 @@ export default function OrderDetail() {
   if (!o) return <Spinner />
   const close = () => { setModal(null); load() }
   const inv = o.invoices.find((i: any) => !i.void && i.status !== 'paid')
+  const noInvoiceYet = o.pay_on_delivery && o.order_status === 'open' && !o.invoices.some((i: any) => !i.void)
   const sched = o.delivery_notes.find((d: any) => !d.void && d.delivery_status === 'scheduled')
   const onRoad = o.delivery_notes.filter((d: any) => !d.void && (d.delivery_status === 'scheduled' || d.delivery_status === 'out_for_delivery'))
   const markBtn = (d: any) => <button key={d._id} className="btn-primary" onClick={() => setModal(
@@ -107,7 +108,9 @@ export default function OrderDetail() {
         <div className="card">
           <div className="flex items-center justify-between border-b p-3"><h2 className="font-bold">Invoices and payments</h2>
             {inv && <button className="btn-ghost btn-sm" onClick={() => setModal(<RecordPayment customerId={o.customer_id} invoiceId={inv._id} defaultAmount={inv.total - inv.amount_paid} onClose={() => setModal(null)} onDone={close} />)}>Record payment</button>}
+            {noInvoiceYet && <button className="btn-ghost btn-sm" onClick={() => setModal(<RecordPayment customerId={o.customer_id} orderId={o._id} defaultAmount={o.value} onClose={() => setModal(null)} onDone={close} />)}>Record payment</button>}
           </div>
+          {noInvoiceYet && <p className="border-b p-3 text-sm text-gray-600">Pay on delivery: the tax invoice is made when the delivery is marked delivered, or when a payment is recorded.</p>}
           {o.invoices.map((i: any) => (
             <div key={i._id} className={`flex items-center justify-between gap-2 border-b p-3 ${i.void ? 'opacity-50' : ''}`}>
               <button className="min-w-0 text-left text-sm" onClick={() => navigate(`/invoices/${i._id}`)}>

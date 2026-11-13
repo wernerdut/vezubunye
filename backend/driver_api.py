@@ -107,7 +107,8 @@ async def pay_link(token: str):
     dn, node = await resolve(token)
     if not dn.get("collect_amount"):
         raise HTTPException(400, "Nothing to collect on this delivery")
-    inv = await db.invoices().find_one({"order_id": dn["order_id"], "dn_id": None, "void": {"$exists": False}})
+    order = await db.orders().find_one({"_id": dn["order_id"]})
+    inv = await commerce.ensure_order_invoice(order, actor(dn)) if order else None
     if not inv:
         raise HTTPException(400, "No invoice to pay")
     pl = await yoco.pay_link(node, inv, actor(dn), dn_id=dn["_id"], mark_sent=True)

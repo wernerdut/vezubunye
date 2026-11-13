@@ -114,9 +114,18 @@ function CreateTaxInvoice({ q, onClose, onOpenOrder }: { q: any; onClose: () => 
   const save = () => a.run(async () => {
     const r = await api.post(`/api/p/quotes/${q._id}/invoice`, {
       payment: paid ? { method, amount: Number(amount), reference: reference || undefined } : null, pay_on_delivery: cod && owed > 0.004, cod_method: codMethod })
-    const share = (await api.post(`/api/p/invoices/${r.data.invoice_id}/share`)).data
+    const share = r.data.invoice_id ? (await api.post(`/api/p/invoices/${r.data.invoice_id}/share`)).data : null
     setDone({ ...r.data, share })
   }, errMsg)
+  const later = cod && !paid && !(byCard > 0)     // pay on delivery, nothing received: invoice on delivery
+  if (done && !done.invoice_id) {
+    return (
+      <Modal title={`Order ${done.order_number}`} onClose={onClose}>
+        <p className="mb-3 text-sm text-gray-600">Order {done.order_number} is made, pay on delivery. The tax invoice is made by itself when the delivery is marked delivered (or as soon as a payment is recorded), so it does not show as outstanding before then.</p>
+        <div className="mt-4 flex justify-end"><button className="btn-primary" onClick={() => onOpenOrder(done.order_id)}>Open order</button></div>
+      </Modal>
+    )
+  }
   if (done) {
     return (
       <Modal title={`Tax invoice ${done.invoice_number}`} onClose={onClose}>
@@ -148,10 +157,10 @@ function CreateTaxInvoice({ q, onClose, onOpenOrder }: { q: any; onClose: () => 
           {['cash', 'yoco', 'either'].map((m) => <button key={m} className={codMethod === m ? 'btn-dark btn-sm' : 'btn-ghost btn-sm'} onClick={() => setCodMethod(m)}>{m === 'yoco' ? 'Card (Yoco)' : m === 'either' ? 'Cash or card' : 'Cash'}</button>)}
         </div> : <p className="mt-1 text-xs text-gray-500">Not ticked: the tanks only leave once paid.</p>}
       </div>}
-      <p className="mt-3 text-xs text-gray-500">This makes the order and its tax invoice, same lines and prices as the proforma.</p>
+      <p className="mt-3 text-xs text-gray-500">{later ? 'This makes the order, same lines and prices as the proforma. The tax invoice is made when it is delivered.' : 'This makes the order and its tax invoice, same lines and prices as the proforma.'}</p>
       <ErrorBox msg={a.error} />
       <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Back</button>
-        <button className="btn-primary" disabled={a.busy || (paid && !(Number(amount) > 0)) || (method === 'yoco_machine' && !reference)} onClick={save}>Create tax invoice</button></div>
+        <button className="btn-primary" disabled={a.busy || (paid && !(Number(amount) > 0)) || (method === 'yoco_machine' && !reference)} onClick={save}>{later ? 'Create order' : 'Create tax invoice'}</button></div>
     </Modal>
   )
 }

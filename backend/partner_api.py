@@ -536,7 +536,8 @@ async def invoice_proforma(quote_id: str, payload: dict, user: dict = Depends(cu
                "holder": {"type": "staff", "name": user.get("name") or user["email"]} if method == "cash" else None}
     out = await commerce.invoice_proforma(node, q, user, raw, {"pay_on_delivery": bool(payload.get("pay_on_delivery")),
                                                                "cod_method": payload.get("cod_method") or "either"})
-    await _xero_invoice(out["invoice_id"])
+    if out.get("invoice_id"):
+        await _xero_invoice(out["invoice_id"])
     for pid in out.get("held_payment_ids") or []:
         await _xero_payment(node["node_id"], pid)
     if out.get("payment"):
@@ -1120,6 +1121,14 @@ async def capture_payment(payload: dict, user: dict = Depends(current_partner)):
         raise HTTPException(400, "Enter the card-machine slip reference")
     if method == "eft" and not (payload.get("reference") or "").strip():
         raise HTTPException(400, "Enter the bank reference of the EFT")
+    if payload.get("order_id") and not payload.get("allocations"):
+        # paid before delivery on a pay on delivery order: its tax invoice is made now
+        o = await commerce.order_or_404(node["node_id"], payload["order_id"])
+        inv = await commerce.ensure_order_invoice(o, user)
+        if inv:
+            amt = float(payload.get("amount") or 0)
+            payload = {**payload, "customer_id": o["customer_id"], "allocations": [
+                {"invoice_id": inv["_id"], "amount": round(min(amt, max(inv.get("balance", inv["total"]), 0)), 2)}]}
     raw = {**payload, "method": "yoco" if method == "yoco_machine" else method,
            "source": "machine" if method == "yoco_machine" else None,
            "holder": {"type": "staff", "name": user.get("name") or user["email"]} if method == "cash" else None}
