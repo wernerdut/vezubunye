@@ -191,7 +191,7 @@ async def xero_accounts(slug: str = "makx", sales: str = "200", delivery: str = 
     if missing:
         return {"refused": f"account {', '.join(missing)} not in Xero"}
     rates = [t for t in ref.get("tax_rates", []) if abs(t["rate"] - 15) < 0.01
-             and "sales" in t["name"].lower() and "standard" in t["name"].lower()]
+             and t["name"].strip().lower() == "standard rate sales"]      # not "... - Capital Goods"
     if len(rates) != 1:
         return {"refused": f"15% standard sales rate not found once: {[t['name'] for t in rates]}"}
     cfg = await db.node_config().find_one({"node_id": node["node_id"]})
