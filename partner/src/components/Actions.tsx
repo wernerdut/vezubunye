@@ -141,8 +141,9 @@ export function ScheduleDelivery({ orderId, onClose, onDone }: { orderId: string
 export function RecordPayment({ customerId, invoiceId, defaultAmount, onClose, onDone, methods }: {
   customerId: string; invoiceId?: string; defaultAmount?: number; onClose: () => void; onDone: () => void; methods?: string[]
 }) {
-  const { me } = useApp()
-  const allowed = methods || ['cash', 'yoco_machine', ...(me.features.xero ? [] : ['eft'])]
+  // EFT is always offered (Steven, 13 Nov 2026); with Xero connected it goes to Xero as a payment
+  // and is matched to the bank line there
+  const allowed = methods || ['eft', 'cash', 'yoco_machine']
   const [method, setMethod] = useState(allowed[0])
   const [amount, setAmount] = useState<number>(defaultAmount || 0)
   const [reference, setReference] = useState('')

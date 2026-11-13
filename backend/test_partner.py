@@ -1209,7 +1209,7 @@ async def test_collect_and_card_links_off(client):
     early = await c.post(f"/api/p/orders/{o['_id']}/collected", headers=S["mx"], json={"receiver_name": "Koos"})
     assert early.status_code in (400, 403) and "Paid" in early.text or ov["next_action"]["code"] != "ready_for_collection"
     await ok(await c.post("/api/p/payments", headers=S["mx"], json={
-        "method": "eft", "amount": ov["value"], "invoice_id": ov["invoices"][0]["_id"], "customer_id": S["mx_cust"]["_id"]}))
+        "method": "eft", "amount": ov["value"], "reference": "EFT 1", "invoice_id": ov["invoices"][0]["_id"], "customer_id": S["mx_cust"]["_id"]}))
     ov = await ok(await c.get(f"/api/p/orders/{o['_id']}", headers=S["mx"]))
     assert ov["next_action"]["code"] == "ready_for_collection" and ov["next_action"]["label"] == "Ready for collection"
     row = next(r for r in (await ok(await c.get('/api/p/dashboard/board/orders?filters={}', headers=S["mx"])))["rows"] if r["_id"] == o["_id"])

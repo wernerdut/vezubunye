@@ -1118,6 +1118,8 @@ async def capture_payment(payload: dict, user: dict = Depends(current_partner)):
         raise HTTPException(400, "Method is cash, yoco_machine or eft")
     if method == "yoco_machine" and not payload.get("reference"):
         raise HTTPException(400, "Enter the card-machine slip reference")
+    if method == "eft" and not (payload.get("reference") or "").strip():
+        raise HTTPException(400, "Enter the bank reference of the EFT")
     raw = {**payload, "method": "yoco" if method == "yoco_machine" else method,
            "source": "machine" if method == "yoco_machine" else None,
            "holder": {"type": "staff", "name": user.get("name") or user["email"]} if method == "cash" else None}
