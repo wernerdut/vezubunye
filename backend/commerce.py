@@ -1201,9 +1201,33 @@ async def release_held(node_id: str, quote: dict, status: str):
                                       "status": {"$in": ["open", "sent"]}}, {"$set": {"status": "cancelled"}})
 
 
+AUTO_CANCEL = {"email": "system:auto-cancel", "role": "system", "name": "MakX"}
+
+
+async def sweep_proformas(node_id: str) -> list[str]:
+    """Werner, 13 Nov 2026: a proforma with nothing paid on it is cancelled, with its pay link,
+    14 days (cfg.proforma_cancel_days; 0 switches it off) after it was last sent, or after it
+    was made if it never went out. One with any payment on it is left for a person to decide."""
+    cfg = await get_cfg(node_id)
+    days = int(cfg.get("proforma_cancel_days", 14))
+    if days <= 0:
+        return []
+    node = await get_node(node_id)
+    cutoff = add_days(today(), -days)
+    done = []
+    async for q in db.quotes().find({"node_id": node_id, "status": {"$in": ["draft", "sent"]}}):
+        at = q.get("sent_at") or q.get("created_at")
+        since = (at + timedelta(hours=2)).date().isoformat() if isinstance(at, datetime) else (q.get("date") or today())
+        if since > cutoff or await proforma_paid(q["_id"]) > PAY_TOL:
+            continue
+        await set_quote_status(node, q, "cancelled", AUTO_CANCEL, reason=f"Not paid within {days} days")
+        done.append(q["quote_number"])
+    return done
+
+
 async def sweep_quotes(node_id: str) -> list[str]:
     if is_proforma(await get_cfg(node_id)):
-        return []           # proformas never lapse: they are cancelled by hand
+        return await sweep_proformas(node_id)     # proformas do not expire; unpaid ones are cancelled
     expired = []
     async for q in db.quotes().find({"node_id": node_id, "status": {"$in": ["draft", "sent"]},
                                      "valid_until": {"$lt": today()}}):

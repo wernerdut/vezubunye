@@ -213,6 +213,13 @@ async def run() -> list:
            for r in REQUESTS]
     out.append({"charges_onto_invoices": await charges_onto_invoices()})
     out.append({"cod_invoices_ahead": await cod_invoices_ahead()})
+    try:    # unpaid proformas older than 14 days: cancelled now, then nightly (Werner, 13 Nov 2026)
+        import commerce
+        mk = await db.nodes().find_one({"slug": "makx"})
+        if mk:
+            out.append({"proformas_cancelled": await commerce.sweep_proformas(mk["node_id"])})
+    except Exception as e:  # noqa: BLE001
+        out.append({"proformas_cancelled": f"failed: {e}"})
     if not await backups().find_one({"_id": "cash-was-eft-makx"}):
         r = await cash_was_eft()
         await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})

@@ -1521,3 +1521,30 @@ async def test_pay_on_delivery_paid_early_and_proforma(client):
     r = await ok(await c.post(f"/api/p/quotes/{q['_id']}/invoice", headers=S["mx"], json={"payment": None, "pay_on_delivery": True}))
     assert r["invoice_id"] is None and r["invoice_on_delivery"] and r["order_id"]
     assert not await db.invoices().find_one({"order_id": r["order_id"]})
+
+
+
+async def test_unpaid_proformas_cancelled_after_14_days(client):
+    """Werner, 13 Nov 2026: a proforma with nothing paid is cancelled with its pay link 14 days
+    after it was last sent; a younger one and one with a payment on it are left."""
+    import commerce
+    c = client
+    mk = lambda: c.post("/api/p/quotes", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W2300", "colour": "SAHARA", "qty": 1}]})
+    old, young, paid = [await ok(await mk()) for _ in range(3)]
+    long_ago = datetime.utcnow() - timedelta(days=15)
+    await db.quotes().update_many({"_id": {"$in": [old["_id"], paid["_id"]]}},
+                                  {"$set": {"created_at": long_ago, "sent_at": long_ago, "status": "sent"}})
+    await db.payments().insert_one({"_id": "held-x", "node_id": "makulu", "quote_id": paid["_id"], "amount": 100.0,
+                                    "status": "held", "method": "yoco", "date": today(), "allocations": [],
+                                    "created_at": datetime.utcnow()})
+    await db.pay_links().insert_one({"_id": "pl-x", "node_id": "makulu", "quote_id": old["_id"], "invoice_id": None,
+                                     "status": "sent", "token": "tokx", "amount": 1.0})
+    done = await commerce.sweep_proformas("makulu")
+    assert old["quote_number"] in done and young["quote_number"] not in done and paid["quote_number"] not in done
+    q = await db.quotes().find_one({"_id": old["_id"]})
+    assert q["status"] == "cancelled" and q["cancelled_reason"] == "Not paid within 14 days" and q["cancelled_by"] == "system:auto-cancel"
+    assert (await db.pay_links().find_one({"_id": "pl-x"}))["status"] == "cancelled"
+    assert (await db.quotes().find_one({"_id": young["_id"]}))["status"] in ("draft", "sent")
+    assert old["quote_number"] not in await commerce.sweep_proformas("makulu")
+    await db.payments().delete_one({"_id": "held-x"})
