@@ -344,6 +344,21 @@ async def run() -> list:
     return out
 
 
+async def not_in_xero(slug: str = "makx") -> list:
+    """Read only (16 Nov 2026, Pierre: today's invoices are not in Xero): every invoice that has
+    not reached Xero, with the reason Xero gave. Nothing is changed."""
+    node = await db.nodes().find_one({"slug": slug})
+    out = []
+    if not node:
+        return out
+    async for i in db.invoices().find({"node_id": node["node_id"], "legacy": {"$ne": True},
+                                       "xero.status": {"$ne": "posted"}, **corrections.ACTIVE}).sort("display_number", 1):
+        x = i.get("xero") or {}
+        out.append(f"{i.get('display_number')} {i.get('date')} {i.get('customer_name')} R{i.get('total', 0):,.2f} "
+                   f"made {str(i.get('created_at'))[:16]}: {x.get('status')} {str(x.get('error'))[:300]}")
+    return out
+
+
 async def background():
     """Slow one-offs (calls to Xero per invoice, voids with their sweeps) run after startup, so
     the health check is not held up: doing them inside startup failed a deploy on 13 Nov 2026
@@ -361,6 +376,10 @@ async def background():
         print(f"cleanup background: {{'xero_doubles': {await xero_doubles()}}}", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"cleanup background: xero_doubles failed: {e!r}", flush=True)
+    try:
+        print(f"cleanup background: {{'not_in_xero': {await not_in_xero()}}}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"cleanup background: not_in_xero failed: {e!r}", flush=True)
     try:
         print(f"cleanup background: {{'overpaid': {await overpaid_report()}}}", flush=True)
     except Exception as e:  # noqa: BLE001
