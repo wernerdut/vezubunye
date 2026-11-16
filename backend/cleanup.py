@@ -276,7 +276,19 @@ async def xero_doubles(slug: str = "makx") -> dict:
     if not node:
         return {}
     nid = node["node_id"]
-    fixed, left = [], []
+    fixed, left, relinked = [], [], []
+    reason = "Counted twice: already captured in MakX, matched in Xero"
+    # the first run (inside startup) was stopped part way: bring every invoice's paid figure up
+    # to date, and link what it voided but had not linked yet
+    async for i in db.invoices().find({"node_id": nid, **corrections.ACTIVE}):
+        await commerce.refresh_invoice(i["_id"])
+    async for v in db.payments().find({"node_id": nid, "void.reason": reason, "xero_payment_id": {"$ne": None}}):
+        pid, iid = v["xero_payment_id"], v["allocations"][0]["invoice_id"]
+        if await db.payments().find_one({"node_id": nid, **corrections.ACTIVE, "$or": [
+                {f"xero_payment_ids.{iid}": pid}, {f"xero_more.{iid}.{pid}": {"$exists": True}}]}):
+            continue
+        if await xero_mt._link_yoco(nid, iid, {"PaymentID": pid, "Amount": v["amount"]}):
+            relinked.append(f"R{v['amount']:,.2f}")
     async for p in db.payments().find({"node_id": nid, "captured_by": xero_mt.SYSTEM["email"], "method": "eft",
                                        "xero_payment_id": {"$ne": None}, **corrections.ACTIVE}).sort("created_at", 1):
         allocs = p.get("allocations") or []
@@ -291,18 +303,21 @@ async def xero_doubles(slug: str = "makx") -> dict:
         if not await xero_mt._link_target(nid, inv["_id"], p["amount"], without):
             left.append(label)
             continue
-        await corrections.void_record("payments", p["_id"], SYSTEM,
-                                      "Counted twice: already captured in MakX, matched in Xero", moves_stock=False)
+        async with corrections.txn() as s:
+            await corrections.mark_void("payments", p["_id"], SYSTEM, reason, None, s)
         await commerce.refresh_invoice(inv["_id"])
         await xero_mt._link_yoco(nid, inv["_id"], xp)
         if inv.get("order_id"):
             await commerce.refresh_order_status(inv["order_id"])
-        await db.flags().update_many(
-            {"node_id": nid, "type": "over_paid", "status": "open", "references.payment_id": p["_id"]},
-            {"$set": {"status": "resolved", "resolved_by": SYSTEM["email"], "resolved_at": datetime.utcnow(),
-                      "resolution_note": "Xero pull counted a captured payment twice; the second one is voided."}})
         after = await db.invoices().find_one({"_id": inv["_id"]})
         fixed.append(f"{label}: now paid R{after['amount_paid']:,.2f} of R{after['total']:,.2f} ({after['status']})")
+    async for v in db.payments().find({"node_id": nid, "void.reason": reason}):
+        await db.flags().update_many(
+            {"node_id": nid, "type": "over_paid", "status": "open", "references.payment_id": v["_id"]},
+            {"$set": {"status": "resolved", "resolved_by": SYSTEM["email"], "resolved_at": datetime.utcnow(),
+                      "resolution_note": "Xero pull counted a captured payment twice; the second one is voided."}})
+    if relinked:
+        return {"fixed": fixed, "left": left, "relinked": relinked}
     return {"fixed": fixed, "left": left}
 
 
@@ -326,27 +341,27 @@ async def run() -> list:
         r = await cash_was_eft()
         await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
         out.append({"cash_was_eft": r})
-    try:
-        out.append({"xero_doubles": await xero_doubles()})
-    except Exception as e:  # noqa: BLE001
-        out.append({"xero_doubles": f"failed: {e}"})
-    try:
-        out.append({"overpaid": await overpaid_report()})
-    except Exception as e:  # noqa: BLE001
-        out.append({"overpaid": f"failed: {e}"})
     return out
 
 
 async def background():
-    """Slow one-offs (calls to Xero per invoice) run after startup, so the health check is not
-    held up: on 13 Nov 2026 doing this inside startup failed a deploy."""
+    """Slow one-offs (calls to Xero per invoice, voids with their sweeps) run after startup, so
+    the health check is not held up: doing them inside startup failed a deploy on 13 Nov 2026
+    and again on 16 Nov 2026."""
     key = "xero-accounts-makx-v2"
     try:
-        if await backups().find_one({"_id": key}):
-            return
-        r = await xero_accounts()
-        if r.get("sales"):
-            await backups().insert_one({"_id": key, "at": datetime.utcnow(), "summary": r, "docs": {}})
+        if not await backups().find_one({"_id": key}):
+            r = await xero_accounts()
+            if r.get("sales"):
+                await backups().insert_one({"_id": key, "at": datetime.utcnow(), "summary": r, "docs": {}})
+            print(f"cleanup background: {{'xero_accounts': {r}}}", flush=True)
     except Exception as e:  # noqa: BLE001
-        r = {"failed": str(getattr(e, "message", e))[:300]}
-    print(f"cleanup background: {{'xero_accounts': {r}}}")
+        print(f"cleanup background: xero_accounts failed: {str(getattr(e, 'message', e))[:300]}", flush=True)
+    try:
+        print(f"cleanup background: {{'xero_doubles': {await xero_doubles()}}}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"cleanup background: xero_doubles failed: {e!r}", flush=True)
+    try:
+        print(f"cleanup background: {{'overpaid': {await overpaid_report()}}}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"cleanup background: overpaid failed: {e!r}", flush=True)

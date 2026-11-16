@@ -1672,4 +1672,22 @@ async def test_xero_same_money_never_counted_twice(client):
     assert not await db.flags().find_one({"type": "over_paid", "status": "open", "references.payment_id": dbl["_id"]})
     assert (await cleanup.xero_doubles()) == {"fixed": [], "left": []}
     assert await xero_mt.pull_invoice_payments("makulu") == {"new": 0, "removed": 0}
+    # a run stopped between the void and the link (the failed deploy of 16 Nov) is finished
+    import corrections
+    e = await sale("XI-E")
+    pe = await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": e["total"], "reference": "FNB E", "invoice_id": e["_id"]}))
+    dbl = await commerce.record_payment("makulu", {"amount": e["total"], "method": "eft", "xero_payment_id": "E1",
+                                                   "customer_id": e["customer_id"]}, xero_mt.SYSTEM,
+                                        allocations=[{"invoice_id": e["_id"], "amount": e["total"]}])
+    xero["XI-E"] = [{"PaymentID": "E1", "Amount": e["total"], "Date": "2026-11-12"}]
+    async with corrections.txn() as s:
+        await corrections.mark_void("payments", dbl["_id"], cleanup.SYSTEM,
+                                    "Counted twice: already captured in MakX, matched in Xero", None, s)
+    assert (await paid(e))["amount_paid"] == 2 * e["total"]          # stale: never refreshed
+    r = await cleanup.xero_doubles()
+    assert r["fixed"] == [] and len(r["relinked"]) == 1
+    assert (await db.payments().find_one({"_id": pe["_id"]}))["xero_payment_ids"] == {e["_id"]: "E1"}
+    assert (await paid(e))["amount_paid"] == e["total"]
+    assert await xero_mt.pull_invoice_payments("makulu") == {"new": 0, "removed": 0}
     await db.xero_connections().delete_one({"node_id": "makulu"})
