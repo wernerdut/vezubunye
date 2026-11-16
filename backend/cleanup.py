@@ -241,6 +241,28 @@ async def terms_fix(slug: str = "makx") -> dict:
     return {"customers_fixed": fixed, "invoiced": invoiced}
 
 
+async def overpaid_report(slug: str = "makx") -> list:
+    """Read only (16 Nov 2026): invoices showing more paid than their total, with every payment
+    on them, to see which were added twice by the Xero pull. Nothing is changed."""
+    node = await db.nodes().find_one({"slug": slug})
+    out = []
+    if not node:
+        return out
+    async for i in db.invoices().find({"node_id": node["node_id"], **corrections.ACTIVE}).sort("display_number", 1):
+        if (i.get("amount_paid") or 0) <= (i.get("total") or 0) + 0.05:
+            continue
+        pays = []
+        async for p in db.payments().find({"allocations.invoice_id": i["_id"]}).sort("created_at", 1):
+            alloc = sum(a["amount"] for a in p.get("allocations") or [] if a["invoice_id"] == i["_id"])
+            pays.append(f"{p['_id'][:6]} {p.get('date')} R{p['amount']:.2f} alloc {alloc:.2f} {p.get('method')}"
+                        f"{' was_cash' if p.get('was_cash') else ''} by {p.get('captured_by')} made {str(p.get('created_at'))[:16]}"
+                        f" ref {p.get('reference')!r} xpid {str(p.get('xero_payment_id'))[:8]}"
+                        f" xpids {[str(v)[:8] for v in (p.get('xero_payment_ids') or {}).values()]}"
+                        f" {p.get('xero_status')}{' VOID' if p.get('void') else ''}")
+        out.append({f"{i.get('display_number')} {i.get('customer_name')} total {i['total']:.2f} paid {i['amount_paid']:.2f}": pays})
+    return out
+
+
 async def run() -> list:
     out = [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
            for r in REQUESTS]
@@ -261,6 +283,10 @@ async def run() -> list:
         r = await cash_was_eft()
         await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
         out.append({"cash_was_eft": r})
+    try:
+        out.append({"overpaid": await overpaid_report()})
+    except Exception as e:  # noqa: BLE001
+        out.append({"overpaid": f"failed: {e}"})
     return out
 
 

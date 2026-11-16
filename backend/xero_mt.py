@@ -590,6 +590,7 @@ async def pull_invoice_payments(node_id: str) -> dict:
             ours.add(p["xero_payment_id"])
     new = removed = linked = unlinked = 0
     seen = set()
+    found = []          # (our invoice, Xero payment), in Xero's order
     keys = list(ids)
     for i in range(0, len(keys), 40):
         body = await request(node_id, "GET", "Invoices", params={"IDs": ",".join(keys[i:i + 40])})
@@ -597,29 +598,18 @@ async def pull_invoice_payments(node_id: str) -> dict:
             inv = ids[x["InvoiceID"]]
             await db.invoices().update_one({"_id": inv["_id"]}, {"$set": {"xero.xero_status": x.get("Status")}})
             for xp in x.get("Payments") or []:
-                pid = xp["PaymentID"]
-                seen.add(pid)
-                if pid in ours:
-                    continue
-                if await _link_yoco(node_id, inv["_id"], xp):
-                    ours.add(pid)
-                    linked += 1
-                    continue
-                await commerce.record_payment(node_id, {
-                    "amount": float(xp.get("Amount") or 0), "method": "eft", "reference": xp.get("Reference") or "",
-                    "xero_payment_id": pid, "customer_id": inv.get("customer_id"),
-                    "date": _xero_date(xp.get("Date")) or commerce.today()}, SYSTEM,
-                    allocations=[{"invoice_id": inv["_id"], "amount": float(xp.get("Amount") or 0)}])
-                await db.payments().update_one({"xero_payment_id": pid}, {"$set": {"xero_batch": xp.get("BatchPaymentID") or pid}})
-                new += 1
+                seen.add(xp["PaymentID"])
+                found.append((inv, xp))
+    # What disappeared from Xero is cleared FIRST (16 Nov 2026). A payment removed and redone in
+    # Xero comes back under a new Xero id: while our payment still held the old link, the redone
+    # one found nothing to link to and was added as new EFT, so the invoice showed paid twice.
     async for p in db.payments().find({"node_id": node_id, "method": "eft", "xero_payment_id": {"$ne": None}, **ACTIVE}):
         if p["xero_payment_id"] not in seen:
             await corrections.void_record("payments", p["_id"], SYSTEM, "Removed in Xero", moves_stock=False)
             for a in p.get("allocations") or []:
                 await commerce.refresh_invoice(a["invoice_id"])
             removed += 1
-    async for p in db.payments().find({"node_id": node_id, "method": {"$in": ["yoco", "eft"]},
-                                       "xero_status": "matched", **ACTIVE}):
+    async for p in db.payments().find({"node_id": node_id, "xero_status": "matched", **ACTIVE}):
         gone = {k: v for k, v in (p.get("xero_payment_ids") or {}).items() if v not in seen}
         if gone:
             left = {k: v for k, v in p["xero_payment_ids"].items() if k not in gone}
@@ -627,6 +617,22 @@ async def pull_invoice_payments(node_id: str) -> dict:
                 "xero_payment_ids": left, "xero_status": "matched" if left else "match_in_xero"},
                 "$unset": {"xero_amount_mismatch": ""}})
             unlinked += 1
+    for inv, xp in found:
+        pid = xp["PaymentID"]
+        if pid in ours:
+            continue
+        if await _link_yoco(node_id, inv["_id"], xp):
+            ours.add(pid)
+            linked += 1
+            continue
+        await commerce.record_payment(node_id, {
+            "amount": float(xp.get("Amount") or 0), "method": "eft", "reference": xp.get("Reference") or "",
+            "xero_payment_id": pid, "customer_id": inv.get("customer_id"),
+            "date": _xero_date(xp.get("Date")) or commerce.today()}, SYSTEM,
+            allocations=[{"invoice_id": inv["_id"], "amount": float(xp.get("Amount") or 0)}])
+        await db.payments().update_one({"xero_payment_id": pid}, {"$set": {"xero_batch": xp.get("BatchPaymentID") or pid}})
+        ours.add(pid)
+        new += 1
     out = {"new": new, "removed": removed}
     if linked or unlinked:
         out.update(yoco_matched=linked, yoco_unmatched=unlinked)

@@ -839,6 +839,7 @@ async def test_xero_pull_skips_our_payments(client):
     await db.invoices().update_one({"_id": inv["_id"]}, {"$set": {"xero": {"status": "posted", "invoice_id": "XI-1"}}})
     ours = await db.payments().find_one({"external_id": "pay_half"})
     await db.payments().update_one({"_id": ours["_id"]}, {"$set": {"xero_payment_ids": {inv["_id"]: "XP-OURS"}}})
+    xero_mt.transport = httpx.MockTransport(lambda req: httpx.Response(404))   # never the real Xero
     o2 = await ok(await client.post("/api/p/orders", headers=S["mx"], json={
         "customer_id": S["mx_terms"]["_id"], "lines": [{"tank_type": "W5000", "colour": "EMERALD", "qty": 1}]}))
     d = await ok(await client.post(f"/api/p/orders/{o2['_id']}/deliveries", headers=S["mx"], json={
@@ -847,7 +848,7 @@ async def test_xero_pull_skips_our_payments(client):
     await db.invoices().update_one({"_id": tinv["_id"]}, {"$set": {"xero": {"status": "posted", "invoice_id": "XI-2"}}})
 
     def handler(req):
-        if req.url.path.endswith("/Invoices"):
+        if req.url.path.endswith("/Invoices") and req.method == "GET":
             return httpx.Response(200, json={"Invoices": [
                 {"InvoiceID": "XI-1", "Status": "PAID", "Payments": [{"PaymentID": "XP-OURS", "Amount": 8800, "Date": "2026-10-20"}]},
                 {"InvoiceID": "XI-2", "Status": "PAID", "Payments": [{"PaymentID": "XP-EFT", "Amount": tinv["total"],
@@ -861,7 +862,7 @@ async def test_xero_pull_skips_our_payments(client):
     assert (await db.invoices().find_one({"_id": tinv["_id"]}))["status"] == "paid"
     assert await xero_mt.pull_invoice_payments("makulu") == {"new": 0, "removed": 0}
     # with Xero connected, EFT keyed in the app waits to be matched in Xero (and is linked, not doubled)
-    r = await ok(await client.post("/api/p/payments", headers=S["mx"], json={"method": "eft", "amount": 1, "customer_id": S["mx_terms"]["_id"]}))
+    r = await ok(await client.post("/api/p/payments", headers=S["mx"], json={"method": "eft", "amount": 1, "reference": "FNB 9", "customer_id": S["mx_terms"]["_id"]}))
     assert (await db.payments().find_one({"_id": r["_id"]}))["xero_status"] == "match_in_xero"
     await db.payments().delete_one({"_id": r["_id"]})
     await db.xero_connections().delete_one({"node_id": "makulu"})
@@ -908,6 +909,18 @@ async def test_xero_match_mode_links_yoco_not_new_eft(client):
     p = await db.payments().find_one({"_id": pid})
     assert p["xero_status"] == "match_in_xero" and not p.get("void")
     assert (await db.invoices().find_one({"_id": inv["_id"]}))["status"] == "paid"
+    # 16 Nov 2026: the bookkeeper removes a matched payment in Xero and redoes it (new Xero id)
+    # between two pulls. It is linked to the same payment again, never added as a second one.
+    xero_pays = [{"PaymentID": "XP-A", "Amount": inv["total"], "Date": "2026-10-21"}]
+    assert (await xero_mt.pull_invoice_payments("makulu"))["yoco_matched"] == 1
+    xero_pays = [{"PaymentID": "XP-B", "Amount": inv["total"], "Date": "2026-10-22"}]
+    out = await xero_mt.pull_invoice_payments("makulu")
+    assert out["new"] == 0 and out["yoco_matched"] == 1 and out["yoco_unmatched"] == 1
+    p = await db.payments().find_one({"_id": pid})
+    assert p["xero_payment_ids"] == {inv["_id"]: "XP-B"} and p["xero_status"] == "matched"
+    after = await db.invoices().find_one({"_id": inv["_id"]})
+    assert after["status"] == "paid" and after["amount_paid"] == inv["total"]
+    assert not await db.payments().find_one({"xero_payment_id": {"$in": ["XP-A", "XP-B"]}})
     await db.xero_connections().delete_one({"node_id": "makulu"})
 
 
