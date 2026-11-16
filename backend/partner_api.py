@@ -419,6 +419,16 @@ async def update_customer(customer_id: str, payload: dict, user: dict = Depends(
                                    "payment_terms_days", "active") if k in payload}
     if "phone" in upd:
         upd["phone"] = customer_search.phone_e164(upd["phone"])
+    if "payment_terms_days" in upd:
+        if str(upd["payment_terms_days"]).strip() in ("", "None"):
+            del upd["payment_terms_days"]
+        else:
+            try:
+                upd["payment_terms_days"] = int(float(upd["payment_terms_days"]))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "Terms must be a number of days")
+            if upd["payment_terms_days"] == c.get("payment_terms_days"):
+                del upd["payment_terms_days"]
     for k in ("payment_basis", "price_tier"):
         if k in payload and payload[k] != c.get(k):
             if user["role"] != "partner_admin":

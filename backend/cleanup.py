@@ -11,7 +11,7 @@ been banked, or when a payment also pays something outside this sale.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import audit
 import corrections
@@ -208,11 +208,48 @@ async def xero_accounts(slug: str = "makx", sales: str = "200", delivery: str = 
             "tax": f"{rates[0]['tax_type']} {rates[0]['name']}", "charges": list(s["charge_accounts"]), **lines}
 
 
+async def terms_fix(slug: str = "makx") -> dict:
+    """16 Nov 2026: payment terms saved as text ("7") made invoicing fail with a server error, so
+    a terms delivery marked delivered got no invoice (MX-DN-0028). Terms become numbers, and terms
+    deliveries delivered in the last 3 days without an invoice are invoiced now, as they should
+    have been, dated today."""
+    import commerce
+    node = await db.nodes().find_one({"slug": slug})
+    if not node:
+        return {}
+    fixed = 0
+    async for c in db.customers().find({"node_id": node["node_id"], "payment_terms_days": {"$type": "string"}}):
+        await db.customers().update_one({"_id": c["_id"]}, {"$set": {
+            "payment_terms_days": commerce.terms_days(c["payment_terms_days"])}})
+        fixed += 1
+    invoiced = []
+    since = datetime.utcnow() - timedelta(days=3)
+    async for dn in db.delivery_notes().find({"node_id": node["node_id"], "delivery_status": "delivered",
+                                              "delivered_at": {"$gte": since}, **corrections.ACTIVE}):
+        try:
+            inv = await commerce.invoice_on_delivery(dn, SYSTEM)
+        except Exception as e:  # noqa: BLE001
+            invoiced.append(f"{dn.get('dn_number')}: failed {getattr(e, 'detail', e)}")
+            continue
+        if inv:
+            invoiced.append(f"{dn.get('dn_number')}: {inv.get('display_number')} R{inv['total']:,.2f}")
+            try:
+                import xero_mt
+                await xero_mt.post_invoice(inv["_id"])
+            except Exception as e:  # noqa: BLE001
+                print(f"[xero] invoice post deferred: {e}")
+    return {"customers_fixed": fixed, "invoiced": invoiced}
+
+
 async def run() -> list:
     out = [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
            for r in REQUESTS]
     out.append({"charges_onto_invoices": await charges_onto_invoices()})
     out.append({"cod_invoices_ahead": await cod_invoices_ahead()})
+    try:
+        out.append({"terms_fix": await terms_fix()})
+    except Exception as e:  # noqa: BLE001
+        out.append({"terms_fix": f"failed: {e}"})
     try:    # unpaid proformas older than 14 days: cancelled now, then nightly (Werner, 13 Nov 2026)
         import commerce
         mk = await db.nodes().find_one({"slug": "makx"})

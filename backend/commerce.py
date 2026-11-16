@@ -41,7 +41,17 @@ def today() -> str:
 
 
 def add_days(d: str, n: int) -> str:
-    return (date_cls.fromisoformat(d) + timedelta(days=n)).isoformat()
+    return (date_cls.fromisoformat(d) + timedelta(days=int(n))).isoformat()
+
+
+def terms_days(value, default: int = 30) -> int:
+    """Payment terms as a whole number of days. The customer form sends text ("7"), which broke
+    invoicing on 16 Nov 2026 (MX-ORD-0036); anything unreadable falls back to the default."""
+    try:
+        n = int(float(value))
+        return n if n >= 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 async def get_node(node_id: str) -> dict:
@@ -223,7 +233,7 @@ async def create_customer(node_id: str, raw: dict, user: dict, allow_terms: bool
            "contact_person": raw.get("contact_person", ""), "email": raw.get("email", ""),
            "phone": phone, "billing_address": raw.get("billing_address", ""),
            "vat_number": raw.get("vat_number", ""), "payment_basis": basis,
-           "payment_terms_days": raw.get("payment_terms_days") or cfg.get("payment_terms_days", 30),
+           "payment_terms_days": terms_days(raw.get("payment_terms_days"), terms_days(cfg.get("payment_terms_days"))),
            "price_tier": tier, "xero_contact_id": None, "active": True, "sites": sites,
            "date": today(), "last_activity": today(), "created_at": now(), "created_by": user["email"]}
     node = await db.nodes().find_one({"node_id": node_id}) or {"node_id": node_id}
@@ -310,8 +320,8 @@ async def create_invoice(node: dict, cfg: dict, order: dict, lines: list[dict], 
     inv_date = inv_date or ((dn or {}).get("date") if dn else (order.get("date") or today()))
     inv_date = inv_date or today()
     customer = await db.customers().find_one({"_id": order.get("customer_id")}, session=session) or {}
-    terms_days = customer.get("payment_terms_days") or cfg.get("payment_terms_days", 30)
-    due = add_days(inv_date, terms_days) if order["payment_basis"] == "terms" else inv_date
+    days = terms_days(customer.get("payment_terms_days"), terms_days(cfg.get("payment_terms_days")))
+    due = add_days(inv_date, days) if order["payment_basis"] == "terms" else inv_date
     inv = {
         "_id": uuid4().hex, "node_id": node_id,
         "invoice_number": None if legacy else await number(node, "inv", "INV", session),

@@ -1548,3 +1548,31 @@ async def test_unpaid_proformas_cancelled_after_14_days(client):
     assert (await db.quotes().find_one({"_id": young["_id"]}))["status"] in ("draft", "sent")
     assert old["quote_number"] not in await commerce.sweep_proformas("makulu")
     await db.payments().delete_one({"_id": "held-x"})
+
+
+
+async def test_terms_days_saved_as_text(client):
+    """16 Nov 2026 (MX-ORD-0036): the customer form saved terms as "7" and invoicing a delivery
+    failed with a server error. Text terms are read as days, and saved as a number."""
+    import uuid
+    c = client
+    await db.customers().update_one({"_id": S["mx_terms"]["_id"]}, {"$set": {"payment_terms_days": "7"}})
+    await db.finished_goods().insert_one({"_id": uuid.uuid4().hex, "node_id": "makulu", "date": today(),
+                                          "type": "count_adjustment", "scope": "fg_warehouse", "tank_type": "W2300",
+                                          "colour": "ISLAND", "grade": "A", "quantity": 1, "reference": None})
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_terms"]["_id"], "lines": [{"tank_type": "W2300", "colour": "ISLAND", "qty": 1}]}))
+    await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
+        "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 1}]}))
+    dn = await db.delivery_notes().find_one({"order_id": o["_id"]})
+    await ok(await c.post(f"/api/p/deliveries/{dn['_id']}/pod", data={"receiver_name": "K"}, headers=S["mx"]))
+    inv = await db.invoices().find_one({"dn_id": dn["_id"]})
+    assert inv and inv["due_date"] == commerce_add(today(), 7)
+    await ok(await c.put(f"/api/p/customers/{S['mx_terms']['_id']}", headers=S["mx"], json={"payment_terms_days": "14"}))
+    assert (await db.customers().find_one({"_id": S["mx_terms"]["_id"]}))["payment_terms_days"] == 14
+    assert (await c.put(f"/api/p/customers/{S['mx_terms']['_id']}", headers=S["mx"], json={"payment_terms_days": "soon"})).status_code == 400
+
+
+def commerce_add(d, n):
+    import commerce
+    return commerce.add_days(d, n)
