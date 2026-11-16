@@ -258,9 +258,52 @@ async def overpaid_report(slug: str = "makx") -> list:
                         f"{' was_cash' if p.get('was_cash') else ''} by {p.get('captured_by')} made {str(p.get('created_at'))[:16]}"
                         f" ref {p.get('reference')!r} xpid {str(p.get('xero_payment_id'))[:8]}"
                         f" xpids {[str(v)[:8] for v in (p.get('xero_payment_ids') or {}).values()]}"
+                        f" more {p.get('xero_more')} mismatch {p.get('xero_amount_mismatch')}"
                         f" {p.get('xero_status')}{' VOID' if p.get('void') else ''}")
         out.append({f"{i.get('display_number')} {i.get('customer_name')} total {i['total']:.2f} paid {i['amount_paid']:.2f}": pays})
     return out
+
+
+async def xero_doubles(slug: str = "makx") -> dict:
+    """16 Nov 2026 (Steven: "On payments I now get a overpaid tab. Friday it was all correct"):
+    the Xero pull of 15 Nov added payments Pierre had matched in Xero as new EFT although Steven
+    or Yoco had already captured the same money here, so five invoices showed paid twice. On an
+    overpaid invoice, an EFT the pull added that belongs to a payment captured here is voided and
+    its Xero payment is linked to that captured payment instead. Anything else is left and listed."""
+    import commerce
+    import xero_mt
+    node = await db.nodes().find_one({"slug": slug})
+    if not node:
+        return {}
+    nid = node["node_id"]
+    fixed, left = [], []
+    async for p in db.payments().find({"node_id": nid, "captured_by": xero_mt.SYSTEM["email"], "method": "eft",
+                                       "xero_payment_id": {"$ne": None}, **corrections.ACTIVE}).sort("created_at", 1):
+        allocs = p.get("allocations") or []
+        if len(allocs) != 1:
+            continue
+        inv = await db.invoices().find_one({"_id": allocs[0]["invoice_id"]})
+        if not inv or (inv.get("amount_paid") or 0) <= inv["total"] + commerce.PAY_TOL:
+            continue
+        label = f"{inv.get('display_number')} {inv.get('customer_name')} R{p['amount']:,.2f}"
+        xp = {"PaymentID": p["xero_payment_id"], "Amount": p["amount"]}
+        without = round(inv["amount_paid"] - allocs[0]["amount"], 2)
+        if not await xero_mt._link_target(nid, inv["_id"], p["amount"], without):
+            left.append(label)
+            continue
+        await corrections.void_record("payments", p["_id"], SYSTEM,
+                                      "Counted twice: already captured in MakX, matched in Xero", moves_stock=False)
+        await commerce.refresh_invoice(inv["_id"])
+        await xero_mt._link_yoco(nid, inv["_id"], xp)
+        if inv.get("order_id"):
+            await commerce.refresh_order_status(inv["order_id"])
+        await db.flags().update_many(
+            {"node_id": nid, "type": "over_paid", "status": "open", "references.payment_id": p["_id"]},
+            {"$set": {"status": "resolved", "resolved_by": SYSTEM["email"], "resolved_at": datetime.utcnow(),
+                      "resolution_note": "Xero pull counted a captured payment twice; the second one is voided."}})
+        after = await db.invoices().find_one({"_id": inv["_id"]})
+        fixed.append(f"{label}: now paid R{after['amount_paid']:,.2f} of R{after['total']:,.2f} ({after['status']})")
+    return {"fixed": fixed, "left": left}
 
 
 async def run() -> list:
@@ -283,6 +326,10 @@ async def run() -> list:
         r = await cash_was_eft()
         await backups().insert_one({"_id": "cash-was-eft-makx", "at": datetime.utcnow(), "summary": r, "docs": {}})
         out.append({"cash_was_eft": r})
+    try:
+        out.append({"xero_doubles": await xero_doubles()})
+    except Exception as e:  # noqa: BLE001
+        out.append({"xero_doubles": f"failed: {e}"})
     try:
         out.append({"overpaid": await overpaid_report()})
     except Exception as e:  # noqa: BLE001

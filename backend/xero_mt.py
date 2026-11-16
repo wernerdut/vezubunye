@@ -586,6 +586,8 @@ async def pull_invoice_payments(node_id: str) -> dict:
     async for p in db.payments().find({"node_id": node_id, **ACTIVE}):
         for v in (p.get("xero_payment_ids") or {}).values():
             ours.add(v)
+        for parts in (p.get("xero_more") or {}).values():
+            ours.update(parts)
         if p.get("xero_payment_id"):
             ours.add(p["xero_payment_id"])
     new = removed = linked = unlinked = 0
@@ -610,11 +612,14 @@ async def pull_invoice_payments(node_id: str) -> dict:
                 await commerce.refresh_invoice(a["invoice_id"])
             removed += 1
     async for p in db.payments().find({"node_id": node_id, "xero_status": "matched", **ACTIVE}):
-        gone = {k: v for k, v in (p.get("xero_payment_ids") or {}).items() if v not in seen}
+        links, more = dict(p.get("xero_payment_ids") or {}), dict(p.get("xero_more") or {})
+        gone = [k for k in set(links) | set(more)
+                if (k in links and links[k] not in seen) or any(x not in seen for x in more.get(k) or {})]
         if gone:
-            left = {k: v for k, v in p["xero_payment_ids"].items() if k not in gone}
+            for k in gone:      # every link on that invoice goes; what is still in Xero is linked afresh below
+                ours.difference_update([links.pop(k, None), *(more.pop(k, None) or {})])
             await db.payments().update_one({"_id": p["_id"]}, {"$set": {
-                "xero_payment_ids": left, "xero_status": "matched" if left else "match_in_xero"},
+                "xero_payment_ids": links, "xero_more": more, "xero_status": "matched" if links else "match_in_xero"},
                 "$unset": {"xero_amount_mismatch": ""}})
             unlinked += 1
     for inv, xp in found:
@@ -639,23 +644,67 @@ async def pull_invoice_payments(node_id: str) -> dict:
     return out
 
 
-async def _link_yoco(node_id: str, invoice_id: str, xp: dict) -> bool:
-    """Link a Xero payment to the oldest payment on this invoice that waits to be matched in
-    Xero: a Yoco payment (in "match" mode) or an EFT keyed in the app when it showed in the bank."""
+async def _link_target(node_id: str, invoice_id: str, amount: float, paid: float | None = None):
+    """Which payment captured here a Xero payment on this invoice belongs to: (payment, "whole")
+    or (payment, "part"), or None when it is money not captured here yet.
+
+    1. A payment waiting to be matched for the same amount: that is it.
+    2. Otherwise, if the invoice still has room for the amount, it is new money (a balance paid
+       by EFT after a cash deposit, say): None.
+    3. Otherwise the invoice is already paid by what was captured here, so this is the same money:
+       the oldest payment still waiting, or a payment matched for less than was captured (the
+       customer paid in parts and each bank line was matched: MX-INV-0023, 16 Nov 2026)."""
+    import commerce
     c = await connection(node_id)
     methods = ["eft"] + (["yoco"] if yoco_mode(c) == "match" else []) + \
         ([] if ((c or {}).get("settings") or {}).get("post_payments") else ["cash", "yoco"])
-    async for p in db.payments().find({"node_id": node_id, "method": {"$in": methods}, "allocations.invoice_id": invoice_id,
-                                       "xero_payment_id": {"$in": [None]},
-                                       f"xero_payment_ids.{invoice_id}": {"$exists": False}, **ACTIVE}).sort("created_at", 1):
-        alloc = sum(a["amount"] for a in p["allocations"] if a["invoice_id"] == invoice_id)
-        upd = {f"xero_payment_ids.{invoice_id}": xp["PaymentID"], "xero_status": "matched"}
-        amount = float(xp.get("Amount") or 0)
-        if abs(amount - alloc) > 0.01:
-            upd["xero_amount_mismatch"] = {"invoice_id": invoice_id, "xero": amount, "yoco": alloc}
-        await db.payments().update_one({"_id": p["_id"]}, {"$set": upd})
+    base = {"node_id": node_id, "method": {"$in": methods}, "allocations.invoice_id": invoice_id,
+            "xero_payment_id": {"$in": [None]}, **ACTIVE}
+    waiting = [p async for p in db.payments().find(
+        {**base, f"xero_payment_ids.{invoice_id}": {"$exists": False}}).sort("created_at", 1)]
+    for p in waiting:
+        if abs(_alloc(p, invoice_id) - amount) <= 0.01:
+            return p, "whole"
+    inv = await db.invoices().find_one({"_id": invoice_id}) or {}
+    paid = (inv.get("amount_paid") or 0) if paid is None else paid
+    if paid + amount <= (inv.get("total") or 0) + commerce.PAY_TOL:
+        return None
+    if waiting:
+        return waiting[0], "whole"
+    async for p in db.payments().find({**base, "xero_amount_mismatch.invoice_id": invoice_id}).sort("created_at", 1):
+        mm = p["xero_amount_mismatch"]
+        if amount <= mm["yoco"] - mm["xero"] + 0.01:
+            return p, "part"
+    return None
+
+
+def _alloc(p: dict, invoice_id: str) -> float:
+    return sum(a["amount"] for a in p.get("allocations") or [] if a["invoice_id"] == invoice_id)
+
+
+async def _link_yoco(node_id: str, invoice_id: str, xp: dict, paid: float | None = None) -> bool:
+    """Link a Xero payment to the payment captured here that it belongs to (see _link_target),
+    so the same money is never counted twice. False: nothing captured here, it is new EFT."""
+    amount = float(xp.get("Amount") or 0)
+    target = await _link_target(node_id, invoice_id, amount, paid)
+    if not target:
+        return False
+    p, kind = target
+    alloc = _alloc(p, invoice_id)
+    if kind == "part":
+        got = round(p["xero_amount_mismatch"]["xero"] + amount, 2)
+        upd: dict = {"$set": {f"xero_more.{invoice_id}.{xp['PaymentID']}": amount}}
+        if abs(got - alloc) <= 0.01:
+            upd["$unset"] = {"xero_amount_mismatch": ""}
+        else:
+            upd["$set"]["xero_amount_mismatch.xero"] = got
+        await db.payments().update_one({"_id": p["_id"]}, upd)
         return True
-    return False
+    upd = {f"xero_payment_ids.{invoice_id}": xp["PaymentID"], "xero_status": "matched"}
+    if abs(amount - alloc) > 0.01:
+        upd["xero_amount_mismatch"] = {"invoice_id": invoice_id, "xero": amount, "yoco": alloc}
+    await db.payments().update_one({"_id": p["_id"]}, {"$set": upd})
+    return True
 
 
 def _xero_date(v) -> str | None:

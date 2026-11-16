@@ -1589,3 +1589,87 @@ async def test_terms_days_saved_as_text(client):
 def commerce_add(d, n):
     import commerce
     return commerce.add_days(d, n)
+
+
+
+async def test_xero_same_money_never_counted_twice(client):
+    """16 Nov 2026: five Makulu invoices showed Overpaid after the Xero pull. A customer who pays
+    in parts (each bank line matched in Xero) is one captured payment, not extra money; an EFT for
+    the balance after a deposit is new money; and the doubles already made are undone."""
+    import cleanup
+    import crypto
+    import xero_mt
+    c = client
+    await db.xero_connections().delete_many({"node_id": "makulu"})
+    await db.xero_connections().insert_one({
+        "node_id": "makulu", "tenant_id": "t-mx", "org_name": "Makulu Tanks", "status": "connected",
+        "access_token": crypto.encrypt("at"), "refresh_token": crypto.encrypt("rt"),
+        "expires_at": datetime.utcnow() + timedelta(hours=1), "settings": xero_mt.default_settings(),
+        "last_refreshed_at": datetime.utcnow(), "refresh_lock_until": None})
+    xero = {}
+
+    def handler(req):
+        if req.url.path.endswith("/Invoices") and req.method == "GET":
+            return httpx.Response(200, json={"Invoices": [
+                {"InvoiceID": k, "Status": "AUTHORISED", "Payments": v} for k, v in xero.items()]})
+        return httpx.Response(404)
+    xero_mt.transport = httpx.MockTransport(handler)
+
+    async def sale(xid):
+        o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+            "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W2300", "colour": "SAHARA", "qty": 1}]}))
+        inv = o["invoices"][0]
+        await db.invoices().update_one({"_id": inv["_id"]}, {"$set": {"xero": {"status": "posted", "invoice_id": xid}}})
+        xero[xid] = []
+        return inv
+    paid = lambda inv: db.invoices().find_one({"_id": inv["_id"]})
+
+    # paid in two bank lines, captured here as one EFT
+    a = await sale("XI-A")
+    pa = await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": a["total"], "reference": "FNB A", "invoice_id": a["_id"]}))
+    xero["XI-A"] = [{"PaymentID": "A1", "Amount": a["total"] - 1450, "Date": "2026-11-12"},
+                    {"PaymentID": "A2", "Amount": 1450, "Date": "2026-11-12"}]
+    out = await xero_mt.pull_invoice_payments("makulu")
+    assert out["new"] == 0 and out["yoco_matched"] == 2
+    p = await db.payments().find_one({"_id": pa["_id"]})
+    assert p["xero_payment_ids"][a["_id"]] == "A1" and p["xero_more"][a["_id"]] == {"A2": 1450} and "xero_amount_mismatch" not in p
+    assert (await paid(a))["amount_paid"] == a["total"]
+    assert await xero_mt.pull_invoice_payments("makulu") == {"new": 0, "removed": 0}
+    xero["XI-A"] = xero["XI-A"][:1]                     # one bank line unmatched again in Xero
+    out = await xero_mt.pull_invoice_payments("makulu")
+    assert out["new"] == 0 and out["yoco_unmatched"] == 1 and out["yoco_matched"] == 1
+    p = await db.payments().find_one({"_id": pa["_id"]})
+    assert p["xero_payment_ids"] == {a["_id"]: "A1"} and p["xero_amount_mismatch"]["xero"] == a["total"] - 1450
+    assert (await paid(a))["amount_paid"] == a["total"]
+
+    # cash deposit captured here, the balance by EFT seen only in Xero: new money, both count
+    b = await sale("XI-B")
+    pb = await ok(await c.post("/api/p/payments", headers=S["mx"], json={"method": "cash", "amount": 500, "invoice_id": b["_id"]}))
+    xero["XI-B"] = [{"PaymentID": "B1", "Amount": b["total"] - 500, "Date": "2026-11-12"}]
+    assert (await xero_mt.pull_invoice_payments("makulu"))["new"] == 1
+    assert not (await db.payments().find_one({"_id": pb["_id"]})).get("xero_payment_ids")
+    inv_b = await paid(b)
+    assert inv_b["amount_paid"] == b["total"] and inv_b["status"] == "paid"
+
+    # the doubles of 15 Nov: the pull's own EFT on top of the captured one is voided and linked
+    d = await sale("XI-D")
+    pd = await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": d["total"], "reference": "FNB D", "invoice_id": d["_id"]}))
+    import commerce
+    dbl = await commerce.record_payment("makulu", {"amount": d["total"], "method": "eft", "xero_payment_id": "D1",
+                                                   "customer_id": d["customer_id"]}, xero_mt.SYSTEM,
+                                        allocations=[{"invoice_id": d["_id"], "amount": d["total"]}])
+    xero["XI-D"] = [{"PaymentID": "D1", "Amount": d["total"], "Date": "2026-11-12"}]
+    assert (await paid(d))["amount_paid"] == 2 * d["total"]
+    await db.nodes().update_one({"node_id": "makulu"}, {"$set": {"slug": "makx"}})
+    r = await cleanup.xero_doubles()
+    assert len(r["fixed"]) == 1 and d["display_number"] in r["fixed"][0] and not r["left"]
+    assert (await db.payments().find_one({"_id": dbl["_id"]}))["void"]
+    assert (await db.payments().find_one({"_id": pd["_id"]}))["xero_payment_ids"] == {d["_id"]: "D1"}
+    inv_d = await paid(d)
+    assert inv_d["amount_paid"] == d["total"] and inv_d["status"] == "paid"
+    assert not await db.flags().find_one({"type": "over_paid", "status": "open", "references.payment_id": dbl["_id"]})
+    assert (await cleanup.xero_doubles()) == {"fixed": [], "left": []}
+    assert await xero_mt.pull_invoice_payments("makulu") == {"new": 0, "removed": 0}
+    await db.xero_connections().delete_one({"node_id": "makulu"})
