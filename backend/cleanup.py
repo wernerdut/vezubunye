@@ -359,6 +359,31 @@ async def not_in_xero(slug: str = "makx") -> list:
     return out
 
 
+async def xero_look(slug: str = "makx") -> dict:
+    """Read only (16 Nov 2026): what Xero itself says about the invoices of the last 4 days
+    (MakX has them all as sent, Pierre does not see them), and how invoices are sent."""
+    import xero_mt
+    node = await db.nodes().find_one({"slug": slug})
+    if not node:
+        return {}
+    nid = node["node_id"]
+    c = await xero_mt.connection(nid) or {}
+    since = (datetime.utcnow() - timedelta(days=4)).date().isoformat()
+    ours = {}
+    async for i in db.invoices().find({"node_id": nid, "date": {"$gte": since}, "xero.invoice_id": {"$exists": True},
+                                       **corrections.ACTIVE}):
+        ours[i["xero"]["invoice_id"]] = i
+    rows = []
+    if ours:
+        body = await xero_mt.request(nid, "GET", "Invoices", params={"IDs": ",".join(ours)})
+        got = {x["InvoiceID"]: x for x in (body or {}).get("Invoices") or []}
+        for xid, i in sorted(ours.items(), key=lambda kv: kv[1].get("display_number") or ""):
+            x = got.get(xid)
+            rows.append(f"{i.get('display_number')} sent {str(i['xero'].get('posted_at'))[:16]}: "
+                        + (f"Xero {x.get('Status')} no {x.get('InvoiceNumber')} total {x.get('Total')}" if x else "NOT FOUND in Xero"))
+    return {"org": c.get("org_name"), "send_as": (c.get("settings") or {}).get("post_status"), "invoices": rows}
+
+
 async def background():
     """Slow one-offs (calls to Xero per invoice, voids with their sweeps) run after startup, so
     the health check is not held up: doing them inside startup failed a deploy on 13 Nov 2026
@@ -380,6 +405,10 @@ async def background():
         print(f"cleanup background: {{'not_in_xero': {await not_in_xero()}}}", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"cleanup background: not_in_xero failed: {e!r}", flush=True)
+    try:
+        print(f"cleanup background: {{'xero_look': {await xero_look()}}}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"cleanup background: xero_look failed: {str(getattr(e, 'message', e))[:300]}", flush=True)
     try:
         print(f"cleanup background: {{'overpaid': {await overpaid_report()}}}", flush=True)
     except Exception as e:  # noqa: BLE001
