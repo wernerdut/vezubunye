@@ -1691,3 +1691,25 @@ async def test_xero_same_money_never_counted_twice(client):
     assert (await paid(e))["amount_paid"] == e["total"]
     assert await xero_mt.pull_invoice_payments("makulu") == {"new": 0, "removed": 0}
     await db.xero_connections().delete_one({"node_id": "makulu"})
+
+
+
+def test_pdf_long_reference_stays_in_its_column():
+    """17 Nov 2026 (Steven: "the last line bunch up"): a bank SMS pasted as the payment reference
+    ran over the Paid and Balance amounts on a statement. Long text runs on inside its column."""
+    import partner_pdf
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    sms = "• RMB Private Bank:-) R2500.00 paid to cheq a/c..592096 @ Smartapp. Ref.Absa Bank Inv 0026 C. 15Nov 08:15"
+    width = 150
+    for text in (sms, "Averyveryverylongreferencewithoutanyspacesinitatall1234567890ABCDEFGH"):
+        lines = partner_pdf._fit(text, width, partner_pdf.F, 9)
+        assert 1 < len(lines) <= 4 and all(stringWidth(x, partner_pdf.F, 9) <= width for x in lines)
+        assert "".join(lines).replace(" ", "") == text.replace(" ", "")          # nothing lost
+    assert partner_pdf._fit("MX-INV-0027", width, partner_pdf.F, 9) == ["MX-INV-0027"]
+    cut = partner_pdf._fit(sms * 4, width, partner_pdf.F, 9)
+    assert len(cut) == 4 and cut[-1].endswith("...") and stringWidth(cut[-1], partner_pdf.F, 9) <= width
+    node = {"node_id": "makulu", "name": "Makulu Tanks", "branding": {"display_name": "Makulu Tanks"}, "company": {}}
+    st = {"date": "2026-11-17", "from": "2026-08-19", "to": "2026-11-17", "opening": 0, "closing": 2500,
+          "rows": [{"date": "2026-11-16", "type": "Payment (EFT)", "ref": sms, "debit": 0, "credit": 2500, "balance": 2500}],
+          "aging": {"current": 2500, "d30": 0, "d60": 0, "d90": 0}}
+    assert partner_pdf.statement(node, {}, {"name": "CW Drilling"}, st)[:4] == b"%PDF"

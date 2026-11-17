@@ -159,15 +159,24 @@ class Doc:
             self.y -= rh
 
         head()
+        lh = 4.2 * mm       # a further line of a cell that runs over more than one line
         for ri, row in enumerate(rows):
-            if self.y - rh < FOOTER_Y + 8 * mm:
+            # Text longer than its column runs on to the next line inside the column (17 Nov 2026:
+            # a bank SMS pasted as a payment reference ran over the amounts on a statement).
+            cells = []
+            for i, (_, _, al) in enumerate(cols):
+                pad = 4 * mm + (4 * mm if i == 0 and swatches and swatches[ri] else 0)
+                cells.append(_fit(str(row[i] if row[i] is not None else ""), xs[i + 1] - xs[i] - pad, F, 9)
+                             if al == "l" else [str(row[i] if row[i] is not None else "")])
+            h = rh + (max(len(x) for x in cells) - 1) * lh
+            if self.y - h < FOOTER_Y + 8 * mm:
                 self.c.showPage()
                 self.y = self._header()
                 head()
             c = self.c
             c.setStrokeColor(LINE)
             c.setLineWidth(0.5)
-            c.line(MARGIN, self.y - rh, MARGIN + full, self.y - rh)
+            c.line(MARGIN, self.y - h, MARGIN + full, self.y - h)
             c.setFillColor(black)
             c.setFont(F, 9)
             for i, (_, _, al) in enumerate(cols):
@@ -177,8 +186,9 @@ class Doc:
                     c.rect(x0 + 2 * mm, self.y - rh + 2.2 * mm, 3 * mm, 3 * mm, fill=1, stroke=0)
                     c.setFillColor(black)
                     x0 += 4 * mm
-                self._cell(row[i], x0, xs[i + 1], self.y - rh + 2.6 * mm, al)
-            self.y -= rh
+                for k, part in enumerate(cells[i]):
+                    self._cell(part, x0, xs[i + 1], self.y - rh + 2.6 * mm - k * lh, al)
+            self.y -= h
         self.y -= 3 * mm
 
     def _cell(self, s: str, x0: float, x1: float, y: float, al: str):
@@ -210,6 +220,43 @@ class Doc:
         self.c.showPage()
         self.c.save()
         return self.buf.getvalue()
+
+
+def _fit(s: str, width: float, font: str, size: float, max_lines: int = 4) -> list[str]:
+    """Break text into lines no wider than `width` (measured, not counted), a word longer than
+    the column broken where it must; anything past max_lines is cut with an ellipsis."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    w = lambda t: stringWidth(t, font, size)
+    if w(s) <= width:
+        return [s]
+    out, line = [], ""
+    for word in s.split():
+        while w(word) > width:                      # one word wider than the column
+            room = line + " " if line else ""
+            k = len(word)
+            while k > 1 and w(room + word[:k]) > width:
+                k -= 1
+            if line and k <= 1:
+                out.append(line)
+                line = ""
+                continue
+            out.append(room + word[:k])
+            line, word = "", word[k:]
+        if not word:
+            continue
+        if line and w(f"{line} {word}") > width:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        out.append(line)
+    if len(out) > max_lines:
+        last = out[max_lines - 1]
+        while last and w(last + "...") > width:
+            last = last[:-1]
+        out = out[:max_lines - 1] + [last.rstrip() + "..."]
+    return out or [""]
 
 
 def _wrap(s: str, n: int) -> list[str]:
@@ -433,13 +480,15 @@ def statement(node: dict, cfg: dict, customer: dict, st: dict) -> bytes:
     d.text(f"Opening balance {money(st['opening'])}", 9.5, True)
     rows = [[r["date"], r["type"], r["ref"], money(r["debit"]) if r["debit"] else "",
              money(r["credit"]) if r["credit"] else "", money(r["balance"])] for r in st["rows"]]
-    d.table([("Date", 0.14, "l"), ("Type", 0.14, "l"), ("Reference", 0.24, "l"), ("Invoiced", 0.16, "r"),
-             ("Paid", 0.16, "r"), ("Balance", 0.16, "r")], rows)
+    d.table([("Date", 0.12, "l"), ("Type", 0.15, "l"), ("Reference", 0.31, "l"), ("Invoiced", 0.14, "r"),
+             ("Paid", 0.14, "r"), ("Balance", 0.14, "r")], rows)
+    d.y -= 2 * mm
     d.totals([("Closing balance", money(st["closing"]), True)])
     a = st["aging"]
     d.y -= 3 * mm
     d.table([("Current", 0.2, "r"), ("30 days", 0.2, "r"), ("60 days", 0.2, "r"), ("90+ days", 0.2, "r"), ("Total due", 0.2, "r")],
             [[money(a["current"]), money(a["d30"]), money(a["d60"]), money(a["d90"]), money(st["closing"])]])
+    d.y -= 2 * mm
     for ln in _bank_lines(node, customer["name"]):
         d.text(ln, 9)
     return d.done()

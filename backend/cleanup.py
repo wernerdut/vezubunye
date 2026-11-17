@@ -397,19 +397,3 @@ async def background():
             print(f"cleanup background: {{'xero_accounts': {r}}}", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"cleanup background: xero_accounts failed: {str(getattr(e, 'message', e))[:300]}", flush=True)
-    try:
-        print(f"cleanup background: {{'xero_doubles': {await xero_doubles()}}}", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"cleanup background: xero_doubles failed: {e!r}", flush=True)
-    try:
-        print(f"cleanup background: {{'not_in_xero': {await not_in_xero()}}}", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"cleanup background: not_in_xero failed: {e!r}", flush=True)
-    try:
-        print(f"cleanup background: {{'xero_look': {await xero_look()}}}", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"cleanup background: xero_look failed: {str(getattr(e, 'message', e))[:300]}", flush=True)
-    try:
-        print(f"cleanup background: {{'overpaid': {await overpaid_report()}}}", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"cleanup background: overpaid failed: {e!r}", flush=True)
