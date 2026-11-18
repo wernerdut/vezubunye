@@ -22,11 +22,12 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError
 
 import audit
 import commerce
@@ -38,6 +39,7 @@ from corrections import ACTIVE
 API = os.getenv("YOCO_API_BASE", "https://payments.yoco.com/api")
 WEBHOOK_BASE = os.getenv("PUBLIC_API_URL", "https://api.vezubunye.com")
 TOLERANCE_S = 180
+CLAIM_STALE_S = 120
 YOCO_ACTOR = {"email": "yoco:webhook", "role": "system", "employer": None}
 
 # Tests swap this for an httpx.MockTransport.
@@ -283,12 +285,49 @@ async def handle_webhook(node_id: str, headers: dict, body: bytes) -> dict:
     return await record_yoco_payment(node_id, payload.get("id"), (payload.get("amount") or 0) / 100.0, meta)
 
 
+def _claims():
+    return db.db()["yoco_claims"]
+
+
+async def _claim(node_id: str, yoco_payment_id: str) -> bool:
+    """One recorder per Yoco payment. Yoco can send the same paid notice twice within
+    milliseconds (Pure Source, MX-INV-0049, 18 Nov 2026: 38 ms apart, and both were recorded,
+    because each looked for the payment before the other had saved it). Inserting the claim is
+    the atomic step: its _id is unique, so only one caller gets it. A claim left behind by a
+    recorder that died before saving the payment is taken over after two minutes."""
+    key = f"{node_id}:{yoco_payment_id}"
+    try:
+        await _claims().insert_one({"_id": key, "at": datetime.utcnow()})
+        return True
+    except DuplicateKeyError:
+        pass
+    stale = datetime.utcnow() - timedelta(seconds=CLAIM_STALE_S)
+    r = await _claims().update_one({"_id": key, "at": {"$lt": stale}}, {"$set": {"at": datetime.utcnow()}})
+    return r.modified_count == 1
+
+
 async def record_yoco_payment(node_id: str, yoco_payment_id: str, amount: float, meta: dict) -> dict:
     if not yoco_payment_id:
         raise HTTPException(400, "No payment id")
-    existing = await db.payments().find_one({"node_id": node_id, "external_id": yoco_payment_id})
+    seen = {"node_id": node_id, "external_id": yoco_payment_id}
+    existing = await db.payments().find_one(seen)
     if existing:
         return {"duplicate": True, "payment_id": existing["_id"]}
+    if not await _claim(node_id, yoco_payment_id):
+        # the same notice is being recorded right now by another call
+        existing = await db.payments().find_one(seen)
+        return {"duplicate": True, "payment_id": existing["_id"] if existing else None}
+    try:
+        return await _record(node_id, yoco_payment_id, amount, meta)
+    except BaseException:
+        # nothing saved: let the next notice or the nightly catch-up record it
+        if not await db.payments().find_one(seen):
+            await _claims().delete_one({"_id": f"{node_id}:{yoco_payment_id}"})
+        raise
+
+
+async def _record(node_id: str, yoco_payment_id: str, amount: float, meta: dict) -> dict:
+    """Record one Yoco payment. Only record_yoco_payment calls this, holding the claim."""
     if not meta.get("invoice_id") and meta.get("quote_id"):
         return await _record_on_proforma(node_id, yoco_payment_id, amount, meta)
     inv = await db.invoices().find_one({"_id": meta.get("invoice_id"), "node_id": node_id})
@@ -329,8 +368,8 @@ async def _record_on_proforma(node_id: str, yoco_payment_id: str, amount: float,
     if q["status"] == "accepted" and q.get("order_id"):
         inv = await db.invoices().find_one({"order_id": q["order_id"], "dn_id": None, **ACTIVE})
         if inv:
-            return await record_yoco_payment(node_id, yoco_payment_id, amount,
-                                             {**meta, "invoice_id": inv["_id"], "quote_id": ""})
+            return await _record(node_id, yoco_payment_id, amount,
+                                 {**meta, "invoice_id": inv["_id"], "quote_id": ""})
     p = await commerce.record_payment(node_id, {
         "amount": amount, "method": "yoco", "source": "link", "reference": yoco_payment_id,
         "external_id": yoco_payment_id, "customer_id": q["customer_id"], "date": commerce.today(),

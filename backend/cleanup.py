@@ -321,6 +321,77 @@ async def xero_doubles(slug: str = "makx") -> dict:
     return {"fixed": fixed, "left": left}
 
 
+# Werner, 18 Nov 2026: "yes on all" (remove one Yoco duplicate and Steven's manual payment)
+YOCO_DOUBLE = {"key": "yoco-double-makx-MX-INV-0049", "yoco_id": "p_aPgrM90Bbaj6tk01HpWtlVEb",
+               "customer_id": "98a56520a8d94e45a5ca15b3b5ffe7d2", "hand_amount": 3700.0,
+               "hand_from": datetime(2026, 11, 18, 7, 31, 0), "hand_to": datetime(2026, 11, 18, 7, 32, 0)}
+
+
+async def yoco_double(yoco_id: str, customer_id: str, hand_amount: float, hand_from: datetime,
+                      hand_to: datetime, slug: str = "makx") -> dict:
+    """18 Nov 2026 (Steven: "So double payment please correct"). Yoco sent the paid notice for
+    MX-INV-0049 (Pure Source, R3,700) twice, 38 ms apart, and both were recorded (yoco._claim now
+    prevents that). Steven's screen still showed unpaid, so four minutes later he captured the
+    same R3,700 by hand on the Payments screen. The first Yoco payment stays; the second one and
+    the hand capture are voided. The hand capture is voided only when exactly one payment fits
+    (this customer, this amount, captured by a person in that minute), it has not been banked
+    and it has not been matched in Xero. Anything else is left and listed. Times are UTC."""
+    import commerce
+    node = await db.nodes().find_one({"slug": slug})
+    if not node:
+        return {}
+    nid = node["node_id"]
+
+    def show(p: dict) -> str:
+        return (f"{p['_id'][:6]} {p.get('date')} R{p['amount']:.2f} {p.get('method')}"
+                f"{'/' + p['source'] if p.get('source') else ''} by {p.get('captured_by')}"
+                f" made {str(p.get('created_at'))[:19]} ref {p.get('reference')!r}"
+                f" alloc {[(a['invoice_id'][:6], a['amount']) for a in p.get('allocations') or []]}"
+                f" unallocated {p.get('unallocated')}")
+
+    twice = [p async for p in db.payments().find({"node_id": nid, "external_id": yoco_id,
+                                                  **corrections.ACTIVE}).sort("created_at", 1)]
+    hand = [p async for p in db.payments().find({"node_id": nid, "customer_id": customer_id, "external_id": None,
+                                                 "created_at": {"$gte": hand_from, "$lt": hand_to},
+                                                 **corrections.ACTIVE})
+            if abs(p["amount"] - hand_amount) < 0.005
+            and p.get("captured_by") not in (SYSTEM["email"], "yoco:webhook", "system:xero")]
+    out: dict = {"yoco_found": [show(p) for p in twice], "hand_found": [show(p) for p in hand],
+                 "voided": [], "left": [], "invoices": []}
+    to_void = [(p, "Counted twice: Yoco sent the paid notice twice") for p in twice[1:]]
+    if twice and len(hand) == 1 and not hand[0].get("deposit_id") and not hand[0].get("xero_payment_id"):
+        to_void.append((hand[0], "Captured by hand for money Yoco had already recorded"))
+    else:
+        out["left"] = [show(p) for p in hand]
+    touched = {a["invoice_id"] for p in twice for a in p.get("allocations") or []}
+    gone = []
+    for p, reason in to_void:
+        async with corrections.txn() as s:
+            await corrections.mark_void("payments", p["_id"], SYSTEM, reason, None, s)
+        gone.append(p["_id"])
+        touched |= {a["invoice_id"] for a in p.get("allocations") or []}
+        out["voided"].append(f"{show(p)}: {reason}")
+    done = {"status": "resolved", "resolved_by": SYSTEM["email"], "resolved_at": datetime.utcnow(),
+            "resolution_note": "Yoco sent the paid notice twice and the same money was also captured by hand; "
+                               "the extra payments are voided."}
+    for iid in sorted(touched):
+        await commerce.refresh_invoice(iid)
+        inv = await db.invoices().find_one({"_id": iid})
+        if inv.get("order_id"):
+            await commerce.refresh_order_status(inv["order_id"])
+        out["invoices"].append(f"{inv.get('display_number')} {inv.get('customer_name')}: now paid "
+                               f"R{inv['amount_paid']:,.2f} of R{inv['total']:,.2f} ({inv['status']})")
+        if inv["amount_paid"] <= inv["total"] + commerce.PAY_TOL:
+            await db.flags().update_many({"node_id": nid, "type": "over_paid", "status": "open",
+                                          "references.invoice_id": iid}, {"$set": done})
+    if gone:
+        await db.flags().update_many({"node_id": nid, "type": {"$in": ["over_paid", "payment_unallocated"]},
+                                      "status": "open", "references.payment_id": {"$in": gone}}, {"$set": done})
+    out["customer_payments_now"] = [show(p) async for p in db.payments().find(
+        {"node_id": nid, "customer_id": customer_id, **corrections.ACTIVE}).sort("created_at", 1)]
+    return out
+
+
 async def run() -> list:
     out = [{r["key"]: await delete_sale(r["key"], r["slug"], r["invoice"], r.get("customer_contains", ""))}
            for r in REQUESTS]
@@ -397,3 +468,11 @@ async def background():
             print(f"cleanup background: {{'xero_accounts': {r}}}", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"cleanup background: xero_accounts failed: {str(getattr(e, 'message', e))[:300]}", flush=True)
+    try:
+        if not await backups().find_one({"_id": YOCO_DOUBLE["key"]}):
+            r = await yoco_double(**{k: v for k, v in YOCO_DOUBLE.items() if k != "key"})
+            await backups().insert_one({"_id": YOCO_DOUBLE["key"], "at": datetime.utcnow(), "summary": r, "docs": {}})
+            print(f"cleanup background: {{'yoco_double': {r}}}", flush=True)
+            print(f"cleanup background: {{'overpaid_now': {await overpaid_report()}}}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"cleanup background: yoco_double failed: {str(getattr(e, 'message', e))[:300]}", flush=True)

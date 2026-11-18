@@ -666,6 +666,121 @@ async def test_yoco_sweep_catches_missed_webhook(client):
     assert await yoco.sweep_links("makulu") == []        # idempotent
 
 
+async def test_yoco_notice_sent_twice_is_recorded_once(client):
+    """Pure Source, MX-INV-0049, 18 Nov 2026: Yoco sent the paid notice twice, 38 ms apart, and
+    both were recorded because each looked for the payment before the other had saved it."""
+    c = client
+    import asyncio
+    import commerce
+    import yoco
+    yoco.transport = httpx.MockTransport(Yoco().handler)
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    inv = o["invoices"][0]
+    real = commerce.record_payment
+
+    async def slow(*a, **k):        # both notices are past the "already recorded?" look by now
+        await asyncio.sleep(0.02)
+        return await real(*a, **k)
+    commerce.record_payment = slow
+    try:
+        r1, r2 = await asyncio.gather(
+            webhook(c, "makulu", "pay_twice", inv["total"], {"invoice_id": inv["_id"]}),
+            webhook(c, "makulu", "pay_twice", inv["total"], {"invoice_id": inv["_id"]}))
+    finally:
+        commerce.record_payment = real
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert await db.payments().count_documents({"external_id": "pay_twice"}) == 1
+    after = await db.invoices().find_one({"_id": inv["_id"]})
+    assert after["status"] == "paid" and after["amount_paid"] == inv["total"]
+    # a third notice, later, is still a duplicate
+    assert (await yoco.record_yoco_payment("makulu", "pay_twice", inv["total"], {"invoice_id": inv["_id"]}))["duplicate"]
+
+    o2 = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    inv2 = o2["invoices"][0]
+    # another call holds the claim right now: this one records nothing
+    await yoco._claims().insert_one({"_id": "makulu:pay_busy", "at": datetime.utcnow()})
+    busy = await yoco.record_yoco_payment("makulu", "pay_busy", inv2["total"], {"invoice_id": inv2["_id"]})
+    assert busy == {"duplicate": True, "payment_id": None}
+    assert await db.payments().count_documents({"external_id": "pay_busy"}) == 0
+    # the recorder died before saving: after two minutes the next notice takes the claim over
+    await yoco._claims().update_one({"_id": "makulu:pay_busy"}, {"$set": {"at": datetime.utcnow() - timedelta(minutes=5)}})
+    took = await yoco.record_yoco_payment("makulu", "pay_busy", inv2["total"], {"invoice_id": inv2["_id"]})
+    assert took.get("payment_id") and not took.get("duplicate")
+    assert (await db.invoices().find_one({"_id": inv2["_id"]}))["status"] == "paid"
+    # a notice that cannot be recorded leaves no claim, so the catch-up can still record it
+    with pytest.raises(Exception):
+        await yoco.record_yoco_payment("makulu", "pay_lost", 100.0, {"invoice_id": "no-such-invoice"})
+    assert await yoco._claims().find_one({"_id": "makulu:pay_lost"}) is None
+
+
+async def test_yoco_double_and_hand_capture_are_undone(client):
+    """MX-INV-0049, 18 Nov 2026: the notice recorded twice, then the same money captured by hand.
+    One Yoco payment stays; the second and the hand capture are voided."""
+    c = client
+    import cleanup
+    import commerce
+    await db.nodes().update_one({"node_id": "makulu"}, {"$set": {"slug": "makx"}})
+    cust = (await ok(await c.post("/api/p/customers", headers=S["mx"], json={
+        "name": "Pure Source Test", "phone": "082 555 0199"})))["_id"]
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": cust, "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    inv = o["invoices"][0]
+    total = inv["total"]
+    first = await commerce.record_payment("makulu", {
+        "amount": total, "method": "yoco", "source": "link", "reference": "p_dbl", "external_id": "p_dbl",
+        "customer_id": cust}, {"email": "yoco:webhook", "role": "system"},
+        allocations=[{"invoice_id": inv["_id"], "amount": total}])
+    second = await commerce.record_payment("makulu", {
+        "amount": total, "method": "yoco", "source": "link", "reference": "p_dbl", "external_id": "p_dbl",
+        "customer_id": cust}, {"email": "yoco:webhook", "role": "system"},
+        allocations=[{"invoice_id": inv["_id"], "amount": total}])
+    assert (await db.invoices().find_one({"_id": inv["_id"]}))["amount_paid"] == 2 * total
+    hand = await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": total, "reference": "Yoco paid", "customer_id": cust}))
+    assert hand["unallocated"] == total
+    other = await ok(await c.post("/api/p/payments", headers=S["mx"], json={
+        "method": "eft", "amount": total + 50, "reference": "something else", "customer_id": cust}))
+    lo, hi = datetime.utcnow() - timedelta(minutes=1), datetime.utcnow() + timedelta(minutes=1)
+
+    r = await cleanup.yoco_double("p_dbl", cust, total, lo, hi)
+    assert len(r["voided"]) == 2 and not r["left"]
+    assert not (await db.payments().find_one({"_id": first["_id"]})).get("void")
+    assert (await db.payments().find_one({"_id": second["_id"]}))["void"]
+    assert (await db.payments().find_one({"_id": hand["_id"]}))["void"]
+    assert not (await db.payments().find_one({"_id": other["_id"]})).get("void")      # another amount: untouched
+    after = await db.invoices().find_one({"_id": inv["_id"]})
+    assert after["amount_paid"] == total and after["status"] == "paid"
+    assert not await db.flags().find_one({"type": "over_paid", "status": "open", "references.invoice_id": inv["_id"]})
+    assert not await db.flags().find_one({"status": "open", "references.payment_id": hand["_id"]})
+    again = await cleanup.yoco_double("p_dbl", cust, total, lo, hi)
+    assert again["voided"] == [] and len(again["yoco_found"]) == 1
+
+    # two hand captures that fit: neither is touched, both are listed
+    o2 = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": cust, "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    inv2 = o2["invoices"][0]
+    for _ in range(2):
+        await commerce.record_payment("makulu", {
+            "amount": inv2["total"], "method": "yoco", "source": "link", "reference": "p_dbl2",
+            "external_id": "p_dbl2", "customer_id": cust}, {"email": "yoco:webhook", "role": "system"},
+            allocations=[{"invoice_id": inv2["_id"], "amount": inv2["total"]}])
+    h1 = await commerce.record_payment("makulu", {"amount": 777.0, "method": "cash", "customer_id": cust},
+                                       {"email": "steven@makulutanks.co.za", "role": "partner"}, allocations=[])
+    h2 = await commerce.record_payment("makulu", {"amount": 777.0, "method": "cash", "customer_id": cust},
+                                       {"email": "steven@makulutanks.co.za", "role": "partner"}, allocations=[])
+    r = await cleanup.yoco_double("p_dbl2", cust, 777.0, lo, hi)
+    assert len(r["voided"]) == 1 and len(r["left"]) == 2
+    assert not (await db.payments().find_one({"_id": h1["_id"]})).get("void")
+    assert not (await db.payments().find_one({"_id": h2["_id"]})).get("void")
+    assert (await db.invoices().find_one({"_id": inv2["_id"]}))["amount_paid"] == inv2["total"]
+    for h in (h1, h2):      # leave no stray credit for the tests that follow
+        await db.payments().delete_one({"_id": h["_id"]})
+    await db.payments().delete_one({"_id": other["_id"]})
+    await db.flags().delete_many({"references.payment_id": {"$in": [h1["_id"], h2["_id"], other["_id"]]}})
+
+
 
 async def test_proforma_card_link_held_then_invoiced(client):
     """Brief 2B: a proforma carries a Yoco card link (PDF text, QR and share message). Card money
