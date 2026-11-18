@@ -1,5 +1,5 @@
-import { ClipboardList, Plus, Printer, Zap } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { ClipboardList, Plus, Printer, X, Zap } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { ShareBar } from '../components/Actions'
@@ -71,6 +71,12 @@ export default function Dashboard({ readOnlyNode }: { readOnlyNode?: string }) {
                 {t.to_deliver.shortfall.map((s: any, i: number) => (
                   <div key={i}>{tankName(cfg, s.tank_type)} {colourOf(cfg, s.colour)?.name || ''} {s.grade !== 'A' ? `(${s.grade})` : ''}: need {s.remaining}, have {s.on_hand}</div>
                 ))}
+              </div>
+            )}
+            {t.to_deliver.shortfall.length === 0 && (
+              <div className="col-span-3 flex justify-end">
+                <button className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50"
+                  onClick={() => setProdList(true)}><ClipboardList size={13} /> Production list</button>
               </div>
             )}
             {(t.to_deliver.committed || []).length > 0 && (
@@ -161,21 +167,45 @@ function Aging({ a }: { a: Record<string, number> }) {
   )
 }
 
-/** Short-of-stock as a production list Steven can print for the factory or send on WhatsApp. */
+/** Short-of-stock as a production list Steven can print for the factory or send on WhatsApp.
+ *  He can change it first (Steven, 18 Nov 2026: "I would like to add extra what needs to be
+ *  produced"): quantities, lines taken off, tanks added. The changes are for this print or
+ *  message only and are not saved, so the list always starts again from what the orders need. */
 function ProductionList({ items, onClose }: { items: any[]; onClose: () => void }) {
   const { cfg, brand } = useApp()
+  const nextKey = useRef(items.length)
+  const [lines, setLines] = useState<any[]>(() => items.map((s, i) => (
+    { key: i, tank_type: s.tank_type, colour: s.colour, grade: s.grade, qty: s.short })))
+  const [add, setAdd] = useState<{ tank_type: string; colour: string; qty: number }>({ tank_type: '', colour: '', qty: 1 })
   // Just the tanks to make (Werner, 10 Nov 2026): size, colour, how many. No orders, no stock maths.
   const name = (s: any) => [tankName(cfg, s.tank_type).replace(/\s+water\b/i, ''), colourOf(cfg, s.colour)?.name,
     s.grade && s.grade !== 'A' ? `(${s.grade})` : ''].filter(Boolean).join(' ')
   const day = new Date().toLocaleDateString('en-ZA', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
-  const total = items.reduce((n, s) => n + s.short, 0)
+  const list = lines.filter((l) => l.qty > 0)
+  const total = list.reduce((n, s) => n + s.qty, 0)
   const title = `${brand.display_name} production list, ${day}`
   const totalLine = `Total: ${total} ${total === 1 ? 'tank' : 'tanks'}`
-  const message = [title, '', ...items.map((s) => `[ ] ${s.short} x ${name(s)}`), '', totalLine].join('\n')
+  const message = [title, '', ...list.map((s) => `[ ] ${s.qty} x ${name(s)}`), '', totalLine].join('\n')
+
+  const tanks = cfg.tank_types.filter((t: any) => t.active !== false)
+  const addTank: any = cfg.tank_types.find((t: any) => t.code === add.tank_type)
+  const colours = cfg.colours.filter((c: any) => !addTank?.allowed_colours?.length || addTank.allowed_colours.includes(c.code))
+  const setQty = (key: number, v: string) => setLines((ls) => ls.map((l) => (
+    l.key === key ? { ...l, qty: Math.max(0, Math.floor(Number(v) || 0)) } : l)))
+  const canAdd = !!add.tank_type && !!add.colour && add.qty > 0
+  const addLine = () => {
+    if (!canAdd) return
+    setLines((ls) => {
+      const same = ls.find((l) => l.tank_type === add.tank_type && l.colour === add.colour && (l.grade || 'A') === 'A')
+      if (same) return ls.map((l) => (l === same ? { ...l, qty: l.qty + add.qty } : l))
+      return [...ls, { key: nextKey.current++, tank_type: add.tank_type, colour: add.colour, grade: 'A', qty: add.qty, added: true }]
+    })
+    setAdd({ tank_type: '', colour: '', qty: 1 })
+  }
 
   const print = () => {
     const esc = (x: any) => String(x ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c])
-    const rows = items.map((s) => `<tr><td class="box"></td><td class="qty">${s.short}</td><td>${esc(name(s))}</td></tr>`).join('')
+    const rows = list.map((s) => `<tr><td class="box"></td><td class="qty">${s.qty}</td><td>${esc(name(s))}</td></tr>`).join('')
     const w = window.open('', '_blank', 'width=820,height=1000')
     if (!w) return
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
@@ -194,9 +224,36 @@ function ProductionList({ items, onClose }: { items: any[]; onClose: () => void 
   const whatsapp = `https://wa.me/${number || ''}?text=${encodeURIComponent(message)}`
   return (
     <Modal title="Production list" onClose={onClose}>
-      <pre className="mb-4 max-h-[50vh] overflow-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-800">{message}</pre>
+      <div className="mb-3 max-h-[45vh] overflow-auto rounded-lg bg-gray-50 p-2">
+        {lines.length === 0 && <div className="p-2 text-sm text-gray-500">Nothing is short of stock. Add the tanks to make below.</div>}
+        {lines.map((l) => (
+          <div key={l.key} className={`flex items-center gap-2 px-1 py-1 text-sm ${l.qty > 0 ? 'text-gray-800' : 'text-gray-400 line-through'}`}>
+            <input type="number" min={0} className="input w-20 py-1 text-center font-semibold" value={l.qty}
+              aria-label={`How many ${name(l)}`} onChange={(e) => setQty(l.key, e.target.value)} />
+            <span className="flex-1">x {name(l)}{l.added && <span className="ml-2 rounded bg-white px-1.5 py-0.5 text-[11px] font-semibold text-gray-500 ring-1 ring-gray-200">added</span>}</span>
+            <button className="rounded p-1 text-gray-400 hover:bg-white hover:text-red-700" title="Take off the list" aria-label={`Take ${name(l)} off the list`}
+              onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}><X size={16} /></button>
+          </div>
+        ))}
+      </div>
+      <div className="mb-1 grid grid-cols-2 gap-2 sm:grid-cols-12">
+        <select className="input col-span-2 sm:col-span-5" value={add.tank_type} aria-label="Tank to add"
+          onChange={(e) => setAdd({ ...add, tank_type: e.target.value, colour: '' })}>
+          <option value="">Add a tank…</option>{tanks.map((x: any) => <option key={x.code} value={x.code}>{x.name}</option>)}
+        </select>
+        <select className="input col-span-2 sm:col-span-3" value={add.colour} aria-label="Colour" onChange={(e) => setAdd({ ...add, colour: e.target.value })}>
+          <option value="">Colour…</option>{colours.map((c: any) => <option key={c.code} value={c.code}>{c.name}</option>)}
+        </select>
+        <input type="number" min={1} className="input text-center sm:col-span-2" value={add.qty} aria-label="How many"
+          onChange={(e) => setAdd({ ...add, qty: Math.max(1, Math.floor(Number(e.target.value) || 1)) })} />
+        <button className="btn-ghost sm:col-span-2" disabled={!canAdd} onClick={addLine}><Plus size={16} /> Add</button>
+      </div>
+      <div className="mb-4 mt-2 text-sm">
+        <div className="font-semibold text-gray-800">{totalLine}</div>
+        <div className="text-xs text-gray-500">Changes are for this print or message only. They are not saved.</div>
+      </div>
       <div className="flex flex-wrap gap-2">
-        <button className="btn-ghost" onClick={print}><Printer size={16} /> Print</button>
+        <button className="btn-ghost" disabled={total === 0} onClick={print}><Printer size={16} /> Print</button>
         <ShareBar whatsapp={whatsapp} message={message} />
       </div>
     </Modal>
