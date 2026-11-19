@@ -367,7 +367,9 @@ def quote(node: dict, cfg: dict, q: dict, customer: dict | None, pay_link: str |
         d.text(pay_link, 9)
         d.qr(pay_link, W - MARGIN - 28 * mm, top - 30 * mm, 28 * mm)
     if q.get("pay_on_delivery_offered"):
-        d.text("Pay on delivery: cash or card at the site.", 9)
+        when = "when you collect" if q.get("collect") else "when we deliver"
+        d.text(f"Or accept on the card link now and pay by card {when}." if pay_link
+               else "Pay on delivery: cash or card at the site.", 9)
     bank = _bank_lines(node, q["quote_number"])
     if bank:
         d.text(f"EFT, using {q['quote_number']} as the reference:" if proforma else "EFT on acceptance:", 9)

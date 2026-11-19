@@ -58,6 +58,14 @@ export default function QuoteDetail() {
       {q.status === 'cancelled' && <p className="mb-4 text-sm text-gray-600">Cancelled: {q.cancelled_reason}</p>}
       {pf && (q.pay_link || (q.payments || []).length > 0) && <CardPayments q={q} />}
       {open && pf && (
+        <label className="mb-4 flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={q.pay_on_delivery_offered !== false} disabled={a.busy}
+            onChange={(e) => a.run(async () => { await api.put(`/api/p/quotes/${id}/pay-on-delivery`, { offered: e.target.checked }); setShare(null); await load() }, errMsg)} />
+          <span>Customer may accept on the pay link and pay by card on {q.collect ? 'collection' : 'delivery'}
+            <span className="block text-xs text-gray-500">Ticked: the link offers "Pay by card now" and "Accept, pay by card on {q.collect ? 'collection' : 'delivery'}". Accepting makes the order and you get an email. Untick it for a customer who must pay first.</span></span>
+        </label>
+      )}
+      {open && pf && (
         <div className="flex flex-wrap gap-2">
           <button className="btn-primary" disabled={a.busy} onClick={() => setPaying(true)}>Create tax invoice</button>
           <button className="btn-danger" onClick={() => setCancelling(true)}>Cancel proforma</button>

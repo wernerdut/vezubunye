@@ -521,6 +521,19 @@ async def quote_status(quote_id: str, payload: dict, user: dict = Depends(curren
     return wall(out)
 
 
+@router.put("/quotes/{quote_id}/pay-on-delivery")
+async def quote_pay_on_delivery(quote_id: str, payload: dict, user: dict = Depends(current_partner)):
+    """The tick box on a proforma: may the customer accept on the link and pay on delivery."""
+    node, _ = await ctx(user)
+    q = await quote_or_404(node["node_id"], quote_id)
+    offered = bool(payload.get("offered"))
+    await db.quotes().update_one({"_id": q["_id"]}, {"$set": {"pay_on_delivery_offered": offered}})
+    await audit.log(user, node["node_id"], "update", "quotes", q["_id"],
+                    before={"pay_on_delivery_offered": q.get("pay_on_delivery_offered", True)},
+                    after={"pay_on_delivery_offered": offered})
+    return {"pay_on_delivery_offered": offered}
+
+
 @router.post("/quotes/{quote_id}/invoice")
 async def invoice_proforma(quote_id: str, payload: dict, user: dict = Depends(current_partner)):
     """Steven decides when the tax invoice is made: the proforma becomes the order and its tax
@@ -625,7 +638,11 @@ async def share_quote(quote_id: str, user: dict = Depends(current_partner)):
     if proforma:
         msg = (f"{_greeting(cust)}\n\nHere is your proforma {q['quote_number']} from {biz} for {amount}.\n\n"
                f"View proforma (PDF): {url}\n\n"
-               + (f"Pay by card: {link['url']}\n\nOr pay by EFT:\n" if link else "Please pay by EFT:\n")
+               + (f"Pay by card: {link['url']}\n\n"
+                  + ("On the same link you can also accept the order now and pay by card on "
+                     f"{'collection' if q.get('collect') else 'delivery'}.\n\n"
+                     if q.get("pay_on_delivery_offered", True) and link["amount"] >= q["total"] - commerce.PAY_TOL else "")
+                  + "Or pay by EFT:\n" if link else "Please pay by EFT:\n")
                + f"{_eft_block(node, q['quote_number'])}\n\nThank you,\n{biz}")
     else:
         msg = (f"{_greeting(cust)}\n\nHere is your quote {q['quote_number']} from {biz} for {amount}, "
@@ -1567,3 +1584,17 @@ async def yoco_webhook(node_id: str, request: Request):
 async def pay(token: str):
     """Public: the customer opened the business's pay link."""
     return await yoco.open_link(token)
+
+
+@router.post("/pay/{token}/accept")
+async def pay_accept(token: str):
+    """Public: the customer accepts the proforma and pays by card on delivery. The business is
+    told by email, and the order goes to Xero like any other when it gets its invoice."""
+    out = await yoco.accept_on_delivery(token)
+    if out.get("order_id"):
+        try:
+            import notify
+            await notify.order_accepted(out["order_id"])
+        except Exception as e:  # noqa: BLE001  (the order stands; the email is a courtesy)
+            print(f"[notify] accepted order email failed: {e}")
+    return {k: v for k, v in out.items() if k not in ("order_id", "invoice_id")}

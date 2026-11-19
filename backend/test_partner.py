@@ -1828,3 +1828,75 @@ def test_pdf_long_reference_stays_in_its_column():
           "rows": [{"date": "2026-11-16", "type": "Payment (EFT)", "ref": sms, "debit": 0, "credit": 2500, "balance": 2500}],
           "aging": {"current": 2500, "d30": 0, "d60": 0, "d90": 0}}
     assert partner_pdf.statement(node, {}, {"name": "CW Drilling"}, st)[:4] == b"%PDF"
+
+
+
+async def test_customer_accepts_proforma_pay_on_delivery(client):
+    """Steven, 19 Nov 2026: on the proforma's link the customer can accept and pay by card on
+    delivery. That makes the order (pay on delivery, card, no invoice yet) and tells the business
+    by email. Ticked unless Steven unticks it on the proforma; gone once anything is paid."""
+    c = client
+    import notify
+    import yoco
+    yoco.transport = httpx.MockTransport(Yoco().handler)
+    sent = []
+
+    def resend(req):
+        sent.append(json.loads(req.content))
+        return httpx.Response(200, json={"id": "em_1"})
+    notify._transport = httpx.MockTransport(resend)
+    os.environ["RESEND_API_KEY"] = "re_test"
+    await db.node_config().update_one({"node_id": "makulu"}, {"$set": {
+        "payment_notify_emails": ["steven@makulutanks.co.za"], "payment_notify_since": datetime.utcnow()}})
+    await db.nodes().update_one({"node_id": "makulu"}, {"$set": {"slug": "makx"}})
+    await ok(await c.put("/api/p/yoco/online", headers=S["mx"], json={"online": True}))
+
+    def new_pf():
+        return c.post("/api/p/quotes", headers=S["mx"], json={
+            "customer_id": S["mx_cust"]["_id"], "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]})
+
+    pf = await ok(await new_pf())
+    assert pf["pay_on_delivery_offered"] is True                       # ticked by default
+    sh = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/share", headers=S["mx"]))
+    assert f"Pay by card: {sh['pay_link']}" in sh["message"] and "accept the order now and pay by card on delivery" in sh["message"]
+    assert "pay by card when we deliver" in pdf_text((await c.get(f"/api/p/quotes/{pf['_id']}/pdf", headers=S["mx"])).content)
+    tok = sh["pay_link"].rsplit("/", 1)[1]
+    opened = await ok(await c.get(f"/api/p/pay/{tok}"))
+    assert opened["state"] == "open" and opened["accept_cod"] is True and opened["kind"] == "proforma"
+
+    done = await ok(await c.post(f"/api/p/pay/{tok}/accept"))
+    assert done["state"] == "accepted" and done["order"] and done["amount"] == pf["total"] and "order_id" not in done
+    q = await db.quotes().find_one({"_id": pf["_id"]})
+    order = await db.orders().find_one({"_id": q["order_id"]})
+    assert q["status"] == "accepted" and order["pay_on_delivery"] and order["cod_method"] == "yoco"
+    assert order["order_number"] == done["order"] and order["created_by"] == "customer:pay-link"
+    assert not await db.invoices().find_one({"order_id": order["_id"]})          # invoiced on delivery
+    assert len(sent) == 1 and sent[0]["to"] == ["steven@makulutanks.co.za"]
+    assert sent[0]["subject"].startswith(f"Order accepted: {order['order_number']}") and "by card on delivery" in sent[0]["subject"]
+    # tapping again, or opening the link later, changes nothing and makes no second order or email
+    again = await ok(await c.post(f"/api/p/pay/{tok}/accept"))
+    assert again["state"] == "accepted" and again["order"] == done["order"] and len(sent) == 1
+    assert (await ok(await c.get(f"/api/p/pay/{tok}")))["state"] == "accepted"
+    assert await db.orders().count_documents({"quote_id": pf["_id"]}) == 1
+
+    # unticked on the proforma: not offered in the message or on the link, and refused if tried
+    pf2 = await ok(await new_pf())
+    r = await ok(await c.put(f"/api/p/quotes/{pf2['_id']}/pay-on-delivery", headers=S["mx"], json={"offered": False}))
+    assert r == {"pay_on_delivery_offered": False}
+    sh2 = await ok(await c.post(f"/api/p/quotes/{pf2['_id']}/share", headers=S["mx"]))
+    assert "pay by card on delivery" not in sh2["message"] and f"Pay by card: {sh2['pay_link']}" in sh2["message"]
+    tok2 = sh2["pay_link"].rsplit("/", 1)[1]
+    assert not (await ok(await c.get(f"/api/p/pay/{tok2}"))).get("accept_cod")
+    assert (await c.post(f"/api/p/pay/{tok2}/accept")).status_code == 400
+    assert (await db.quotes().find_one({"_id": pf2["_id"]}))["status"] == "sent"
+
+    # part paid by card already: the balance is paid on the link, accepting is no longer offered
+    pf3 = await ok(await new_pf())
+    sh3 = await ok(await c.post(f"/api/p/quotes/{pf3['_id']}/share", headers=S["mx"]))
+    tok3 = sh3["pay_link"].rsplit("/", 1)[1]
+    await webhook(c, "makulu", "pay_pf_cod_dep", 500, {"quote_id": pf3["_id"], "node_id": "makulu"})
+    assert not (await ok(await c.get(f"/api/p/pay/{tok3}"))).get("accept_cod")
+    assert (await c.post(f"/api/p/pay/{tok3}/accept")).status_code == 400
+    assert (await c.post("/api/p/pay/nosuchlink/accept")).status_code == 404
+    notify._transport = None
+    os.environ.pop("RESEND_API_KEY", None)

@@ -120,6 +120,42 @@ async def payment_email(node: dict, p: dict) -> tuple[str, str, str]:
     return subject, text, html_body
 
 
+async def order_accepted(order_id: str) -> dict:
+    """The customer accepted a proforma on its link, to pay by card on delivery (19 Nov 2026):
+    tell the people who get the payment emails, so the order is seen and scheduled."""
+    order = await db.orders().find_one({"_id": order_id})
+    if not order:
+        return {"sent": False, "error": "No such order"}
+    cfg = await db.node_config().find_one({"node_id": order["node_id"]}) or {}
+    node = await db.nodes().find_one({"node_id": order["node_id"]})
+    to = recipients(cfg)
+    if not to or not node:
+        return {"sent": False, "error": "No one to send to"}
+    cust = await db.customers().find_one({"_id": order.get("customer_id")}) or {}
+    who = cust.get("name") or order.get("customer_name") or "a customer"
+    view = await commerce.order_view(order["node_id"], order)
+    amount = partner_pdf.money(view["value"])
+    how = "collection" if order.get("collect") else "delivery"
+    subject = f"Order accepted: {order.get('order_number')} from {who}, {amount} by card on {how}"
+    lines = [("Order", order.get("order_number") or ""), ("From proforma", order.get("quote_number") or ""),
+             ("Customer", who), ("Amount", amount), ("Pays", f"by card on {how}"),
+             ("Next", view["next_action"]["label"])]
+    link = f"{yoco.app_host(node)}/orders/{order['_id']}"
+    biz = (node.get("branding") or {}).get("display_name") or node["name"]
+    text = ("The customer accepted on the pay link. Nothing is paid yet.\n\n"
+            + "\n".join(f"{k}: {v}" for k, v in lines) + f"\n\nOpen in MakX: {link}\n\n{biz}")
+    rows = "".join(f"<tr><td style='padding:4px 12px 4px 0;color:#667'>{html.escape(k)}</td>"
+                   f"<td style='padding:4px 0;font-weight:600'>{html.escape(str(v))}</td></tr>" for k, v in lines)
+    body = (f"<div style='font-family:Arial,sans-serif;font-size:15px;color:#0A252D'>"
+            f"<h2 style='margin:0 0 12px'>Order accepted: {html.escape(order.get('order_number') or '')}</h2>"
+            f"<p>The customer accepted on the pay link. Nothing is paid yet.</p>"
+            f"<table style='border-collapse:collapse'>{rows}</table>"
+            f"<p style='margin:20px 0'><a href='{link}' style='background:#11845A;color:#fff;padding:10px 16px;"
+            f"border-radius:6px;text-decoration:none;font-weight:600'>Open in MakX</a></p>"
+            f"<p style='color:#667;font-size:13px'>{html.escape(biz)}</p></div>")
+    return await send(node, to, subject, text, body)
+
+
 def recipients(cfg: dict) -> list[str]:
     return [e.strip() for e in cfg.get("payment_notify_emails") or [] if e and "@" in e]
 

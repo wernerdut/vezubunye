@@ -200,7 +200,19 @@ async def _link_target(pl: dict) -> dict:
     if not q:
         return {"number": "", "total": None, "balance": 0.0, "closed": True, "meta": {}}
     return {"number": q["quote_number"], "total": q["total"], "balance": await commerce.proforma_balance(q),
-            "closed": q["status"] not in ("draft", "sent"), "meta": {"quote_id": q["_id"]}}
+            "closed": q["status"] not in ("draft", "sent"), "meta": {"quote_id": q["_id"]}, "quote": q}
+
+
+def _may_accept(q: dict | None, balance: float) -> bool:
+    """The customer may accept the proforma on its link and pay by card on delivery: offered on
+    the proforma (ticked unless Steven unticks it), still open, and nothing paid on it yet."""
+    return bool(q and q["status"] in ("draft", "sent") and q.get("pay_on_delivery_offered", True)
+                and balance >= q["total"] - commerce.PAY_TOL)
+
+
+def _accepted(pl: dict, base: dict) -> dict:
+    return {**base, "state": "accepted", "amount": pl.get("cod_amount") or 0.0,
+            "order": pl.get("cod_order_number"), "collect": bool(pl.get("cod_collect"))}
 
 
 async def open_link(token: str) -> dict:
@@ -210,11 +222,16 @@ async def open_link(token: str) -> dict:
         raise HTTPException(404, "This payment link is not valid")
     tgt = await _link_target(pl)
     node = await commerce.get_node(pl["node_id"])
+    q = tgt.get("quote")
     base = {"business": (node.get("branding") or {}).get("display_name") or node["name"],
-            "invoice": tgt["number"], "total": tgt["total"]}
+            "invoice": tgt["number"], "total": tgt["total"], "kind": "invoice" if pl.get("invoice_id") else "proforma"}
+    if pl.get("cod_accepted_at") and not pl.get("invoice_id"):
+        return _accepted(pl, base)
     if tgt["closed"] or pl["status"] in ("paid", "cancelled"):
         return {**base, "state": "closed", "amount": 0.0}
     balance = tgt["balance"]
+    if _may_accept(q, balance):
+        base.update(accept_cod=True, collect=bool(q.get("collect")))
     if balance <= commerce.PAY_TOL:
         await db.pay_links().update_one({"_id": pl["_id"]}, {"$set": {"status": "paid"}})
         return {**base, "state": "paid", "amount": 0.0}
@@ -243,6 +260,32 @@ async def open_link(token: str) -> dict:
     await db.pay_links().update_one({"_id": pl["_id"]}, {"$push": {"checkouts": {
         "id": co.get("id"), "amount": balance, "ts": time.time(), "redirect_url": co.get("redirectUrl")}}})
     return {**base, "state": "open", "amount": balance, "redirect_url": co.get("redirectUrl")}
+
+
+CUSTOMER = {"email": "customer:pay-link", "role": "system", "name": "Customer (on the pay link)"}
+
+
+async def accept_on_delivery(token: str) -> dict:
+    """Steven, 19 Nov 2026: on the proforma's link the customer can accept and pay by card on
+    delivery instead of paying now. The proforma becomes the order (pay on delivery, card); the
+    tax invoice follows on delivery as for any pay on delivery order. Tapping twice changes nothing."""
+    pl = await db.pay_links().find_one({"token": token})
+    if not pl:
+        raise HTTPException(404, "This payment link is not valid")
+    node = await commerce.get_node(pl["node_id"])
+    tgt = await _link_target(pl)
+    q = tgt.get("quote")
+    base = {"business": (node.get("branding") or {}).get("display_name") or node["name"],
+            "invoice": tgt["number"], "total": tgt["total"], "kind": "proforma"}
+    if pl.get("cod_accepted_at"):
+        return _accepted(pl, base)
+    if pl.get("invoice_id") or not _may_accept(q, tgt["balance"]):
+        raise HTTPException(400, "This order can no longer be accepted on this link. Please contact us.")
+    out = await commerce.invoice_proforma(node, q, CUSTOMER, None, {"pay_on_delivery": True, "cod_method": "yoco"})
+    upd = {"cod_accepted_at": datetime.utcnow(), "cod_order_id": out["order_id"],
+           "cod_order_number": out["order_number"], "cod_amount": q["total"], "cod_collect": bool(q.get("collect"))}
+    await db.pay_links().update_one({"_id": pl["_id"]}, {"$set": upd})
+    return {**_accepted({**pl, **upd}, base), "order_id": out["order_id"], "invoice_id": out.get("invoice_id")}
 
 
 # ---------- webhook ---------- #
