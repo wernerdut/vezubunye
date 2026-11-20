@@ -94,7 +94,7 @@ async def order_rows(node_id: str) -> list[dict]:
                              for i in invs],
             },
             "_search": " ".join(filter(None, [o.get("order_number"), o.get("quote_number"), o["customer_name"],
-                                              site.get("label"), site.get("town"), site.get("address")]
+                                              o.get("customer_ref"), site.get("label"), site.get("town"), site.get("address")]
                                        + [d["dn_number"] for d in dns] + [i["display_number"] for i in invs])).lower(),
             "_dn_planned": [d.get("planned_date") for d in active_dns],
             "_dn_status": [d.get("delivery_status") for d in active_dns],
@@ -122,7 +122,7 @@ async def delivery_rows(node_id: str) -> list[dict]:
             "tank_types": sorted({l["tank_type"] for l in d["lines"]}),
             "colours": sorted({l.get("colour", "") for l in d["lines"] if l.get("colour")}),
             "void": bool(d.get("void")),
-            "_search": " ".join(filter(None, [d["dn_number"], d.get("order_number"), d["client_name"],
+            "_search": " ".join(filter(None, [d["dn_number"], d.get("order_number"), d["client_name"], d.get("customer_ref"),
                                               site.get("label"), site.get("town"), site.get("address")])).lower(),
         })
     return rows
@@ -144,7 +144,7 @@ async def invoice_rows(node_id: str) -> list[dict]:
             "overdue": overdue_days > 0, "legacy": i.get("legacy", False),
             "xero_status": (i.get("xero") or {}).get("status"),
             "_search": " ".join(filter(None, [i["display_number"], i.get("order_number"), i.get("dn_number"),
-                                              i["customer_name"]])).lower(),
+                                              i["customer_name"], i.get("customer_ref")])).lower(),
         })
     return rows
 
@@ -537,7 +537,8 @@ async def debtors(node_id: str) -> list[dict]:
 async def statement(node_id: str, customer_id: str, d_from: str, d_to: str) -> dict:
     events = []
     async for i in db.invoices().find({"node_id": node_id, "customer_id": customer_id, **ACTIVE}):
-        events.append({"date": i["date"], "type": "Invoice", "ref": i["display_number"], "debit": i["total"], "credit": 0.0})
+        events.append({"date": i["date"], "type": "Invoice", "debit": i["total"], "credit": 0.0,
+                       "ref": i["display_number"] + (f" (your order {i['customer_ref']})" if i.get("customer_ref") else "")})
     async for p in db.payments().find({"node_id": node_id, "customer_id": customer_id, **ACTIVE}):
         events.append({"date": p["date"], "type": f"Payment ({p.get('method', 'eft').upper()})",
                        "ref": p.get("reference") or "", "debit": 0.0, "credit": p["amount"]})

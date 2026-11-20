@@ -749,6 +749,25 @@ async def edit_order_details(order_id: str, payload: dict, user: dict = Depends(
     return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], order_id)), cfg, user["role"])
 
 
+@router.put("/orders/{order_id}/customer-ref")
+async def edit_customer_ref(order_id: str, payload: dict, user: dict = Depends(current_partner)):
+    """The customer's own order number: any time, also after delivery. Delivery notes already
+    printed are printed again so the number is on them."""
+    node, cfg = await ctx(user)
+    o = await commerce.order_or_404(node["node_id"], order_id)
+    if o.get("status") == "cancelled":
+        raise HTTPException(400, "A cancelled order is not changed")
+    before = o.get("customer_ref") or ""
+    o = await commerce.set_customer_ref(o, payload.get("customer_ref"), user)
+    if (o.get("customer_ref") or "") != before:
+        pdf_node = await node_for_pdf(node)
+        async for dn in db.delivery_notes().find({"order_id": order_id, "node_id": node["node_id"],
+                                                  "content_b64": {"$exists": True}, "legacy": {"$ne": True},
+                                                  "origin": {"$ne": "internal"}, **commerce.ACTIVE}):
+            await commerce.store_dn_pdf(pdf_node, cfg, dn)
+    return wall(await commerce.order_view(node["node_id"], await commerce.order_or_404(node["node_id"], order_id)), cfg, user["role"])
+
+
 @router.post("/orders/{order_id}/cancel")
 async def cancel_order(order_id: str, payload: dict, user: dict = Depends(current_partner)):
     """Undo an order nothing has been scheduled on. Any partner user, with a reason."""

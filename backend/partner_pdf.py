@@ -333,11 +333,16 @@ PRICE_COLS = [("Description", 0.46, "l"), ("Qty", 0.08, "r"), ("Unit", 0.15, "r"
               ("Excl VAT", 0.15, "r"), ("Total", 0.16, "r")]
 
 
+def _your_order(doc: dict) -> list[str]:
+    """The customer's own order number, under the document number, when one was captured."""
+    return [f"Your order no. {doc['customer_ref']}"] if doc.get("customer_ref") else []
+
+
 def quote(node: dict, cfg: dict, q: dict, customer: dict | None, pay_link: str | None = None) -> bytes:
     rev = f"Revision {q['rev']}" if q.get("rev", 1) > 1 else ""
     proforma = bool(cfg.get("proforma"))
     d = Doc(node, "Pro forma invoice" if proforma else "Quotation", q["quote_number"], q["date"],
-            ([] if proforma else [f"Valid until {q['valid_until']}"]) + ([rev] if rev else []))
+            ([] if proforma else [f"Valid until {q['valid_until']}"]) + ([rev] if rev else []) + _your_order(q))
     y0 = d.y
     yl = d.block("Bill to" if proforma else "Quote for", _customer_lines(customer, q["customer_name"]), MARGIN, y0)
     site = q.get("site") or {}
@@ -386,7 +391,7 @@ def quote(node: dict, cfg: dict, q: dict, customer: dict | None, pay_link: str |
 def invoice(node: dict, cfg: dict, inv: dict, customer: dict | None, pay_link: str | None = None) -> bytes:
     d = Doc(node, "Tax Invoice", inv["display_number"], inv["date"],
             [f"Due {inv['due_date']}"] + ([f"Order {inv['order_number']}"] if inv.get("order_number") else [])
-            + ([f"Delivery {inv['dn_number']}"] if inv.get("dn_number") else []))
+            + ([f"Delivery {inv['dn_number']}"] if inv.get("dn_number") else []) + _your_order(inv))
     y0 = d.y
     yl = d.block("Bill to", _customer_lines(customer, inv["customer_name"]), MARGIN, y0)
     co = _company(node)
@@ -431,6 +436,7 @@ def delivery_note(node: dict, cfg: dict, dn: dict, ctx: dict | None = None) -> b
     extra = []
     if dn.get("order_number"):
         extra.append(f"Order {dn['order_number']}")
+    extra += _your_order(dn)
     d = Doc(node, "Delivery Note", dn["dn_number"], dn.get("planned_date") or dn["date"], extra)
     if ctx.get("part_index"):
         d.text(f"Part delivery {ctx['part_index']} of order {dn.get('order_number')}"

@@ -250,6 +250,13 @@ def order_lines_value(order: dict) -> float:
     return r2(sum(ln["line_total"] for ln in order["lines"]))
 
 
+def clean_ref(v) -> str:
+    """The customer's own order number or reference (Steven, 20 Nov 2026: "a place to add customer
+    order numbers/ref while loading an order"). Kept as typed, on one line, at most 40 characters.
+    It is printed on the customer's documents; the reference sent to Xero is not changed."""
+    return " ".join(str(v or "").split())[:40]
+
+
 async def create_order(node: dict, cfg: dict, customer: dict, raw: dict, user: dict,
                        quote: dict | None = None, session=None, legacy: bool = False,
                        extra: dict | None = None) -> dict:
@@ -280,6 +287,7 @@ async def create_order(node: dict, cfg: dict, customer: dict, raw: dict, user: d
         "price_tier": tier, "price_list_version_id": version_id,
         "lines": lines, **pricing.totals(lines, cfg),
         "requested_date": raw.get("requested_date"), "notes": raw.get("notes", ""),
+        "customer_ref": clean_ref(raw["customer_ref"] if "customer_ref" in raw else (quote or {}).get("customer_ref")),
         "status": "open", "legacy": legacy, "created_by": user["email"], "created_at": now(),
         **(extra or {}),
     }
@@ -326,6 +334,7 @@ async def create_invoice(node: dict, cfg: dict, order: dict, lines: list[dict], 
         "_id": uuid4().hex, "node_id": node_id,
         "invoice_number": None if legacy else await number(node, "inv", "INV", session),
         "order_id": order["_id"], "order_number": order.get("order_number"),
+        "customer_ref": order.get("customer_ref") or "",
         "dn_id": (dn or {}).get("_id"), "dn_number": (dn or {}).get("dn_number"),
         "customer_id": order.get("customer_id"), "customer_name": order["customer_name"],
         "date": inv_date, "due_date": due, "lines": lines, **pricing.totals(lines, cfg),
@@ -742,7 +751,7 @@ async def write_dn(node: dict, cfg: dict, order: dict, raw: dict, user: dict, se
         "_id": dn_id, "node_id": node_id, "dn_number": dn_no, "date": d,
         "client_name": cust_name, "client_details": raw.get("client_details", details),
         "customer_id": order.get("customer_id"), "order_id": order["_id"],
-        "order_number": order.get("order_number"), "lines": lines,
+        "order_number": order.get("order_number"), "customer_ref": order.get("customer_ref") or "", "lines": lines,
         "subtotal": totals["subtotal"], "vat_rate": totals["vat_rate"], "vat": totals["vat"],
         "total": totals["total"], "amount_paid": 0.0, "status": "unpaid",
         "site": site, "planned_date": raw.get("planned_date") or d,
@@ -1039,7 +1048,8 @@ async def create_quote(node: dict, cfg: dict, customer: dict, raw: dict, user: d
          "collect": bool(raw.get("collect")),
          "lines": lines, **pricing.totals(lines, cfg),
          "valid_until": raw.get("valid_until") or add_days(d, int(cfg.get("quote_validity_days", 14))),
-         "notes": raw.get("notes", ""), "status": "draft", "price_tier": tier,
+         "notes": raw.get("notes", ""), "customer_ref": clean_ref(raw.get("customer_ref")),
+         "status": "draft", "price_tier": tier,
          "price_list_version_id": version["_id"] if version else None,
          "pay_on_delivery_offered": bool(raw.get("pay_on_delivery_offered", True)),
          "revisions": [], "share_token": driver_token(),
@@ -1064,6 +1074,8 @@ async def revise_quote(node_id: str, quote: dict, cfg: dict, raw: dict, user: di
     upd = {"lines": lines, **pricing.totals(lines, cfg), "notes": raw.get("notes", quote["notes"]),
            "valid_until": raw.get("valid_until") or quote["valid_until"],
            "site": site_of(customer, raw["site_id"]) if raw.get("site_id") else quote.get("site")}
+    if "customer_ref" in raw:
+        upd["customer_ref"] = clean_ref(raw["customer_ref"])
     if "collect" in raw:
         upd["collect"] = bool(raw["collect"])
         if upd["collect"]:
@@ -1294,6 +1306,20 @@ async def nothing_dispatched(order: dict, what: str) -> None:
     if await db.delivery_notes().find_one({"order_id": order["_id"], **ACTIVE}):
         raise HTTPException(400, f"A delivery is already scheduled or dispatched: void it first to {what}, "
                                  "or use Cancel remainder")
+
+
+async def set_customer_ref(order: dict, ref, user: dict) -> dict:
+    """The customer's order number can be added or corrected at any time, also after delivery: it
+    often only arrives later. The order's invoices and delivery notes follow it."""
+    ref = clean_ref(ref)
+    if ref == (order.get("customer_ref") or ""):
+        return order
+    await db.orders().update_one({"_id": order["_id"]}, {"$set": {"customer_ref": ref}})
+    await db.invoices().update_many({"order_id": order["_id"]}, {"$set": {"customer_ref": ref}})
+    await db.delivery_notes().update_many({"order_id": order["_id"]}, {"$set": {"customer_ref": ref}})
+    await audit.log(user, order["node_id"], "edit", "orders", order["_id"],
+                    before={"customer_ref": order.get("customer_ref") or ""}, after={"customer_ref": ref})
+    return {**order, "customer_ref": ref}
 
 
 async def update_order_details(order: dict, raw: dict, user: dict) -> dict:

@@ -16,6 +16,7 @@ export default function OrderNew({ quick }: { quick?: boolean }) {
   const [newSite, setNewSite] = useState<any>(null)
   const [requested, setRequested] = useState('')
   const [notes, setNotes] = useState('')
+  const [customerRef, setCustomerRef] = useState('')
   const [cod, setCod] = useState(false)
   const [codMethod, setCodMethod] = useState('either')
   const [pay, setPay] = useState<{ method: string; reference: string }>({ method: 'cash', reference: '' })
@@ -33,7 +34,7 @@ export default function OrderNew({ quick }: { quick?: boolean }) {
     const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
     const r = await api.post('/api/p/orders', {
       customer_id: customer._id, lines: cleanLines(lines), site_id, collect: siteId === COLLECT, requested_date: requested || undefined,
-      notes, pay_on_delivery: upfront && cod, cod_method: codMethod,
+      notes, customer_ref: customerRef, pay_on_delivery: upfront && cod, cod_method: codMethod,
     })
     navigate(`/orders/${r.data._id}`)
   }, errMsg)
@@ -59,6 +60,7 @@ export default function OrderNew({ quick }: { quick?: boolean }) {
             <div className="grid gap-3 sm:grid-cols-2">
               <DeliverTo customer={customer} siteId={siteId} setSiteId={setSiteId} site={newSite} setSite={setNewSite} />
               <Field label="Requested date"><input type="date" className="input" value={requested} onChange={(e) => setRequested(e.target.value)} /></Field>
+              <Field label="Customer order no." hint="Optional. Their own order number or reference, printed on their documents."><input className="input" maxLength={40} value={customerRef} onChange={(e) => setCustomerRef(e.target.value)} /></Field>
             </div>
           )}
           {!quick && upfront && (

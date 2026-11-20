@@ -1900,3 +1900,71 @@ async def test_customer_accepts_proforma_pay_on_delivery(client):
     assert (await c.post("/api/p/pay/nosuchlink/accept")).status_code == 404
     notify._transport = None
     os.environ.pop("RESEND_API_KEY", None)
+
+
+async def test_customer_order_number_follows_the_order(client):
+    """Steven, 20 Nov 2026: "a place to add customer order numbers/ref while loading an order".
+    Captured on the order or proforma, printed on the customer's documents, found by search,
+    changeable at any time. The reference sent to Xero stays the MakX order number."""
+    c = client
+    import board
+    import xero_mt
+    cust = (await ok(await c.post("/api/p/customers", headers=S["mx"], json={
+        "name": "Waterware Test", "phone": "082 555 0177"})))["_id"]
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": cust, "collect": True, "customer_ref": "  PO   4512  ",
+        "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 2}]}))
+    assert o["customer_ref"] == "PO 4512"                       # as typed, tidied, on one line
+    inv = o["invoices"][0]
+    assert (await db.invoices().find_one({"_id": inv["_id"]}))["customer_ref"] == "PO 4512"
+    assert "Your order no. PO 4512" in pdf_text((await c.get(f"/api/p/invoices/{inv['_id']}/pdf", headers=S["mx"])).content)
+    await webhook(c, "makulu", "pay_ref_po", inv["total"], {"invoice_id": inv["_id"]})
+    lid = o["order_lines"][0]["line_id"]
+    dn = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
+        "lines": [{"order_line_id": lid, "quantity": 1}], "planned_date": today()}))
+    assert "Your order no. PO 4512" in pdf_text((await c.get(f"/api/p/deliveries/{dn['_id']}/pdf", headers=S["mx"])).content)
+
+    # found by the customer's number on the orders, deliveries and invoices boards
+    for kind in ("orders", "deliveries", "invoices"):
+        rows = (await ok(await c.get(f'/api/p/dashboard/board/{kind}?filters={{"q":"po 4512"}}', headers=S["mx"])))["rows"]
+        assert len(rows) == 1, kind
+    st = await board.statement("makulu", cust, days(-30), today())
+    assert any(r["ref"] == f"{inv['display_number']} (your order PO 4512)" for r in st["rows"])
+
+    # corrected after a delivery is scheduled: invoice and delivery note follow, the stored note is printed again
+    o = await ok(await c.put(f"/api/p/orders/{o['_id']}/customer-ref", headers=S["mx"], json={"customer_ref": "PO 4513"}))
+    assert o["customer_ref"] == "PO 4513"
+    assert (await db.invoices().find_one({"_id": inv["_id"]}))["customer_ref"] == "PO 4513"
+    stored = await db.delivery_notes().find_one({"_id": dn["_id"]})
+    assert stored["customer_ref"] == "PO 4513"
+    assert "Your order no. PO 4513" in pdf_text((await c.get(f"/api/p/deliveries/{dn['_id']}/pdf", headers=S["mx"])).content)
+    assert "Your order no. PO 4513" in pdf_text((await c.get(f"/api/p/invoices/{inv['_id']}/pdf", headers=S["mx"])).content)
+    # taken off again: nothing printed
+    o = await ok(await c.put(f"/api/p/orders/{o['_id']}/customer-ref", headers=S["mx"], json={"customer_ref": ""}))
+    assert o["customer_ref"] == ""
+    assert "Your order no." not in pdf_text((await c.get(f"/api/p/invoices/{inv['_id']}/pdf", headers=S["mx"])).content)
+    await ok(await c.put(f"/api/p/orders/{o['_id']}/customer-ref", headers=S["mx"], json={"customer_ref": "PO 4513"}))
+
+    # Xero is left alone: its reference is still the MakX order number
+    payload = xero_mt.invoice_payload(await db.invoices().find_one({"_id": inv["_id"]}), await __import__("commerce").get_cfg("makulu"), {}, "contact-1", "DRAFT")
+    assert payload["Invoices"][0]["Reference"] == o["order_number"]
+    assert "PO 4513" not in json.dumps(payload)
+
+    # an order without one prints nothing extra
+    o2 = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": cust, "collect": True, "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    assert o2["customer_ref"] == ""
+    assert "Your order no." not in pdf_text((await c.get(f"/api/p/invoices/{o2['invoices'][0]['_id']}/pdf", headers=S["mx"])).content)
+
+    # on a proforma: printed on it, kept through a change, and carried onto the order it becomes
+    pf = await ok(await c.post("/api/p/quotes", headers=S["mx"], json={
+        "customer_id": cust, "collect": True, "customer_ref": "REQ-88",
+        "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    assert pf["customer_ref"] == "REQ-88"
+    assert "Your order no. REQ-88" in pdf_text((await c.get(f"/api/p/quotes/{pf['_id']}/pdf", headers=S["mx"])).content)
+    pf = await ok(await c.put(f"/api/p/quotes/{pf['_id']}", headers=S["mx"], json={"lines": pf["lines"], "notes": "x"}))
+    assert pf["customer_ref"] == "REQ-88"                        # an edit that does not mention it keeps it
+    pf = await ok(await c.put(f"/api/p/quotes/{pf['_id']}", headers=S["mx"], json={"lines": pf["lines"], "customer_ref": "REQ-89"}))
+    assert pf["customer_ref"] == "REQ-89"
+    acc = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/status", headers=S["mx"], json={"status": "accepted"}))
+    assert acc["order"]["customer_ref"] == "REQ-89"

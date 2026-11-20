@@ -66,6 +66,10 @@ export default function OrderDetail() {
         ))}
       </div>
       <div className="mb-1 text-sm text-gray-600">{o.site ? <>Deliver to <SiteText label={o.site.label} address={o.site.address} town={o.site.town} pinned={o.site.lat != null && o.site.lng != null} /></> : 'Pick up at the factory'}</div>
+      <div className="mb-1 text-sm text-gray-600">
+        {o.customer_ref && <>Customer order no. <span className="font-semibold text-gray-800">{o.customer_ref}</span> · </>}
+        <button className="font-semibold text-brand-primary" onClick={() => setModal(<CustomerRef order={o} onClose={close} />)}>{o.customer_ref ? 'Change' : 'Add customer order no.'}</button>
+      </div>
       <div className="mb-2 text-sm font-semibold text-brand-primary">Next: {o.next_action.label}</div>
 
       <div className="card mb-4 overflow-x-auto">
@@ -132,6 +136,28 @@ export default function OrderDetail() {
       </div>
       {modal}
     </div>
+  )
+}
+
+/** The customer's own order number (Steven, 20 Nov 2026). It can be added or corrected at any
+ * time, also after delivery; the order's invoices and delivery notes follow it. */
+function CustomerRef({ order, onClose }: { order: any; onClose: () => void }) {
+  const [ref, setRef] = useState(order.customer_ref || '')
+  const a = useAction()
+  const save = () => a.run(async () => {
+    await api.put(`/api/p/orders/${order._id}/customer-ref`, { customer_ref: ref })
+    onClose()
+  }, errMsg)
+  return (
+    <Modal title="Customer order no." onClose={onClose}>
+      <Field label="Their order number or reference" hint="Printed on the invoice, delivery note and statement. Leave it empty to take it off.">
+        <input className="input" autoFocus maxLength={40} value={ref} onChange={(e) => setRef(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') save() }} />
+      </Field>
+      <ErrorBox msg={a.error} />
+      <div className="mt-4 flex justify-end gap-2"><button className="btn-ghost" onClick={onClose}>Back</button>
+        <button className="btn-primary" disabled={a.busy} onClick={save}>Save</button></div>
+    </Modal>
   )
 }
 

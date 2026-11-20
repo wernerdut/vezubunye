@@ -51,12 +51,13 @@ export function QuoteForm({ initial, onClose, onSaved }: { initial?: any; onClos
   const [siteId, setSiteId] = useState(initial?.collect ? COLLECT : initial?.site?.site_id || '')
   const [newSite, setNewSite] = useState<any>(null)
   const [notes, setNotes] = useState(initial?.notes || '')
+  const [customerRef, setCustomerRef] = useState(initial?.customer_ref || '')
   const [validUntil, setValidUntil] = useState(initial?.valid_until || '')
   const a = useAction()
   useEffect(() => { if (initial) api.get(`/api/p/customers/${initial.customer_id}`, { params: { brief: true } }).then((r) => setCustomer(r.data)) }, [initial])
   const save = () => a.run(async () => {
     const site_id = await siteIdFor(customer, siteId, newSite, (st) => { setCustomer({ ...customer, sites: [...(customer.sites || []), st] }); setSiteId(st.site_id); setNewSite(null) })
-    const body = { customer_id: customer._id, lines: cleanLines(lines), site_id, collect: siteId === COLLECT, notes, valid_until: validUntil || undefined }
+    const body = { customer_id: customer._id, lines: cleanLines(lines), site_id, collect: siteId === COLLECT, notes, customer_ref: customerRef, valid_until: validUntil || undefined }
     const r = initial ? await api.put(`/api/p/quotes/${initial._id}`, body) : await api.post('/api/p/quotes', body)
     onSaved(r.data)
   }, errMsg)
@@ -69,6 +70,7 @@ export function QuoteForm({ initial, onClose, onSaved }: { initial?: any; onClos
           <div className="grid gap-3 sm:grid-cols-2">
             <DeliverTo customer={customer} siteId={siteId} setSiteId={setSiteId} site={newSite} setSite={setNewSite} optional />
             {!pf && <Field label="Valid until"><input type="date" className="input" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} /></Field>}
+            <Field label="Customer order no." hint="Optional. Their own order number or reference, printed on their documents."><input className="input" maxLength={40} value={customerRef} onChange={(e) => setCustomerRef(e.target.value)} /></Field>
           </div>
           <Field label="Notes"><textarea className="input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
         </>}

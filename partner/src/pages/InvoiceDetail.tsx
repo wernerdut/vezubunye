@@ -24,6 +24,7 @@ export default function InvoiceDetail() {
     <div>
       <PageTitle title={inv.display_number} sub={<span className="flex flex-wrap items-center gap-2">{inv.customer_name} <Status s={inv.void ? 'void' : inv.status} />
         <button className="text-brand-primary" onClick={() => navigate(`/orders/${inv.order_id}`)}>Order {inv.order_number || ''}</button>
+        {inv.customer_ref && <span className="text-gray-600">Customer order no. {inv.customer_ref}</span>}
         {inv.xero?.url && <a className="inline-flex items-center gap-1 text-brand-primary" href={inv.xero.url} target="_blank" rel="noreferrer">Xero <ExternalLink size={12} /></a>}
         {inv.xero?.status === 'waiting' && <span className="text-xs text-amber-700">waiting for Xero</span>}</span>}
         actions={!inv.legacy && <>
