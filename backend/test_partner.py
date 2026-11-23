@@ -1968,3 +1968,53 @@ async def test_customer_order_number_follows_the_order(client):
     assert pf["customer_ref"] == "REQ-89"
     acc = await ok(await c.post(f"/api/p/quotes/{pf['_id']}/status", headers=S["mx"], json={"status": "accepted"}))
     assert acc["order"]["customer_ref"] == "REQ-89"
+
+
+async def test_main_address_prints_on_the_delivery_note(client):
+    """Steven, 23 Nov 2026 (MX-DN-0038): "If delivery is to main address please add the address
+    detail to the delivery note. Not just stating Main". A Main address that was only pinned on
+    the map shows the address typed on the customer, on the note and on the driver's page, also
+    for notes already made. Any other pinned site is not given an address it does not have."""
+    c = client
+    import commerce
+    import partner_pdf
+    pin = {"label": "Main", "lat": -33.83, "lng": 18.65}
+    cust = await ok(await c.post("/api/p/customers", headers=S["mx"], json={
+        "name": "Alex Main Test", "phone": "082 555 0188", "billing_address": "12 Protea Road, Durbanville",
+        "sites": [pin, {"label": "Farm", "lat": -33.70, "lng": 18.90}]}))
+    main, farm = cust["sites"]
+    assert main["address"] == "12 Protea Road, Durbanville" and main["pinned"]      # kept on the site from now on
+    assert farm["address"] == ""
+
+    # a customer made before this: Main is pinned and has no address text
+    await db.customers().update_one({"_id": cust["_id"]}, {"$set": {"sites.0.address": ""}})
+
+    async def deliver(site_id, pay_id):
+        o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+            "customer_id": cust["_id"], "site_id": site_id, "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+        inv = o["invoices"][0]
+        await webhook(c, "makulu", pay_id, inv["total"], {"invoice_id": inv["_id"]})
+        return await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
+            "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 1}], "planned_date": today()}))
+
+    dn = await deliver(main["site_id"], "pay_main_addr_1")
+    assert not dn["site"].get("address")
+    txt = pdf_text((await c.get(f"/api/p/deliveries/{dn['_id']}/pdf", headers=S["mx"])).content)
+    assert "Main" in txt and "12 Protea Road, Durbanville" in txt
+
+    # the note as it was stored before this (only "Main") is printed again with the address
+    node, cfg = await commerce.get_node("makulu"), await commerce.get_cfg("makulu")
+    raw = await db.delivery_notes().find_one({"_id": dn["_id"]})
+    old = partner_pdf.delivery_note(node, cfg, raw, {})
+    assert "Protea" not in pdf_text(old)
+    await db.delivery_notes().update_one({"_id": dn["_id"]}, {"$set": {"content_b64": base64.b64encode(old).decode()}})
+    assert "12 Protea Road, Durbanville" in pdf_text((await c.get(f"/api/p/deliveries/{dn['_id']}/pdf", headers=S["mx"])).content)
+
+    # the driver sees it too
+    tok = (await ok(await c.get(f"/api/p/deliveries/{dn['_id']}", headers=S["mx"])))["driver_link"].rsplit("/", 1)[1]
+    assert (await ok(await c.get(f"/api/d/{tok}")))["site"]["address"] == "12 Protea Road, Durbanville"
+
+    # another pinned site keeps to what was typed for it: the customer's address is not guessed onto it
+    dn2 = await deliver(farm["site_id"], "pay_main_addr_2")
+    txt2 = pdf_text((await c.get(f"/api/p/deliveries/{dn2['_id']}/pdf", headers=S["mx"])).content)
+    assert "Farm" in txt2 and "Protea" not in txt2

@@ -442,7 +442,7 @@ def delivery_note(node: dict, cfg: dict, dn: dict, ctx: dict | None = None) -> b
         d.text(f"Part delivery {ctx['part_index']} of order {dn.get('order_number')}"
                + (f"  ·  {ctx['to_come']} still to come" if ctx.get("to_come") else ""), 10, True,
                color=_brand(node)["primary"])
-    site = dn.get("site") or {}
+    site = maps.shown_site(dn.get("site"), ctx.get("customer")) or {}
     y0 = d.y
     yl = d.block("Deliver to" if site else "Collected at the factory by", [dn["client_name"]] + [x for x in (site.get("label"), site.get("address"), site.get("town")) if x]
                  + ([dn["client_details"]] if dn.get("client_details") and not site else []), MARGIN, y0)

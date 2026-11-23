@@ -57,7 +57,8 @@ def actor(dn: dict) -> dict:
 
 async def view(dn: dict, node: dict) -> dict:
     cfg = await commerce.get_cfg(dn["node_id"])
-    site = dn.get("site") or {}
+    cust = await db.customers().find_one({"_id": dn["customer_id"]}) if dn.get("customer_id") else None
+    site = maps.shown_site(dn.get("site"), cust) or {}
     b = node.get("branding") or {}
     order = await db.orders().find_one({"_id": dn.get("order_id")}) or {}
     pay = None

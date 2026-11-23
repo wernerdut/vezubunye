@@ -228,7 +228,8 @@ async def create_customer(node_id: str, raw: dict, user: dict, allow_terms: bool
     if not allow_terms and (basis != "upfront" or tier != "retail"):
         raise HTTPException(403, "Only a partner admin puts a customer on terms or a price tier")
     pricing.tier(cfg, tier)
-    sites = [await make_site(s) for s in raw.get("sites") or []]
+    # a Main address that is only pinned takes the address typed on the customer (maps.shown_site)
+    sites = [maps.shown_site(await make_site(s), raw) for s in raw.get("sites") or []]
     doc = {"_id": uuid4().hex, "node_id": node_id, "name": raw["name"].strip(),
            "contact_person": raw.get("contact_person", ""), "email": raw.get("email", ""),
            "phone": phone, "billing_address": raw.get("billing_address", ""),
@@ -814,12 +815,15 @@ async def store_dn_pdf(node: dict, cfg: dict, dn: dict, session=None):
 
 
 async def _dn_context(dn: dict, session=None) -> dict:
-    """Part-delivery numbering: 'Part delivery 2 of order MX-ORD-0042' and what is still to come."""
+    """Part-delivery numbering: 'Part delivery 2 of order MX-ORD-0042' and what is still to come.
+    Also the customer, for the address of a Main site that was only pinned (maps.shown_site)."""
+    cust = await db.customers().find_one({"_id": dn["customer_id"]}, session=session) if dn.get("customer_id") else None
+    base = {"customer": cust} if cust else {}
     if not dn.get("order_id"):
-        return {}
+        return base
     order = await db.orders().find_one({"_id": dn["order_id"]}, session=session)
     if not order:
-        return {}
+        return base
     dns = [d async for d in db.delivery_notes().find({"order_id": order["_id"], **ACTIVE},
                                                       session=session).sort("created_at", 1)]
     disp = {}
@@ -832,7 +836,7 @@ async def _dn_context(dn: dict, session=None) -> dict:
     total_tanks = sum(ol["qty"] for ol in order["lines"] if is_tank(ol))
     this = sum(ln["quantity"] for ln in dn["lines"])
     part = len(dns) > 1 or this < total_tanks or to_come > 0
-    return {"order": order, "part_index": idx if part else None, "to_come": to_come}
+    return {**base, "order": order, "part_index": idx if part else None, "to_come": to_come}
 
 
 # ============================== order summary ============================== #

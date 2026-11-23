@@ -93,6 +93,24 @@ async def locate(url: str, client: httpx.AsyncClient | None = None) -> dict:
             "pinned": bool(coords), "message": None if coords else NOT_READ}
 
 
+def shown_site(site: dict | None, customer: dict | None) -> dict | None:
+    """The site as it is printed for the driver and the customer. A customer's "Main" address
+    that was only pinned on the map has no address text of its own, so the delivery note said
+    just "Main" (Steven, 23 Nov 2026: "please add the address detail ... Not just stating Main").
+    Main is the customer's own address: it shows the address typed on the customer. A site with
+    its own address, and any other site, is shown as it is, so an address is never guessed."""
+    if not site or site.get("address") or site.get("town"):
+        return site
+    if (site.get("label") or "").strip().lower() != "main":
+        return site
+    customer = customer or {}
+    addr = ", ".join(x.strip() for x in str(customer.get("billing_address") or "").splitlines() if x.strip())
+    city = str(customer.get("billing_city") or "").strip()
+    if not addr and not city:
+        return site
+    return {**site, "address": addr, "town": city if city and city.lower() not in addr.lower() else ""}
+
+
 def nav_link(site: dict | None) -> str:
     """Google Maps navigation for any phone: coordinates first, then the stored link, then
     the address text."""
