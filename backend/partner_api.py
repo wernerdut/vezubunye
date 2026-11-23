@@ -1314,7 +1314,15 @@ async def stock(user: dict = Depends(current_partner)):
                  for k, v in sorted(pst.items(), key=lambda kv: (pname(kv[0]).startswith("Black"), pname(kv[0])))
                  if abs(v) > 0.05]
     fittings = [{"fitting_type": k, "qty": v} for k, v in sorted((await recon.fittings_warehouse(nid)).items())]
-    return {"finished_goods": fg, "powder": powder, "powder_positions": positions, "fittings": fittings}
+    return {"finished_goods": fg, "powder": powder, "powder_positions": positions, "fittings": fittings,
+            "grade_changes": await stocktake.regrades(nid)}
+
+
+@router.post("/stock/regrade")
+async def regrade_stock(payload: dict, user: dict = Depends(current_partner)):
+    """Change the grade of finished tanks in the store (A to B or B to A), with a reason."""
+    node, cfg = await ctx(user)
+    return await stocktake.regrade(node["node_id"], cfg, payload, user)
 
 
 # ---------- stocktakes (counted here, signed off by Fenix in the internal app) ---------- #

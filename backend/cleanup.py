@@ -455,51 +455,10 @@ async def xero_look(slug: str = "makx") -> dict:
     return {"org": c.get("org_name"), "send_as": (c.get("settings") or {}).get("post_status"), "invoices": rows}
 
 
-async def main_sites_look(slug: str = "makx", dn_number: str = "MX-DN-0038") -> dict:
-    """Read only, counts and yes/no only (no names or addresses): how many delivery addresses
-    have no address text, how many of those are a customer's Main with an address typed on the
-    customer, and what the note Steven sent on 23 Nov 2026 holds. Changes nothing."""
-    node = await db.nodes().find_one({"slug": slug})
-    if not node:
-        return {"skipped": f"no node {slug}"}
-    nid = node["node_id"]
-    out = {"customers": 0, "sites": 0, "no_text": 0, "no_text_by_label": {}, "main_no_text": 0,
-           "main_no_text_with_customer_address": 0, "no_text_pinned": 0, "no_text_place_link": 0}
-    async for c in db.customers().find({"node_id": nid}, {"sites": 1, "billing_address": 1, "billing_city": 1}):
-        out["customers"] += 1
-        has_addr = bool(str(c.get("billing_address") or "").strip() or str(c.get("billing_city") or "").strip())
-        for st in c.get("sites") or []:
-            out["sites"] += 1
-            if st.get("address") or st.get("town"):
-                continue
-            out["no_text"] += 1
-            label = (st.get("label") or "").strip().lower()[:12]
-            key = label if label in ("main", "site", "delivery") else "other"
-            out["no_text_by_label"][key] = out["no_text_by_label"].get(key, 0) + 1
-            out["no_text_pinned"] += st.get("lat") is not None
-            out["no_text_place_link"] += "/place/" in str(st.get("resolved_link") or st.get("maps_link") or "")
-            if label == "main":
-                out["main_no_text"] += 1
-                out["main_no_text_with_customer_address"] += has_addr
-    dn = await db.delivery_notes().find_one({"node_id": nid, "dn_number": dn_number}, {"content_b64": 0})
-    if dn:
-        st = dn.get("site") or {}
-        c = await db.customers().find_one({"_id": dn.get("customer_id")}) or {}
-        out["note"] = {"number": dn_number, "site_fields": sorted(k for k, v in st.items() if v not in ("", None, False)),
-                       "customer_has_address": bool(str(c.get("billing_address") or "").strip()),
-                       "customer_sites": len(c.get("sites") or []),
-                       "place_link": "/place/" in str(st.get("resolved_link") or st.get("maps_link") or "")}
-    return out
-
-
 async def background():
     """Slow one-offs (calls to Xero per invoice, voids with their sweeps) run after startup, so
     the health check is not held up: doing them inside startup failed a deploy on 13 Nov 2026
     and again on 16 Nov 2026."""
-    try:
-        print(f"cleanup background: {{'main_sites_look': {await main_sites_look()}}}", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"cleanup background: main_sites_look failed: {str(getattr(e, 'message', e))[:300]}", flush=True)
     key = "xero-accounts-makx-v2"
     try:
         if not await backups().find_one({"_id": key}):

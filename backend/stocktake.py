@@ -313,3 +313,66 @@ async def positions(node_id: str, cfg: dict) -> dict:
             "powder": [p["code"] for p in cfg.get("powder_products", [])],
             "fittings": [f["code"] for f in cfg.get("fitting_types", [])],
             "track_colour": recon.track_colour(cfg), "opening": await is_opening(node_id)}
+
+
+# ============================== grade changes ============================== #
+
+GRADES = ("A", "B")
+
+
+async def regrade(node_id: str, cfg: dict, raw: dict, user: dict) -> dict:
+    """Steven, 23 Nov 2026: "a function were I can change the grade of a tank". A finished tank
+    in the store is found to be the other grade (damaged in the yard, or a B that was repaired).
+    The number of tanks does not change: that many leave one grade and join the other, as one
+    pair of ledger rows, so stock, orders and deliveries all see the new grade at once. Only
+    tanks that are on hand are regraded, a reason is required, and every change is kept with
+    who made it. It is put right by changing the grade back."""
+    types = {t["code"]: t for t in cfg.get("tank_types", [])}
+    t = types.get(raw.get("tank_type"))
+    if not t:
+        raise HTTPException(400, "Choose the tank")
+    by_colour = recon.track_colour(cfg)
+    colour = (raw.get("colour") or "") if by_colour else ""
+    if colour and colour not in {c["code"] for c in cfg.get("colours", []) or []}:
+        raise HTTPException(400, "Unknown colour")
+    frm, to = raw.get("from_grade"), raw.get("to_grade")
+    if frm not in GRADES or to not in GRADES or frm == to:
+        raise HTTPException(400, "Choose the grade to change from and to")
+    qty = _int(raw.get("quantity"), "The number of tanks")
+    if qty < 1:
+        raise HTTPException(400, "Say how many tanks change grade")
+    reason = " ".join(str(raw.get("reason") or "").split())[:200]
+    if not reason:
+        raise HTTPException(400, "Say why the grade changes")
+    what = t.get("name") or t["code"]
+    if colour:
+        what += f" {commerce.colour_names(cfg).get(colour, colour)}"
+    now = datetime.utcnow()
+    rid = uuid4().hex
+    who = user.get("name") or user["email"]
+    info = {"id": rid, "from": frm, "to": to, "quantity": qty, "reason": reason, "by": user["email"], "by_name": who}
+    async with corrections.txn() as s:
+        have = (await recon.fg_warehouse(node_id, cfg=cfg)).get(recon.fg_key(cfg, t["code"], frm, colour), 0)
+        if qty > have:
+            raise HTTPException(400, f"Only {have} × {what} grade {frm} in stock")
+        for grade, q in ((frm, -qty), (to, qty)):
+            d = {"_id": uuid4().hex, "node_id": node_id, "date": commerce.today(), "type": "count_adjustment",
+                 "scope": "fg_warehouse", "tank_type": t["code"], "colour": colour, "grade": grade,
+                 "quantity": q, "reference": None, "regrade": info,
+                 "notes": f"Grade change {frm} to {to}, {qty} × {what}: {reason} ({who})", "created_at": now}
+            await db.finished_goods().insert_one(d, session=s)
+            await audit.log(user, node_id, "create", "finished_goods_ledger", d["_id"], after=d, session=s)
+    return {**info, "tank_type": t["code"], "colour": colour, "date": commerce.today(), "at": now}
+
+
+async def regrades(node_id: str, limit: int = 20) -> list[dict]:
+    """The latest grade changes, newest first (one line per change)."""
+    out = []
+    cur = db.finished_goods().find({"node_id": node_id, "regrade": {"$exists": True}, "quantity": {"$gt": 0},
+                                    **ACTIVE}).sort("created_at", -1).limit(limit)
+    async for r in cur:
+        g = r["regrade"]
+        out.append({"id": g["id"], "date": r["date"], "at": r["created_at"], "tank_type": r["tank_type"],
+                    "colour": r.get("colour") or "", "from": g["from"], "to": g["to"], "quantity": g["quantity"],
+                    "reason": g["reason"], "by_name": g.get("by_name") or g["by"]})
+    return out
