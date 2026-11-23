@@ -322,11 +322,12 @@ GRADES = ("A", "B")
 
 async def regrade(node_id: str, cfg: dict, raw: dict, user: dict) -> dict:
     """Steven, 23 Nov 2026: "a function were I can change the grade of a tank". A finished tank
-    in the store is found to be the other grade (damaged in the yard, or a B that was repaired).
-    The number of tanks does not change: that many leave one grade and join the other, as one
-    pair of ledger rows, so stock, orders and deliveries all see the new grade at once. Only
-    tanks that are on hand are regraded, a reason is required, and every change is kept with
-    who made it. It is put right by changing the grade back."""
+    in the store turns out to be B grade "for a reason that might not have been obvious at
+    production time" (Werner). One tank per change, each with its reason. The number of tanks does
+    not change: the tank leaves one grade and joins the other, as one pair of ledger rows, so
+    stock, orders and deliveries all see the new grade at once. Only a tank that is on hand is
+    regraded, and every change is kept with who made it. A mistake is put right by changing that
+    tank back, which is why B to A is also allowed."""
     types = {t["code"]: t for t in cfg.get("tank_types", [])}
     t = types.get(raw.get("tank_type"))
     if not t:
@@ -338,9 +339,10 @@ async def regrade(node_id: str, cfg: dict, raw: dict, user: dict) -> dict:
     frm, to = raw.get("from_grade"), raw.get("to_grade")
     if frm not in GRADES or to not in GRADES or frm == to:
         raise HTTPException(400, "Choose the grade to change from and to")
-    qty = _int(raw.get("quantity"), "The number of tanks")
-    if qty < 1:
-        raise HTTPException(400, "Say how many tanks change grade")
+    # Werner, 23 Nov 2026: "Only 1 at a time": each tank is looked at and has its own reason
+    qty = 1
+    if raw.get("quantity") not in (None, "", 1, "1"):
+        raise HTTPException(400, "One tank at a time: change each tank on its own, with its reason")
     reason = " ".join(str(raw.get("reason") or "").split())[:200]
     if not reason:
         raise HTTPException(400, "Say why the grade changes")

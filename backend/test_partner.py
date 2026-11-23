@@ -2021,38 +2021,44 @@ async def test_main_address_prints_on_the_delivery_note(client):
 
 
 async def test_change_the_grade_of_tanks_in_stock(client):
-    """Steven, 23 Nov 2026: "a function were I can change the grade of a tank". Tanks in the store
-    move from one grade to the other: the total stays the same, a reason is required, no more than
-    is on hand, and the change is listed with who made it. Orders see the new grade at once."""
+    """Steven, 23 Nov 2026: "a function were I can change the grade of a tank". Werner: "Only 1 at
+    a time", for a tank found to be B grade after production. One tank in the store moves from one
+    grade to the other: the total stays the same, a reason is required, the tank must be on hand,
+    and the change is listed with who made it. Orders see the new grade at once."""
     c = client
 
     async def fg():
         st = await ok(await c.get("/api/p/stock", headers=S["mx"]))
         return {(r["tank_type"], r["colour"], r["grade"]): r["on_hand"] for r in st["finished_goods"]}, st
     before, _ = await fg()
-    (tt, col, _g), have = next((k, v) for k, v in sorted(before.items(), key=lambda kv: -kv[1]) if k[2] == "A" and v >= 2)
+    (tt, col, _g), have = next((k, v) for k, v in sorted(before.items(), key=lambda kv: -kv[1]) if k[2] == "A" and v >= 1)
     b0 = before.get((tt, col, "B"), 0)
-    body = {"tank_type": tt, "colour": col, "from_grade": "A", "to_grade": "B", "quantity": 2, "reason": "  Scratched   in the yard "}
+    body = {"tank_type": tt, "colour": col, "from_grade": "A", "to_grade": "B", "reason": "  Thin spot   near the outlet "}
 
-    for bad, msg in (({"reason": ""}, "why"), ({"quantity": 0}, "how many"), ({"quantity": have + 1}, f"Only {have}"),
+    for bad, msg in (({"reason": ""}, "why"), ({"quantity": 2}, "one tank at a time"), ({"quantity": 0}, "one tank at a time"),
                      ({"to_grade": "A"}, "grade"), ({"tank_type": "NOPE"}, "tank")):
         r = await c.post("/api/p/stock/regrade", headers=S["mx"], json={**body, **bad})
         assert r.status_code == 400 and msg.lower() in r.json()["detail"].lower(), (bad, r.text)
+    none = next((k for k in before if k[2] == "A" and before[k] <= 0), None)       # nothing on hand: refused
+    if none:
+        r = await c.post("/api/p/stock/regrade", headers=S["mx"], json={**body, "tank_type": none[0], "colour": none[1]})
+        assert r.status_code == 400 and "Only 0" in r.json()["detail"]
     assert (await fg())[0] == before                                  # nothing moved by a refused change
 
     g = await ok(await c.post("/api/p/stock/regrade", headers=S["mx"], json=body))
-    assert g["reason"] == "Scratched in the yard" and g["quantity"] == 2
+    assert g["reason"] == "Thin spot near the outlet" and g["quantity"] == 1
     after, st = await fg()
-    assert after[(tt, col, "A")] == have - 2 and after[(tt, col, "B")] == b0 + 2
+    assert after[(tt, col, "A")] == have - 1 and after[(tt, col, "B")] == b0 + 1
     assert sum(after.values()) == sum(before.values())                # the same tanks, another grade
     row = st["grade_changes"][0]
-    assert (row["tank_type"], row["colour"], row["from"], row["to"], row["quantity"]) == (tt, col, "A", "B", 2)
-    assert row["reason"] == "Scratched in the yard" and row["by_name"]
+    assert (row["tank_type"], row["colour"], row["from"], row["to"], row["quantity"]) == (tt, col, "A", "B", 1)
+    assert row["reason"] == "Thin spot near the outlet" and row["by_name"]
     rows = [r async for r in db.finished_goods().find({"regrade.id": g["id"]})]
-    assert sorted(r["quantity"] for r in rows) == [-2, 2] and all(r["type"] == "count_adjustment" for r in rows)
+    assert sorted(r["quantity"] for r in rows) == [-1, 1] and all(r["type"] == "count_adjustment" for r in rows)
     assert await db.audit_log().count_documents({"doc_id": {"$in": [r["_id"] for r in rows]}}) == 2
 
-    # put right by changing it back
-    await ok(await c.post("/api/p/stock/regrade", headers=S["mx"], json={**body, "from_grade": "B", "to_grade": "A", "reason": "Repaired"}))
-    assert (await fg())[0] == {k: v for k, v in before.items()} | ({(tt, col, "B"): b0} if (tt, col, "B") not in before else {})
-    assert len((await fg())[1]["grade_changes"]) == 2
+    # a mistake is put right by changing that tank back
+    await ok(await c.post("/api/p/stock/regrade", headers=S["mx"], json={**body, "from_grade": "B", "to_grade": "A", "reason": "Changed by mistake"}))
+    back, st = await fg()
+    assert back[(tt, col, "A")] == have and back.get((tt, col, "B"), 0) == b0
+    assert len(st["grade_changes"]) == 2

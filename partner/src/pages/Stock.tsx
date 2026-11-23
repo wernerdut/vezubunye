@@ -59,26 +59,20 @@ export default function Stock() {
 function Regrade({ row, name, onClose, onDone }: { row: any; name: string; onClose: () => void; onDone: () => void }) {
   const a = useAction()
   const to = row.grade === 'A' ? 'B' : 'A'
-  const [qty, setQty] = useState('1')
   const [reason, setReason] = useState('')
-  const n = Number(qty)
-  const ok = Number.isInteger(n) && n >= 1 && n <= row.on_hand && reason.trim().length > 0
-  const left = row.free - (Number.isInteger(n) && n > 0 ? n : 0)
   return (
     <Modal title={`Change grade: ${name}`} onClose={onClose}>
-      <p className="mb-3 text-sm text-gray-600">{row.on_hand} in stock as grade {row.grade}. The tanks you change move to grade {to}.</p>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={`How many change to grade ${to}`}><input className="input" type="number" min={1} max={row.on_hand} value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
-        <Field label="Why"><input className="input" placeholder={to === 'B' ? 'Scratched in the yard' : 'Repaired'} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
-      </div>
-      {row.to_deliver > 0 && left < 0 && <p className="mt-3 text-sm text-red-700">Open orders still need {row.to_deliver} of grade {row.grade}. After this change {-left} will be short.</p>}
+      <p className="mb-3 text-sm text-gray-600">One tank moves from grade {row.grade} to grade {to}. {row.on_hand} in stock as grade {row.grade} now. For more tanks, change each one on its own.</p>
+      <Field label={to === 'B' ? 'What is wrong with this tank' : 'Why it is grade A after all'}>
+        <input className="input" autoFocus placeholder={to === 'B' ? 'Thin spot near the outlet' : 'Changed to B by mistake'} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
+      {row.to_deliver > 0 && row.free < 1 && <p className="mt-3 text-sm text-red-700">Open orders still need {row.to_deliver} of grade {row.grade}. After this change {1 - row.free} will be short.</p>}
       <ErrorBox msg={a.error} />
       <div className="mt-4 flex justify-end gap-2">
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn-primary" disabled={!ok || a.busy} onClick={() => a.run(async () => {
-          await api.post('/api/p/stock/regrade', { tank_type: row.tank_type, colour: row.colour || '', from_grade: row.grade, to_grade: to, quantity: n, reason: reason.trim() })
+        <button className="btn-primary" disabled={!reason.trim() || a.busy} onClick={() => a.run(async () => {
+          await api.post('/api/p/stock/regrade', { tank_type: row.tank_type, colour: row.colour || '', from_grade: row.grade, to_grade: to, reason: reason.trim() })
           onDone()
-        }, errMsg)}>Change to grade {to}</button>
+        }, errMsg)}>Change 1 tank to grade {to}</button>
       </div>
     </Modal>
   )
