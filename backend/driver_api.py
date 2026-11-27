@@ -59,6 +59,10 @@ async def view(dn: dict, node: dict) -> dict:
     cfg = await commerce.get_cfg(dn["node_id"])
     cust = await db.customers().find_one({"_id": dn["customer_id"]}) if dn.get("customer_id") else None
     site = maps.shown_site(dn.get("site"), cust) or {}
+    if not site.get("contact_phone") and (cust or {}).get("phone"):
+        # no contact for the site: the driver calls the customer (Steven, 27 Nov 2026)
+        site = {**site, "contact_phone": cust["phone"],
+                "contact_name": site.get("contact_name") or cust.get("contact_person") or cust.get("name") or ""}
     b = node.get("branding") or {}
     order = await db.orders().find_one({"_id": dn.get("order_id")}) or {}
     pay = None

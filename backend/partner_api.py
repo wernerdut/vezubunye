@@ -909,9 +909,11 @@ async def delivery_pdf(dn_id: str, user: dict = Depends(current_partner)):
         raise HTTPException(404, "Delivery note not found")
     site = dn.get("site") or {}
     no_address = bool(site) and not (site.get("address") or site.get("town"))
-    if not dn.get("content_b64") or dn.get("origin") == "internal" or dn.get("legacy") or no_address:
+    old = dn.get("pdf_v") != partner_pdf.DN_PDF_VERSION
+    if not dn.get("content_b64") or dn.get("origin") == "internal" or dn.get("legacy") or no_address or old:
         # partner-branded on demand (legacy notes were printed in the internal style); a note
-        # stored with only "Main" for the address is printed again with the customer's address
+        # stored with only "Main" for the address, or before the note gained something (the
+        # customer's number), is printed again as the note is today
         ctx_ = await commerce._dn_context(dn)
         return pdf_response(partner_pdf.delivery_note(await node_for_pdf(node), cfg, dn, ctx_), dn["dn_number"])
     return pdf_response(base64.b64decode(dn["content_b64"]), dn["dn_number"])

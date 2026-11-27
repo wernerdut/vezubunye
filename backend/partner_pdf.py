@@ -429,6 +429,19 @@ def invoice(node: dict, cfg: dict, inv: dict, customer: dict | None, pay_link: s
     return d.done()
 
 
+# Raised when the delivery note gains something, so notes stored before it are printed again
+# (partner_api.delivery_pdf). 2: the customer's contact number under Deliver to.
+DN_PDF_VERSION = 2
+
+
+def _tel(phone: str | None) -> str:
+    """+27825550188 as 082 555 0188; any other number as it was typed."""
+    p = "".join(str(phone or "").split())
+    if p.startswith("+27") and len(p) == 12 and p[1:].isdigit():
+        return f"0{p[3:5]} {p[5:8]} {p[8:]}"
+    return str(phone or "").strip()
+
+
 def delivery_note(node: dict, cfg: dict, dn: dict, ctx: dict | None = None) -> bytes:
     """No prices. Order number, site, contact, directions, a QR of the map link, the amount to
     collect on pay-on-delivery notes, and part-delivery numbering."""
@@ -442,9 +455,15 @@ def delivery_note(node: dict, cfg: dict, dn: dict, ctx: dict | None = None) -> b
         d.text(f"Part delivery {ctx['part_index']} of order {dn.get('order_number')}"
                + (f"  ·  {ctx['to_come']} still to come" if ctx.get("to_come") else ""), 10, True,
                color=_brand(node)["primary"])
-    site = maps.shown_site(dn.get("site"), ctx.get("customer")) or {}
+    cust = ctx.get("customer") or {}
+    site = maps.shown_site(dn.get("site"), cust) or {}
+    # Steven, 27 Nov 2026: "Please add the contact number of the customer (deliver to)"
+    tel = _tel(cust.get("phone"))
+    person = (cust.get("contact_person") or "").strip()
+    person = person if person and person.lower() != (dn.get("client_name") or "").strip().lower() else ""
+    who = [f"{person}, tel {tel}" if person else f"Tel {tel}"] if tel else ([person] if person else [])
     y0 = d.y
-    yl = d.block("Deliver to" if site else "Collected at the factory by", [dn["client_name"]] + [x for x in (site.get("label"), site.get("address"), site.get("town")) if x]
+    yl = d.block("Deliver to" if site else "Collected at the factory by", [dn["client_name"]] + who + [x for x in (site.get("label"), site.get("address"), site.get("town")) if x]
                  + ([dn["client_details"]] if dn.get("client_details") and not site else []), MARGIN, y0)
     contact = [x for x in (site.get("contact_name"), site.get("contact_phone")) if x]
     yr = d.block("Site contact", [" ".join(contact)] if contact else ["—"], W / 2, y0)

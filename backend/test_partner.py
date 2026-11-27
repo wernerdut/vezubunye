@@ -2062,3 +2062,42 @@ async def test_change_the_grade_of_tanks_in_stock(client):
     back, st = await fg()
     assert back[(tt, col, "A")] == have and back.get((tt, col, "B"), 0) == b0
     assert len(st["grade_changes"]) == 2
+
+
+async def test_customer_number_on_the_delivery_note(client):
+    """Steven, 27 Nov 2026 (delivery to JC Nel, site contact "—"): "Please add the contact number of
+    the customer (deliver to)". The customer's number prints under Deliver to, also on notes stored
+    before this, and the driver gets it to call when the site has no contact of its own."""
+    c = client
+    import commerce
+    import partner_pdf
+    assert partner_pdf._tel("+27825550557") == "082 555 0557" and partner_pdf._tel("021 555 0100") == "021 555 0100"
+    cust = await ok(await c.post("/api/p/customers", headers=S["mx"], json={
+        "name": "JC Number Test", "phone": "082 555 0557", "billing_address": "42 Douglas Carr Drive, Bellville",
+        "sites": [{"label": "Main", "lat": -33.88, "lng": 18.63}]}))
+    o = await ok(await c.post("/api/p/orders", headers=S["mx"], json={
+        "customer_id": cust["_id"], "site_id": cust["sites"][0]["site_id"],
+        "lines": [{"tank_type": "W1000", "colour": "EMERALD", "qty": 1}]}))
+    inv = o["invoices"][0]
+    await webhook(c, "makulu", "pay_cust_number_1", inv["total"], {"invoice_id": inv["_id"]})
+    dn = await ok(await c.post(f"/api/p/orders/{o['_id']}/deliveries", headers=S["mx"], json={
+        "lines": [{"order_line_id": o["order_lines"][0]["line_id"], "quantity": 1}], "planned_date": today()}))
+    raw = await db.delivery_notes().find_one({"_id": dn["_id"]})
+    assert raw["pdf_v"] == partner_pdf.DN_PDF_VERSION
+    assert "Tel 082 555 0557" in pdf_text(base64.b64decode(raw["content_b64"]))
+
+    # a note stored before this has no number on it and no version: it is printed again
+    node, cfg = await commerce.get_node("makulu"), await commerce.get_cfg("makulu")
+    before = partner_pdf.delivery_note(node, cfg, raw, {})
+    assert "0557" not in pdf_text(before)
+    await db.delivery_notes().update_one({"_id": dn["_id"]}, {"$set": {"content_b64": base64.b64encode(before).decode()},
+                                                              "$unset": {"pdf_v": ""}})
+    assert "Tel 082 555 0557" in pdf_text((await c.get(f"/api/p/deliveries/{dn['_id']}/pdf", headers=S["mx"])).content)
+
+    # the driver can call the customer; a site with its own contact keeps that one
+    tok = (await ok(await c.get(f"/api/p/deliveries/{dn['_id']}", headers=S["mx"])))["driver_link"].rsplit("/", 1)[1]
+    site = (await ok(await c.get(f"/api/d/{tok}")))["site"]
+    assert site["contact_phone"] == "+27825550557" and site["contact_name"] == "JC Number Test"
+    await db.delivery_notes().update_one({"_id": dn["_id"]}, {"$set": {"site.contact_phone": "083 000 0000", "site.contact_name": "Gate"}})
+    site = (await ok(await c.get(f"/api/d/{tok}")))["site"]
+    assert site["contact_phone"] == "083 000 0000" and site["contact_name"] == "Gate"

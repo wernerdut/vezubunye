@@ -810,6 +810,7 @@ async def store_dn_pdf(node: dict, cfg: dict, dn: dict, session=None):
     pdf = partner_pdf.delivery_note(node, cfg, dn, await _dn_context(dn, session))
     await db.delivery_notes().update_one({"_id": dn["_id"]},
                                          {"$set": {"content_b64": base64.b64encode(pdf).decode(),
+                                                   "pdf_v": partner_pdf.DN_PDF_VERSION,
                                                    "pdf_url": f"/api/delivery-notes/{dn['_id']}/pdf"}},
                                          session=session)
 
